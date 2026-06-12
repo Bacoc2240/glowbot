@@ -1,0 +1,9 @@
+Django==4.2.*
+djangorestframework
+djangorestframework-simplejwt
+psycopg2-binary
+python-dotenv
+whitenoise
+gunicorn
+drf-spectacular
+anthropic
