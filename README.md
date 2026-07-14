@@ -1,30 +1,32 @@
-GlowBot — Sprint 2: Motor de Agendamiento
+GlowBot — Sprint 3: Integración de IA
 Plataforma SaaS de agendamiento inteligente para el sector de cuidado
 personal y belleza. Proyecto productivo SENA — Tecnología ADSO.
 Wilson Vergara Duarte — Ficha 2834885 — Saravena, Arauca, 2026.
-Novedades del Sprint 2
-AgendaService: algoritmo de disponibilidad de 3 capas (horario base →
-excepción → bloqueo) + reserva atómica con select_for_update().
-12 pruebas automatizadas del motor de agenda (todas pasan).
-Endpoints: CRUD de servicios y profesionales, disponibilidad y citas.
+Novedades del Sprint 3
+IAService: asistente conversacional con Claude API (claude-haiku-4-5),
+prompt de sistema dinámico por establecimiento y prompt caching.
+Principio "la IA propone, el backend dispone": intenciones JSON
+validadas por AgendaService antes de tocar la base de datos.
+5 capas de defensa anti-alucinación (Sistema de Prompts v1.0).
+Zona pública por slug: info del negocio, chat del asistente,
+consulta y cancelación de citas por teléfono.
+Límite de peticiones del chat: 20/min por IP (HTTP 429).
+16 pruebas nuevas del asistente (28 en total con el motor de agenda).
+Configuración de la Claude API
+Crea tu clave en https://platform.claude.com (Claude Console).
+En el archivo .env agrega: ANTHROPIC_API_KEY=tu-clave-aqui
+(Opcional) ANTHROPIC_MODEL=claude-haiku-4-5 (valor por defecto)
 Puesta en marcha
 python -m venv .venv && .venv\Scripts\activate (Windows)
 pip install -r requirements.txt
+copia .env.ejemplo como .env y completa credenciales + ANTHROPIC_API_KEY
 createdb glowbot
 python manage.py migrate
-python manage.py createsuperuser
 python manage.py runserver
 Ejecutar las pruebas
-python manage.py test agenda.tests -v2
-Endpoints (Sprint 1 + 2)
-POST /api/v1/auth/registro crea cuenta + establecimiento
-POST /api/v1/auth/login JWT access + refresh
-GET /api/v1/servicios lista servicios (RF-04)
-POST /api/v1/servicios crea servicio
-GET /api/v1/profesionales lista profesionales (RF-05)
-POST /api/v1/profesionales crea profesional (valida plan)
-GET /api/v1/disponibilidad slots libres por 3 capas (RF-06)
-GET /api/v1/citas?fecha=&profesional= calendario (RF-07)
-POST /api/v1/citas reserva (409 si ocupado, RF-11)
-PATCH /api/v1/citas/{id}/cancelar cancela y libera slot (RF-08)
-Documentos de referencia: SRS v1.0, Diccionario de Datos v1.0,
+python manage.py test agenda.tests asistente.tests -v2
+Endpoints nuevos (zona pública, sin autenticación)
+GET /api/v1/p/{slug} info pública del establecimiento
+POST /api/v1/p/{slug}/chat chat con el asistente IA (RF-10)
+POST /api/v1/p/{slug}/citas/consultar próxima cita por teléfono (RF-12)
+POST /api/v1/p/{slug}/citas/cancelar cancela y notifica (RF-12, RF-13)

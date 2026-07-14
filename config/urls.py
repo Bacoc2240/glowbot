@@ -7,6 +7,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from cuentas.api import RegistroView
 from negocios.api import ServicioViewSet, ProfesionalViewSet
 from agenda.api import DisponibilidadView, CitaViewSet
+from asistente.api import (
+    CancelarCitaPublicaView, ChatView, ConsultarCitaPublicaView, InfoPublicaView,
+)
 
 router = DefaultRouter(trailing_slash=False)
 router.register("servicios", ServicioViewSet, basename="servicio")
@@ -19,9 +22,14 @@ urlpatterns = [
     path("api/v1/auth/registro", RegistroView.as_view(), name="registro"),
     path("api/v1/auth/login", TokenObtainPairView.as_view(), name="login"),
     path("api/v1/auth/refresh", TokenRefreshView.as_view(), name="refresh"),
-    # Disponibilidad (§6)
+    # Disponibilidad y CRUD del panel (§5, §6, §7)
     path("api/v1/disponibilidad", DisponibilidadView.as_view(), name="disponibilidad"),
-    # CRUD servicios, profesionales, citas (§5, §6, §7)
     path("api/v1/", include(router.urls)),
+    # Zona pública — cliente final (§8)
+    path("api/v1/p/<slug:slug>", InfoPublicaView.as_view(), name="info-publica"),
+    path("api/v1/p/<slug:slug>/chat", ChatView.as_view(), name="chat-publico"),
+    path("api/v1/p/<slug:slug>/citas/consultar",
+         ConsultarCitaPublicaView.as_view(), name="consultar-cita-publica"),
+    path("api/v1/p/<slug:slug>/citas/cancelar",
+         CancelarCitaPublicaView.as_view(), name="cancelar-cita-publica"),
 ]
-

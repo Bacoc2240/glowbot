@@ -93,6 +93,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
+    # Límite del chat público: anti-abuso y control de costos IA (429)
+    "DEFAULT_THROTTLE_RATES": {"chat_publico": "20/min"},
 }
 
 SIMPLE_JWT = {
@@ -110,5 +112,9 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+# ── Claude API — asistente IA (Sprint 3, Sistema de Prompts v1.0) ──
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
