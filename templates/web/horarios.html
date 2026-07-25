@@ -1,0 +1,166 @@
+{% extends "web/base.html" %}
+{% block titulo %}Horarios — GlowBot{% endblock %}
+{% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
+{% block contenido %}
+<div x-data="horarios()" x-init="cargar()">
+
+  <div class="card">
+    <label>Profesional</label>
+    <select x-model.number="profesionalId" @change="cargarTodo">
+      <template x-for="p in profesionales" :key="p.id">
+        <option :value="p.id" x-text="p.nombre"></option>
+      </template>
+    </select>
+  </div>
+
+  <div class="card">
+    <h2>Horario semanal</h2>
+    <p class="muted">Marca los días que atiende y sus horas.</p>
+    <template x-for="(d, i) in dias" :key="i">
+      <div class="fila" style="padding:5px 0">
+        <label style="max-width:90px;margin:0"><input type="checkbox" x-model="d.activo"
+          style="width:auto"> <span x-text="d.nombre"></span></label>
+        <input type="time" x-model="d.inicio" :disabled="!d.activo">
+        <input type="time" x-model="d.fin" :disabled="!d.activo">
+      </div>
+    </template>
+    <p class="ok" x-show="guardado">Horario guardado ✓</p><br>
+    <button @click="guardarSemana">Guardar horario semanal</button>
+  </div>
+
+  <div class="card">
+    <h2>Horario especial de un día (RF-16)</h2>
+    <p class="muted">Ej: hoy atiendo hasta las 8 pm, mañana solo hasta las 3 pm.
+       Reemplaza el horario normal solo para esa fecha.</p>
+    <label>Fecha</label><input type="date" x-model="exc.fecha">
+    <div class="fila">
+      <div><label>Desde</label><input type="time" x-model="exc.hora_inicio"></div>
+      <div><label>Hasta</label><input type="time" x-model="exc.hora_fin"></div>
+    </div><br>
+    <button @click="crearExcepcion">Guardar horario especial</button>
+    <template x-for="e in excepciones" :key="e.id">
+      <div class="fila" style="border-top:1px solid var(--borde);padding:7px 0;margin-top:7px">
+        <div class="muted" x-text="e.fecha + ' · ' + e.hora_inicio.slice(0,5) + '–' + e.hora_fin.slice(0,5)"></div>
+        <button class="btn-peligro" style="max-width:80px;padding:6px;font-size:12px"
+                @click="borrarExcepcion(e.id)">Quitar</button>
+      </div>
+    </template>
+  </div>
+
+  <div class="card">
+    <h2>Bloqueos — mi tiempo para mí (RF-14/15)</h2>
+    <label><input type="checkbox" x-model="blo.recurrente" style="width:auto">
+      Repetir cada semana (ej: todos los domingos)</label>
+    <template x-if="blo.recurrente">
+      <div><label>Día de la semana</label>
+      <select x-model.number="blo.dia_semana">
+        <template x-for="(d,i) in dias" :key="i"><option :value="i" x-text="d.nombre"></option></template>
+      </select></div>
+    </template>
+    <template x-if="!blo.recurrente">
+      <div><label>Fecha</label><input type="date" x-model="blo.fecha"></div>
+    </template>
+    <label><input type="checkbox" x-model="blo.diaCompleto" style="width:auto"> Día completo</label>
+    <template x-if="!blo.diaCompleto">
+      <div class="fila">
+        <div><label>Desde</label><input type="time" x-model="blo.hora_inicio"></div>
+        <div><label>Hasta</label><input type="time" x-model="blo.hora_fin"></div>
+      </div>
+    </template>
+    <label>Motivo (opcional)</label><input x-model="blo.motivo" placeholder="Descanso, diligencia…"><br>
+    <button @click="crearBloqueo">Guardar bloqueo</button>
+    <template x-for="b in bloqueos" :key="b.id">
+      <div class="fila" style="border-top:1px solid var(--borde);padding:7px 0;margin-top:7px">
+        <div class="muted"
+          x-text="(b.recurrente ? 'Cada ' + dias[b.dia_semana].nombre : b.fecha) + ' · ' +
+                  (b.hora_inicio ? b.hora_inicio.slice(0,5) + '–' + b.hora_fin.slice(0,5) : 'día completo') +
+                  (b.motivo ? ' · ' + b.motivo : '')"></div>
+        <button class="btn-peligro" style="max-width:80px;padding:6px;font-size:12px"
+                @click="borrarBloqueo(b.id)">Quitar</button>
+      </div>
+    </template>
+  </div>
+  <div class="espacio-nav"></div>
+</div>
+
+<script>
+function horarios() {
+  return {
+    profesionales: [], profesionalId: null,
+    dias: ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+      .map(n => ({ nombre: n, activo: false, inicio: "09:00", fin: "18:00" })),
+    excepciones: [], bloqueos: [], guardado: false,
+    exc: { fecha: "", hora_inicio: "09:00", hora_fin: "18:00" },
+    blo: { recurrente: false, fecha: "", dia_semana: 6, diaCompleto: true,
+           hora_inicio: "12:00", hora_fin: "14:00", motivo: "" },
+    async cargar() {
+      const r = await api("/profesionales");
+      if (r && r.ok) {
+        const d = await r.json(); this.profesionales = d.results || d;
+        if (this.profesionales.length) {
+          this.profesionalId = this.profesionales[0].id;
+          await this.cargarTodo();
+        }
+      }
+    },
+    async cargarTodo() {
+      let r = await api(`/profesionales/${this.profesionalId}/horarios`);
+      if (r && r.ok) {
+        const franjas = await r.json();
+        this.dias.forEach((d, i) => {
+          const f = franjas.find(x => x.dia_semana === i);
+          d.activo = !!f;
+          if (f) { d.inicio = f.hora_inicio.slice(0,5); d.fin = f.hora_fin.slice(0,5); }
+        });
+      }
+      r = await api(`/profesionales/${this.profesionalId}/excepciones`);
+      if (r && r.ok) this.excepciones = await r.json();
+      r = await api(`/profesionales/${this.profesionalId}/bloqueos`);
+      if (r && r.ok) this.bloqueos = await r.json();
+    },
+    async guardarSemana() {
+      const franjas = this.dias
+        .map((d, i) => d.activo ? { dia_semana: i, hora_inicio: d.inicio, hora_fin: d.fin } : null)
+        .filter(Boolean);
+      const r = await api(`/profesionales/${this.profesionalId}/horarios`,
+        { method: "PUT", body: JSON.stringify(franjas) });
+      this.guardado = r && r.ok;
+      setTimeout(() => this.guardado = false, 2500);
+    },
+    async crearExcepcion() {
+      await api(`/profesionales/${this.profesionalId}/excepciones`,
+        { method: "POST", body: JSON.stringify(this.exc) });
+      await this.cargarTodo();
+    },
+    async borrarExcepcion(id) {
+      await api(`/excepciones/${id}`, { method: "DELETE" });
+      await this.cargarTodo();
+    },
+    async crearBloqueo() {
+      const cuerpo = {
+        recurrente: this.blo.recurrente,
+        fecha: this.blo.recurrente ? null : this.blo.fecha,
+        dia_semana: this.blo.recurrente ? this.blo.dia_semana : null,
+        hora_inicio: this.blo.diaCompleto ? null : this.blo.hora_inicio,
+        hora_fin: this.blo.diaCompleto ? null : this.blo.hora_fin,
+        motivo: this.blo.motivo,
+      };
+      await api(`/profesionales/${this.profesionalId}/bloqueos`,
+        { method: "POST", body: JSON.stringify(cuerpo) });
+      await this.cargarTodo();
+    },
+    async borrarBloqueo(id) {
+      await api(`/bloqueos/${id}`, { method: "DELETE" });
+      await this.cargarTodo();
+    },
+  };
+}
+</script>
+{% endblock %}
+{% block nav %}
+<nav class="abajo">
+  <a href="/panel">Agenda</a>
+  <a href="/panel/servicios">Servicios</a>
+  <a href="/panel/horarios" class="activo">Horarios</a>
+</nav>
+{% endblock %}

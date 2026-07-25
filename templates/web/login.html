@@ -1,0 +1,34 @@
+{% extends "web/base.html" %}
+{% block titulo %}Ingresar — GlowBot{% endblock %}
+{% block contenido %}
+<div class="card" x-data="login()">
+  <h2>Ingresa a tu panel</h2>
+  <label>Correo electrónico</label>
+  <input type="email" x-model="email" placeholder="tu@correo.com">
+  <label>Contraseña</label>
+  <input type="password" x-model="password" @keyup.enter="entrar">
+  <p class="error" x-text="error" x-show="error"></p>
+  <br>
+  <button @click="entrar" x-text="cargando ? 'Ingresando…' : 'Ingresar'"></button>
+</div>
+<script>
+function login() {
+  return {
+    email: "", password: "", error: "", cargando: false,
+    async entrar() {
+      this.cargando = true; this.error = "";
+      const r = await fetch("/api/v1/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: this.email, password: this.password }),
+      });
+      this.cargando = false;
+      if (!r.ok) { this.error = "Correo o contraseña incorrectos."; return; }
+      const d = await r.json();
+      localStorage.setItem("glowbot_access", d.access);
+      localStorage.setItem("glowbot_refresh", d.refresh);
+      window.location = "/panel";
+    },
+  };
+}
+</script>
+{% endblock %}

@@ -96,3 +96,42 @@ class CitaViewSet(viewsets.ModelViewSet):
         cita = self.get_queryset().get(pk=pk)
         AgendaService.cancelar(cita, por_cliente=False)
         return Response(CitaSerializer(cita).data)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Sprint 4 — Notificaciones del panel (RF-13)
+# ═══════════════════════════════════════════════════════════════
+from .models import Notificacion
+from .notificaciones import NotificacionService
+
+
+class NotificacionesView(APIView):
+    """GET /api/v1/notificaciones — alertas recientes con su enlace wa.me.
+    El panel las muestra; al tocar el enlace se abre WhatsApp con el
+    mensaje listo para el profesional."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        est = request.user.establecimientos.first()
+        notifs = (
+            Notificacion.objects
+            .filter(cita__establecimiento=est)
+            .select_related("cita", "cita__profesional",
+                            "cita__servicio", "cita__cliente")
+            .order_by("-creado_en")[:20]
+        )
+        data = []
+        for n in notifs:
+            data.append({
+                "id": n.id,
+                "tipo": n.get_tipo_display(),
+                "estado": n.estado,
+                "fecha_cita": str(n.cita.fecha),
+                "hora": n.cita.hora_inicio.strftime("%H:%M"),
+                "servicio": n.cita.servicio.nombre,
+                "cliente": n.cita.cliente.nombre,
+                "profesional": n.cita.profesional.nombre,
+                "enlace_wa": NotificacionService.marcar_generada(n),
+                "creado_en": n.creado_en.isoformat(),
+            })
+        return Response({"notificaciones": data})

@@ -1,0 +1,84 @@
+{% comment %}
+Plantilla base GlowBot — Sprint 4.
+Móvil-primero (RNF-01), colores de marca: azul #3B82C4 + dorado #D4AF37.
+Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block titulo %}GlowBot{% endblock %}</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --azul: #3B82C4; --azul-osc: #2A5F94; --dorado: #D4AF37;
+      --fondo: #F7F9FB; --texto: #1F2937; --gris: #6B7280;
+      --borde: #E5E7EB; --rojo: #C0392B; --verde: #1A6B3A;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--fondo);
+           color: var(--texto); font-size: 16px; }
+    .top { background: var(--azul); color: #fff; padding: 14px 16px;
+           display: flex; justify-content: space-between; align-items: center; }
+    .top b { font-size: 18px; }
+    .top .dorado { color: var(--dorado); }
+    main { max-width: 640px; margin: 0 auto; padding: 16px; }
+    .card { background: #fff; border: 1px solid var(--borde); border-radius: 12px;
+            padding: 14px; margin-bottom: 12px; }
+    .fila { display: flex; gap: 10px; align-items: center; }
+    .fila > * { flex: 1; }
+    h2 { font-size: 17px; margin-bottom: 10px; }
+    label { font-size: 13px; color: var(--gris); display: block; margin: 8px 0 3px; }
+    input, select { width: 100%; padding: 10px; border: 1px solid var(--borde);
+                    border-radius: 8px; font-size: 15px; }
+    button, .btn { background: var(--azul); color: #fff; border: none; padding: 11px 16px;
+             border-radius: 8px; font-size: 15px; cursor: pointer; width: 100%;
+             text-align: center; text-decoration: none; display: inline-block; }
+    button:active { background: var(--azul-osc); }
+    .btn-borde { background: #fff; color: var(--azul); border: 1px solid var(--azul); }
+    .btn-peligro { background: var(--rojo); }
+    .chip { display: inline-block; background: #EAF2FA; color: var(--azul-osc);
+            border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+    .error { color: var(--rojo); font-size: 13px; margin-top: 6px; }
+    .ok { color: var(--verde); font-size: 13px; margin-top: 6px; }
+    nav.abajo { position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+                border-top: 1px solid var(--borde); display: flex; }
+    nav.abajo a { flex: 1; text-align: center; padding: 10px 0; font-size: 12px;
+                  color: var(--gris); text-decoration: none; }
+    nav.abajo a.activo { color: var(--azul); font-weight: 600; }
+    .espacio-nav { height: 64px; }
+    .muted { color: var(--gris); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <b>Glow<span class="dorado">Bot</span></b>
+    {% block top_derecha %}{% endblock %}
+  </div>
+  <main>{% block contenido %}{% endblock %}</main>
+  {% block nav %}{% endblock %}
+  <script>
+    // Ayudantes compartidos: JWT en localStorage + fetch autenticado
+    const API = "/api/v1";
+    function token() { return localStorage.getItem("glowbot_access"); }
+    async function api(ruta, opciones = {}) {
+      const r = await fetch(API + ruta, {
+        ...opciones,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token() ? { "Authorization": "Bearer " + token() } : {}),
+          ...(opciones.headers || {}),
+        },
+      });
+      if (r.status === 401) { window.location = "/panel/login"; return null; }
+      return r;
+    }
+    function salir() {
+      localStorage.removeItem("glowbot_access");
+      localStorage.removeItem("glowbot_refresh");
+      window.location = "/panel/login";
+    }
+  </script>
+</body>
+</html>

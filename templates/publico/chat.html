@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block titulo %}{{ establecimiento.nombre }} — Agenda tu cita{% endblock %}
+{% block estilos %}
+<style>
+  .chat{display:flex;flex-direction:column;height:calc(100vh - 170px)}
+  .mensajes{flex:1;overflow-y:auto;padding:4px 0}
+  .burbuja{max-width:85%;padding:10px 12px;border-radius:14px;
+           margin-bottom:8px;font-size:15px;line-height:1.45}
+  .burbuja.bot{background:var(--blanco);border:1px solid var(--linea)}
+  .burbuja.yo{background:var(--azul-suave);color:var(--azul-oscuro);
+              margin-left:auto}
+  .entrada{display:flex;gap:8px;padding-top:8px}
+  .entrada button{width:auto;padding:0 18px}
+</style>
+{% endblock %}
+{% block contenido %}
+<div class="chat" x-data="chat()" x-init="saludar()">
+  <div class="tarjeta" style="padding:10px 14px;margin-bottom:8px">
+    <p style="font-weight:700">{{ establecimiento.nombre }}</p>
+    <p style="font-size:12px;color:var(--verde)">Asistente GlowBot · en línea</p>
+  </div>
+  <div class="mensajes" x-ref="lista">
+    <template x-for="(m, i) in mensajes" :key="i">
+      <div class="burbuja" :class="m.rol === 'bot' ? 'bot' : 'yo'"
+           x-text="m.texto"></div>
+    </template>
+    <template x-if="escribiendo">
+      <div class="burbuja bot" style="color:var(--gris)">Escribiendo…</div>
+    </template>
+  </div>
+  <form class="entrada" @submit.prevent="enviar()">
+    <input type="text" x-model="texto" maxlength="500" autocomplete="off"
+           placeholder="Escribe tu mensaje…" :disabled="escribiendo">
+    <button type="submit" class="boton" :disabled="escribiendo || !texto.trim()">
+      Enviar</button>
+  </form>
+</div>
+{% endblock %}
+{% block guiones %}
+<script>
+function chat(){
+  return {
+    mensajes: [], texto: '', sesion: null, escribiendo: false,
+    saludar(){
+      this.mensajes.push({rol:'bot', texto:
+        '¡Hola! Soy el asistente de {{ establecimiento.nombre }}. ' +
+        'Puedo agendar, consultar o cancelar tu cita. ¿Qué necesitas?'});
+    },
+    async enviar(){
+      const m = this.texto.trim();
+      if(!m) return;
+      this.mensajes.push({rol:'yo', texto:m});
+      this.texto = ''; this.escribiendo = true;
+      this.$nextTick(() => this.$refs.lista.scrollTop = 1e9);
+      try{
+        const r = await fetch('/api/v1/p/{{ establecimiento.slug }}/chat', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({mensaje:m, session_id:this.sesion}),
+        });
+        if(r.status === 429){
+          this.mensajes.push({rol:'bot', texto:
+            'Has enviado muchos mensajes seguidos. Espera un minuto e intenta de nuevo.'});
+        } else {
+          const data = await r.json();
+          this.sesion = data.session_id;
+          this.mensajes.push({rol:'bot', texto:data.respuesta});
+        }
+      } catch(e){
+        this.mensajes.push({rol:'bot', texto:
+          'No pude conectarme. Revisa tu señal e intenta de nuevo.'});
+      }
+      this.escribiendo = false;
+      this.$nextTick(() => this.$refs.lista.scrollTop = 1e9);
+    },
+  };
+}
+</script>
+{% endblock %}

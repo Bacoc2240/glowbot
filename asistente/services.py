@@ -16,6 +16,8 @@ Defensa en profundidad (5 capas):
 """
 import json
 import re
+import logging
+
 from datetime import datetime, date
 
 from django.conf import settings
@@ -26,10 +28,18 @@ from agenda.services import AgendaService, SlotNoDisponible
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
 from .models import ConversacionIA
 
+logger = logging.getLogger(__name__)
 MAX_ITERACIONES = 3     # llamadas al modelo por mensaje del usuario
 MAX_HISTORIAL = 20      # interacciones enviadas (control de costos, §8)
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def fecha_larga(f) -> str:
+    """'lunes 27 de julio de 2026' — el modelo nunca deduce el día."""
+    return f"{DIAS[f.weekday()]} {f.day} de {MESES[f.month - 1]} de {f.year}"
 
 
 class IAService:
@@ -59,7 +69,7 @@ class IAService:
         lineas_profesionales = "\n".join(lineas_prof) or "- (sin profesionales)"
 
         ahora = timezone.localtime()
-        fecha_txt = f"{DIAS[ahora.weekday()]} {ahora.strftime('%Y-%m-%d %H:%M')}"
+        fecha_txt = f"{fecha_larga(ahora.date())}, {ahora.strftime('%H:%M')}"
 
         return f"""Eres el asistente de agendamiento de {establecimiento.nombre}, \
 un(a) {establecimiento.get_tipo_display()} en Saravena, Arauca.
@@ -90,7 +100,11 @@ REGLAS OBLIGATORIAS:
    {{"intencion":"consultar_disponibilidad","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD"}}
    {{"intencion":"agendar","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD","hora_inicio":"HH:MM","cliente":{{"nombre":"...","telefono":"...","acepta_datos":true}}}}
    {{"intencion":"consultar_cita","telefono":"..."}}
-   {{"intencion":"cancelar_cita","telefono":"..."}}"""
+   {{"intencion":"cancelar_cita","telefono":"..."}}
+9. NUNCA calcules ni deduzcas el día de la semana de una fecha. Usa el nombre
+   del día exactamente como aparece en los datos que recibes. En el JSON de las
+   intenciones la fecha va siempre en formato AAAA-MM-DD."""
+
 
     # ──────────────────────────────────────────────────────────────
     #  Llamada a la Claude API (aislada para poder simularla en tests)
@@ -157,8 +171,8 @@ REGLAS OBLIGATORIAS:
                 listado = ", ".join(s.strftime("%H:%M") for s in slots) or "ninguno"
                 return None, (
                     f"Disponibilidad real de {profesional.nombre} para "
-                    f"{servicio.nombre} el {intencion['fecha']}: {listado}. "
-                    "Ofrece al cliente SOLO estos horarios."
+                    f"{servicio.nombre} el {fecha_larga(dia)}: {listado}. "
+                    "Ofrece al cliente SOLO estos horarios y usa ese nombre de día."
                 )
 
             if tipo == "agendar":
@@ -200,7 +214,7 @@ REGLAS OBLIGATORIAS:
                 return {
                     "respuesta": (
                         f"¡Listo, {cliente.nombre}! Tu cita quedó confirmada: "
-                        f"{servicio.nombre}, {intencion['fecha']} a las "
+                        f"{servicio.nombre}, {fecha_larga(dia)} a las "
                         f"{intencion['hora_inicio']} con {profesional.nombre}."
                     ),
                     "accion": "cita_creada",
@@ -217,8 +231,9 @@ REGLAS OBLIGATORIAS:
                 if not cita:
                     return None, "No hay citas confirmadas para ese teléfono. Infórmalo."
                 return None, (
-                    f"Próxima cita del cliente: {cita.servicio.nombre} el {cita.fecha} "
-                    f"a las {cita.hora_inicio.strftime('%H:%M')} con "
+                    f"Próxima cita del cliente: {cita.servicio.nombre} el "
+                    f"{fecha_larga(cita.fecha)} a las "
+                    f"{cita.hora_inicio.strftime('%H:%M')} con "
                     f"{cita.profesional.nombre}. Infórmala textualmente."
                 )
 
@@ -233,7 +248,8 @@ REGLAS OBLIGATORIAS:
                 )
                 return {
                     "respuesta": (
-                        f"Tu cita de {cita.servicio.nombre} del {cita.fecha} a las "
+                        f"Tu cita de {cita.servicio.nombre} del "
+                        f"{fecha_larga(cita.fecha)} a las "
                         f"{cita.hora_inicio.strftime('%H:%M')} fue cancelada. "
                         "¡Esperamos verte pronto!"
                     ),
@@ -303,6 +319,21 @@ REGLAS OBLIGATORIAS:
                 break
             # realimentación [SISTEMA] → el modelo reformula con datos reales
             historial.append({"role": "user", "content": f"[SISTEMA] {feedback}"})
+        else:
+            # Se agotaron las iteraciones sin resolver la intención.
+            logger.warning(
+                "IAService: %s iteraciones agotadas | establecimiento=%s "
+                "session=%s | último feedback: %s",
+                MAX_ITERACIONES, establecimiento.id, session_id, feedback,
+            )
+            resultado = {
+                "respuesta": (
+                    "Disculpa, no logré completar tu solicitud. ¿Puedes "
+                    "escribirme el servicio y la fecha que necesitas?"
+                ),
+                "accion": "sin_resolver",
+                "cita": None,
+            }
 
         conv.mensajes = historial
         conv.save(update_fields=["mensajes", "tokens_entrada", "tokens_salida"])

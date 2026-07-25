@@ -1,0 +1,82 @@
+{% extends "web/base.html" %}
+{% block titulo %}Agenda — GlowBot{% endblock %}
+{% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
+{% block contenido %}
+<div x-data="panel()" x-init="cargar()">
+  <div class="card">
+    <div class="fila">
+      <div><h2 x-text="'Agenda · ' + fecha"></h2></div>
+      <input type="date" x-model="fecha" @change="cargarCitas" style="max-width:160px">
+    </div>
+    <div class="fila" style="margin-top:10px; text-align:center">
+      <div><b x-text="citas.length"></b><div class="muted">Citas</div></div>
+      <div><b style="color:var(--rojo)" x-text="canceladas"></b><div class="muted">Canceladas</div></div>
+      <div><b style="color:var(--verde)" x-text="confirmadas"></b><div class="muted">Confirmadas</div></div>
+    </div>
+  </div>
+
+  <template x-for="c in citas" :key="c.id">
+    <div class="card fila">
+      <div style="max-width:60px"><b x-text="c.hora_inicio.slice(0,5)"></b></div>
+      <div>
+        <b x-text="c.servicio_nombre + ' — ' + c.cliente_nombre"></b>
+        <div class="muted" x-text="c.profesional_nombre + ' · ' + c.estado"></div>
+      </div>
+      <div style="max-width:110px">
+        <span class="chip" x-show="c.canal === 'ia'">IA</span>
+        <button class="btn-peligro" style="padding:6px;font-size:12px;margin-top:4px"
+                x-show="c.estado === 'confirmada'"
+                @click="cancelar(c.id)">Cancelar</button>
+      </div>
+    </div>
+  </template>
+  <p class="muted" x-show="!citas.length">No hay citas para esta fecha.</p>
+
+  <div class="card">
+    <h2>Notificaciones recientes</h2>
+    <template x-for="n in notificaciones" :key="n.id">
+      <div style="border-bottom:1px solid var(--borde); padding:8px 0">
+        <b x-text="n.tipo"></b>
+        <div class="muted" x-text="n.cliente + ' · ' + n.servicio + ' · ' + n.fecha_cita + ' ' + n.hora"></div>
+        <a class="btn btn-borde" style="margin-top:6px;padding:7px;font-size:13px"
+           :href="n.enlace_wa" target="_blank" x-show="n.enlace_wa">
+           Enviar aviso por WhatsApp</a>
+      </div>
+    </template>
+    <p class="muted" x-show="!notificaciones.length">Sin notificaciones.</p>
+  </div>
+  <div class="espacio-nav"></div>
+</div>
+
+<script>
+function panel() {
+  return {
+    fecha: new Date().toISOString().slice(0, 10),
+    citas: [], notificaciones: [],
+    get canceladas() { return this.citas.filter(c => c.estado.startsWith("cancelada")).length; },
+    get confirmadas() { return this.citas.filter(c => c.estado === "confirmada").length; },
+    async cargar() { await this.cargarCitas(); await this.cargarNotifs(); },
+    async cargarCitas() {
+      const r = await api(`/citas?fecha=${this.fecha}`);
+      if (r && r.ok) { const d = await r.json(); this.citas = d.results || d; }
+    },
+    async cargarNotifs() {
+      const r = await api("/notificaciones");
+      if (r && r.ok) this.notificaciones = (await r.json()).notificaciones;
+    },
+    async cancelar(id) {
+      if (!confirm("¿Cancelar esta cita? El espacio quedará libre.")) return;
+      await api(`/citas/${id}/cancelar`, { method: "PATCH" });
+      await this.cargar();
+    },
+  };
+}
+</script>
+{% endblock %}
+{% block nav %}
+<nav class="abajo">
+  <a href="/panel" class="activo">Agenda</a>
+  <a href="/panel/servicios">Servicios</a>
+  <a href="/panel/horarios">Horarios</a>
+</nav>
+{% endblock %}

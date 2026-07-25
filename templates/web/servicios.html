@@ -1,0 +1,89 @@
+{% extends "web/base.html" %}
+{% block titulo %}Servicios — GlowBot{% endblock %}
+{% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
+{% block contenido %}
+<div x-data="config()" x-init="cargar()">
+
+  <div class="card">
+    <h2>Mis servicios</h2>
+    <template x-for="s in servicios" :key="s.id">
+      <div class="fila" style="border-bottom:1px solid var(--borde);padding:8px 0">
+        <div>
+          <b x-text="s.nombre"></b>
+          <div class="muted" x-text="s.duracion_min + ' min · $' + Number(s.precio).toLocaleString('es-CO')"></div>
+        </div>
+        <button class="btn-peligro" style="max-width:90px;padding:7px;font-size:12px"
+                @click="borrarServicio(s.id)">Eliminar</button>
+      </div>
+    </template>
+    <label>Nombre del servicio</label>
+    <input x-model="nuevo.nombre" placeholder="Ej: Corte clásico">
+    <div class="fila">
+      <div><label>Duración (min)</label><input type="number" x-model.number="nuevo.duracion_min"></div>
+      <div><label>Precio (COP)</label><input type="number" x-model.number="nuevo.precio"></div>
+    </div>
+    <p class="error" x-text="errorS" x-show="errorS"></p><br>
+    <button @click="crearServicio">Agregar servicio</button>
+  </div>
+
+  <div class="card">
+    <h2>Mi equipo</h2>
+    <template x-for="p in profesionales" :key="p.id">
+      <div class="fila" style="border-bottom:1px solid var(--borde);padding:8px 0">
+        <div><b x-text="p.nombre"></b>
+          <div class="muted" x-text="p.telefono_whatsapp || 'Sin WhatsApp registrado'"></div></div>
+      </div>
+    </template>
+    <label>Nombre del profesional</label>
+    <input x-model="nuevoProf.nombre" placeholder="Ej: Carlos">
+    <label>WhatsApp (para alertas de cancelación)</label>
+    <input x-model="nuevoProf.telefono_whatsapp" placeholder="3001234567">
+    <p class="error" x-text="errorP" x-show="errorP"></p><br>
+    <button @click="crearProfesional">Agregar profesional</button>
+  </div>
+  <div class="espacio-nav"></div>
+</div>
+
+<script>
+function config() {
+  return {
+    servicios: [], profesionales: [],
+    nuevo: { nombre: "", duracion_min: 30, precio: 15000 },
+    nuevoProf: { nombre: "", telefono_whatsapp: "" },
+    errorS: "", errorP: "",
+    async cargar() {
+      let r = await api("/servicios");
+      if (r && r.ok) { const d = await r.json(); this.servicios = d.results || d; }
+      r = await api("/profesionales");
+      if (r && r.ok) { const d = await r.json(); this.profesionales = d.results || d; }
+    },
+    async crearServicio() {
+      this.errorS = "";
+      const r = await api("/servicios", { method: "POST", body: JSON.stringify(this.nuevo) });
+      if (!r.ok) { this.errorS = "Verifica los datos (duración y precio > 0)."; return; }
+      this.nuevo = { nombre: "", duracion_min: 30, precio: 15000 };
+      await this.cargar();
+    },
+    async borrarServicio(id) {
+      if (!confirm("¿Eliminar/desactivar este servicio?")) return;
+      await api(`/servicios/${id}`, { method: "DELETE" });
+      await this.cargar();
+    },
+    async crearProfesional() {
+      this.errorP = "";
+      const r = await api("/profesionales", { method: "POST", body: JSON.stringify(this.nuevoProf) });
+      if (!r.ok) { this.errorP = "Revisa el límite de tu plan o los datos."; return; }
+      this.nuevoProf = { nombre: "", telefono_whatsapp: "" };
+      await this.cargar();
+    },
+  };
+}
+</script>
+{% endblock %}
+{% block nav %}
+<nav class="abajo">
+  <a href="/panel">Agenda</a>
+  <a href="/panel/servicios" class="activo">Servicios</a>
+  <a href="/panel/horarios">Horarios</a>
+</nav>
+{% endblock %}

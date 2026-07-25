@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "negocios",
     "agenda",
     "asistente",
+    "web",
 ]
 
 MIDDLEWARE = [
@@ -89,6 +90,9 @@ AUTH_PASSWORD_VALIDATORS = [
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Sesión: permite que el panel web (plantillas + Alpine.js) consuma
+        # la misma API con la cookie de sesión y CSRF (Sprint 4).
+        "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
@@ -116,5 +120,10 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 # ── Claude API — asistente IA (Sprint 3, Sistema de Prompts v1.0) ──
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+
+# Rutas de sesión del panel (Sprint 4)
+LOGIN_URL = "/ingresar"
+LOGIN_REDIRECT_URL = "/panel/"
+LOGOUT_REDIRECT_URL = "/ingresar"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

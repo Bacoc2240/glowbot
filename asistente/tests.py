@@ -20,7 +20,9 @@ from negocios.models import (
 from agenda.models import Cita, Notificacion
 from agenda.services import AgendaService
 from .models import ConversacionIA
-from .services import IAService
+from .services import IAService, MAX_ITERACIONES, fecha_larga
+
+
 
 RUTA_LLAMAR = "asistente.services.IAService._llamar_claude"
 
@@ -238,6 +240,23 @@ class ConversacionTest(BaseIATest):
         )
         cita = Cita.objects.get(pk=r["cita"]["id"])
         self.assertEqual(cita.estado, Cita.Estado.CANCELADA_CLIENTE)
+        
+    def test_iteraciones_agotadas_devuelve_sin_resolver(self):
+        """Si el modelo insiste en una intención irresoluble, se corta el ciclo
+        tras MAX_ITERACIONES y se informa al cliente sin dejarlo sin salida."""
+        intencion = json.dumps({
+            "intencion": "agendar", "servicio_id": 9999,
+            "profesional_id": self.carlos.id,
+            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "cliente": {"nombre": "Juan", "telefono": "3001112233",
+                        "acepta_datos": True},
+        })
+        with patch(RUTA_LLAMAR, return_value=(intencion, 100, 50)) as m:
+            r = IAService.procesar_mensaje(self.est, "s9", "Quiero agendar")
+        self.assertEqual(m.call_count, MAX_ITERACIONES)
+        self.assertEqual(r["accion"], "sin_resolver")
+        self.assertIsNone(r["cita"])
+        self.assertEqual(Cita.objects.count(), 0)
 
 
 class ZonaPublicaTest(BaseIATest):
@@ -288,6 +307,14 @@ class ZonaPublicaTest(BaseIATest):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["cancelada"])
         self.assertEqual(Notificacion.objects.count(), 1)
+        
+class FechaLargaTest(TestCase):
+    def test_dia_semana_correcto(self):
+        """El 27 de julio de 2026 es lunes, no domingo (defecto detectado en Sprint 3)."""
+        self.assertEqual(fecha_larga(date(2026, 7, 27)), "lunes 27 de julio de 2026")
+
+    def test_domingo(self):
+        self.assertEqual(fecha_larga(date(2026, 7, 26)), "domingo 26 de julio de 2026")
 
 
 # Create your tests here.
