@@ -158,9 +158,5 @@ function horarios() {
 </script>
 {% endblock %}
 {% block nav %}
-<nav class="abajo">
-  <a href="/panel">Agenda</a>
-  <a href="/panel/servicios">Servicios</a>
-  <a href="/panel/horarios" class="activo">Horarios</a>
-</nav>
+{% include "web/_nav.html" with activo="horarios" %}
 {% endblock %}

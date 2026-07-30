@@ -1,0 +1,149 @@
+{% extends "web/base.html" %}
+{% block titulo %}Crear cuenta — GlowBot{% endblock %}
+{% block contenido %}
+<div class="card" x-data="registro()">
+  <h2>Empieza tu prueba gratis</h2>
+  <p class="muted">14 días sin costo. Sin tarjeta de crédito.</p>
+
+  <template x-if="!listo">
+    <div>
+      <label>Nombre del negocio</label>
+      <input x-model="nombre_negocio" placeholder="Barbería El Patrón">
+
+      <label>Tipo de negocio</label>
+      <select x-model="tipo">
+        <option value="barberia">Barbería</option>
+        <option value="salon">Salón de belleza / Peluquería</option>
+        <option value="unas">Servicio de uñas</option>
+        <option value="estetica">Centro de estética</option>
+        <option value="maquillaje">Maquillaje profesional</option>
+        <option value="masajes">Masajes y relajación</option>
+        <option value="spa">Spa integral</option>
+        <option value="mixto">Servicios mixtos</option>
+      </select>
+
+      <label>Plan</label>
+      <select x-model="plan">
+        <option value="basico">Básico — 1 profesional · $35.000/mes</option>
+        <option value="estandar">Estándar — hasta 3 profesionales · $35.000/mes</option>
+        <option value="premium">Premium — hasta 6 profesionales · $45.000/mes</option>
+      </select>
+
+      <label>Teléfono / WhatsApp</label>
+      <input x-model="telefono" inputmode="tel" placeholder="3001234567">
+
+      <label>Correo electrónico</label>
+      <input type="email" x-model="email" placeholder="tu@correo.com">
+
+      <label>Contraseña</label>
+      <input type="password" x-model="password" placeholder="Mínimo 8 caracteres"
+             @keyup.enter="crear">
+
+      <p class="error" x-text="error" x-show="error"></p>
+      <br>
+      <button @click="crear" x-text="cargando ? 'Creando…' : 'Crear mi cuenta'"></button>
+      <p class="muted" style="margin-top:12px; text-align:center">
+        ¿Ya tienes cuenta? <a href="/panel/login">Ingresa aquí</a>
+      </p>
+    </div>
+  </template>
+
+  <template x-if="listo">
+    <div>
+      <p class="ok">¡Listo! Tu cuenta quedó creada.</p>
+      <div class="card" style="background:#EAF2FA; margin-top:12px">
+        <b>Tu enlace público</b>
+        <p class="muted" style="word-break:break-all" x-text="enlace"></p>
+        <p class="muted">Compártelo por WhatsApp para que tus clientes agenden solos.</p>
+      </div>
+      <p class="muted" x-text="'Período de prueba: ' + dias + ' días.'"></p>
+      <br>
+      <a class="btn" href="/panel">Entrar a mi panel</a>
+    </div>
+  </template>
+</div>
+
+<script>
+function registro() {
+  return {
+    nombre_negocio: "", tipo: "barberia", plan: "basico",
+    telefono: "", email: "", password: "",
+    error: "", cargando: false, listo: false, enlace: "", dias: 0,
+
+    // Lee la cookie CSRF. Necesaria porque DRF tiene SessionAuthentication
+    // activa: si el navegador trae una sesión (por ejemplo, del /admin/),
+    // exige el token aunque el endpoint sea AllowAny.
+    csrf() {
+      const m = document.cookie.match(/(^|;)\s*csrftoken=([^;]+)/);
+      return m ? m[2] : null;
+    },
+
+    // Extrae un mensaje legible de cualquier forma de error de DRF.
+    mensajeDe(datos, estado) {
+      if (!datos) return `El servidor respondió ${estado} sin detalle.`;
+      if (typeof datos === "string") return datos;
+      if (datos.detail) return datos.detail;
+      const primera = Object.keys(datos)[0];
+      if (primera) {
+        const v = datos[primera];
+        return Array.isArray(v) ? `${primera}: ${v[0]}` : `${primera}: ${v}`;
+      }
+      return `El servidor respondió ${estado}.`;
+    },
+
+    async crear() {
+      this.error = "";
+      if (!this.nombre_negocio || !this.email || !this.password || !this.telefono) {
+        this.error = "Completa todos los campos."; return;
+      }
+      if (this.password.length < 8) {
+        this.error = "La contraseña debe tener al menos 8 caracteres."; return;
+      }
+      this.cargando = true;
+
+      // Todo el bloque va en try/finally: pase lo que pase, el botón se
+      // desbloquea y el usuario recibe un mensaje. Nunca falla en silencio.
+      try {
+        const cabeceras = { "Content-Type": "application/json" };
+        const t = this.csrf();
+        if (t) cabeceras["X-CSRFToken"] = t;
+
+        const r = await fetch("/api/v1/auth/registro", {
+          method: "POST",
+          headers: cabeceras,
+          body: JSON.stringify({
+            email: this.email, password: this.password,
+            nombre_negocio: this.nombre_negocio, tipo: this.tipo,
+            telefono: this.telefono, plan: this.plan,
+          }),
+        });
+
+        // El cuerpo se lee como texto y luego se intenta parsear: si el
+        // servidor devuelve HTML (página de error 500 de Django), no se
+        // rompe la ejecución y se puede mostrar el código de estado.
+        const crudo = await r.text();
+        let datos = null;
+        try { datos = JSON.parse(crudo); } catch (e) { datos = null; }
+
+        if (!r.ok) {
+          this.error = this.mensajeDe(datos, r.status);
+          console.error("Registro falló", r.status, crudo.slice(0, 500));
+          return;
+        }
+
+        localStorage.setItem("glowbot_access", datos.access);
+        localStorage.setItem("glowbot_refresh", datos.refresh);
+        this.enlace = window.location.origin + datos.establecimiento.enlace_publico;
+        this.dias = datos.suscripcion.dias_restantes;
+        this.listo = true;
+      } catch (e) {
+        this.error = "No se pudo contactar el servidor. Revisa que esté corriendo.";
+        console.error("Registro: error de red", e);
+      } finally {
+        this.cargando = false;
+      }
+    },
+  };
+}
+</script>
+{% endblock %}

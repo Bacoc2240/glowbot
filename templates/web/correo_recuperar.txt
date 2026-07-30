@@ -1,0 +1,15 @@
+Hola,
+
+Recibimos una solicitud para restablecer la contraseña de tu cuenta en GlowBot.
+
+Abre este enlace para crear una nueva contraseña:
+
+{{ protocol }}://{{ domain }}{% url 'password_reset_confirm' uidb64=uid token=token %}
+
+El enlace vence en 24 horas y solo puede usarse una vez.
+
+Si no solicitaste este cambio, ignora este mensaje: tu contraseña actual
+sigue funcionando y nadie ha accedido a tu cuenta.
+
+GlowBot — agendamiento inteligente
+Saravena, Arauca

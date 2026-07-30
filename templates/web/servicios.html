@@ -81,9 +81,5 @@ function config() {
 </script>
 {% endblock %}
 {% block nav %}
-<nav class="abajo">
-  <a href="/panel">Agenda</a>
-  <a href="/panel/servicios" class="activo">Servicios</a>
-  <a href="/panel/horarios">Horarios</a>
-</nav>
+{% include "web/_nav.html" with activo="servicios" %}
 {% endblock %}

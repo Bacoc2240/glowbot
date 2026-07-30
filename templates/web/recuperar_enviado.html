@@ -1,0 +1,14 @@
+{% extends "web/base.html" %}
+{% block titulo %}Revisa tu correo — GlowBot{% endblock %}
+{% block contenido %}
+<div class="card">
+  <h2>Revisa tu correo</h2>
+  <p class="ok">Si existe una cuenta con ese correo, ya enviamos el enlace.</p>
+  <p class="muted" style="margin-top:10px">
+    El enlace vence en 24 horas y solo puede usarse una vez. Si no lo ves en
+    unos minutos, revisa la carpeta de correo no deseado.
+  </p>
+  <br>
+  <a class="btn" href="/panel/login">Volver a ingresar</a>
+</div>
+{% endblock %}

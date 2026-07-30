@@ -7,3 +7,5 @@ staticfiles/
 venv/
 
 staticfiles/
+
+media/

@@ -1,0 +1,35 @@
+{% extends "web/base.html" %}
+{% block titulo %}Nueva contraseña — GlowBot{% endblock %}
+{% block contenido %}
+{% if validlink %}
+<div class="card">
+  <h2>Crea tu nueva contraseña</h2>
+  <p class="muted">Debe tener al menos 8 caracteres y no ser demasiado común.</p>
+  <form method="post">
+    {% csrf_token %}
+    <label for="id_new_password1">Nueva contraseña</label>
+    <input type="password" name="new_password1" id="id_new_password1" required
+           autocomplete="new-password">
+    <label for="id_new_password2">Repite la contraseña</label>
+    <input type="password" name="new_password2" id="id_new_password2" required
+           autocomplete="new-password">
+    {% if form.errors %}
+      {% for campo, errores in form.errors.items %}
+        {% for e in errores %}<p class="error">{{ e }}</p>{% endfor %}
+      {% endfor %}
+    {% endif %}
+    <br>
+    <button type="submit">Guardar contraseña</button>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <h2>El enlace ya no sirve</h2>
+  <p class="error">
+    Este enlace venció o ya fue usado. Solicita uno nuevo.
+  </p>
+  <br>
+  <a class="btn" href="/panel/recuperar">Pedir otro enlace</a>
+</div>
+{% endif %}
+{% endblock %}

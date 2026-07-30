@@ -3,6 +3,22 @@
 {% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
 {% block contenido %}
 <div x-data="panel()" x-init="cargar()">
+  <!-- Banner de suscripción (RF-20) -->
+  <div class="card" x-show="sub && sub.estado !== 'activa'"
+       :style="sub && sub.dias_restantes < 0
+               ? 'background:#FDECEA;border-color:#E6B0AA'
+               : 'background:#FEF8E3;border-color:#E8D48B'">
+    <b x-show="sub && sub.estado === 'prueba' && sub.dias_restantes >= 0"
+       x-text="'Período de prueba: ' + sub.dias_restantes + ' día(s) restantes'"></b>
+    <b x-show="sub && sub.estado === 'suspendida'" style="color:var(--rojo)">
+      Servicio suspendido por falta de pago</b>
+    <b x-show="sub && sub.estado === 'prueba' && sub.dias_restantes < 0"
+       style="color:var(--rojo)">Tu prueba venció</b>
+    <div class="muted" style="margin-top:4px"
+         x-text="'Plan ' + sub.plan_nombre + ' · $' + sub.precio_mensual.toLocaleString('es-CO') + '/mes'"></div>
+    <a class="btn" style="margin-top:8px" href="/panel/suscripcion">Ver mi suscripción</a>
+  </div>
+
   <div class="card">
     <div class="fila">
       <div><h2 x-text="'Agenda · ' + fecha"></h2></div>
@@ -52,10 +68,18 @@
 function panel() {
   return {
     fecha: new Date().toISOString().slice(0, 10),
-    citas: [], notificaciones: [],
+    citas: [], notificaciones: [], sub: null,
     get canceladas() { return this.citas.filter(c => c.estado.startsWith("cancelada")).length; },
     get confirmadas() { return this.citas.filter(c => c.estado === "confirmada").length; },
-    async cargar() { await this.cargarCitas(); await this.cargarNotifs(); },
+    async cargar() {
+      await this.cargarSuscripcion();
+      await this.cargarCitas();
+      await this.cargarNotifs();
+    },
+    async cargarSuscripcion() {
+      const r = await api("/mi-suscripcion");
+      if (r && r.ok) this.sub = await r.json();
+    },
     async cargarCitas() {
       const r = await api(`/citas?fecha=${this.fecha}`);
       if (r && r.ok) { const d = await r.json(); this.citas = d.results || d; }
@@ -74,9 +98,5 @@ function panel() {
 </script>
 {% endblock %}
 {% block nav %}
-<nav class="abajo">
-  <a href="/panel" class="activo">Agenda</a>
-  <a href="/panel/servicios">Servicios</a>
-  <a href="/panel/horarios">Horarios</a>
-</nav>
+{% include "web/_nav.html" with activo="agenda" %}
 {% endblock %}

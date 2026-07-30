@@ -1,0 +1,25 @@
+{% extends "web/base.html" %}
+{% block titulo %}Recuperar contraseña — GlowBot{% endblock %}
+{% block contenido %}
+<div class="card">
+  <h2>Recuperar contraseña</h2>
+  <p class="muted">
+    Escribe el correo con el que registraste tu negocio. Te enviaremos un
+    enlace para crear una contraseña nueva.
+  </p>
+  <form method="post">
+    {% csrf_token %}
+    <label for="id_email">Correo electrónico</label>
+    <input type="email" name="email" id="id_email" required
+           autocomplete="email" placeholder="tu@correo.com">
+    {% if form.email.errors %}
+      <p class="error">{{ form.email.errors.0 }}</p>
+    {% endif %}
+    <br>
+    <button type="submit">Enviar enlace</button>
+  </form>
+  <p class="muted" style="margin-top:12px; text-align:center">
+    <a href="/panel/login">Volver a ingresar</a>
+  </p>
+</div>
+{% endblock %}

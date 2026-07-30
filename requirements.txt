@@ -7,3 +7,10 @@ whitenoise
 gunicorn
 drf-spectacular
 anthropic
+# ── Sprint 4.1: suscripciones y pagos ──
+python-dateutil
+Pillow
+django-cloudinary-storage
+cloudinary
+# ── Despliegue ──
+dj-database-url

@@ -42,12 +42,21 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
             border-radius: 999px; padding: 3px 10px; font-size: 12px; }
     .error { color: var(--rojo); font-size: 13px; margin-top: 6px; }
     .ok { color: var(--verde); font-size: 13px; margin-top: 6px; }
+    /* Barra inferior: se centra y limita a 640px para acompanar a <main>
+       en escritorio; en movil ocupa todo el ancho. */
     nav.abajo { position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
-                border-top: 1px solid var(--borde); display: flex; }
-    nav.abajo a { flex: 1; text-align: center; padding: 10px 0; font-size: 12px;
+                border-top: 1px solid var(--borde); display: flex;
+                max-width: 640px; margin: 0 auto;
+                padding-bottom: env(safe-area-inset-bottom, 0px); }
+    /* min-height 56px: por encima del minimo tactil recomendado
+       (48dp Material / 44pt Apple). */
+    nav.abajo a { flex: 1; display: flex; flex-direction: column;
+                  align-items: center; justify-content: center; gap: 3px;
+                  min-height: 56px; padding: 7px 0 9px; font-size: 12px;
                   color: var(--gris); text-decoration: none; }
+    nav.abajo a svg { width: 22px; height: 22px; }
     nav.abajo a.activo { color: var(--azul); font-weight: 600; }
-    .espacio-nav { height: 64px; }
+    .espacio-nav { height: 76px; }
     .muted { color: var(--gris); font-size: 13px; }
   </style>
 </head>
@@ -77,8 +86,31 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
     function salir() {
       localStorage.removeItem("glowbot_access");
       localStorage.removeItem("glowbot_refresh");
-      window.location = "/panel/login";
+      // replace() y no asignacion: elimina la pagina del historial para
+      // que "atras" no regrese a ella.
+      window.location.replace("/panel/login");
     }
+
+    // ── Guardia de sesion en el cliente ──
+    // La API ya rechaza con 401 cualquier peticion sin token, asi que los
+    // DATOS estan protegidos en el servidor. Lo que esta guardia protege es
+    // la VISTA ya pintada: al cerrar sesion y pulsar "atras", el navegador
+    // restaura la pagina desde el bfcache sin re-ejecutar los scripts, y la
+    // agenda con datos de clientes quedaria visible en pantalla.
+    function requiereSesion() {
+      const p = window.location.pathname;
+      return p.startsWith("/panel")
+          && !p.startsWith("/panel/login")
+          && !p.startsWith("/panel/recuperar");
+    }
+    function verificarSesion() {
+      if (requiereSesion() && !token()) {
+        document.body.style.display = "none";  // evita el parpadeo de datos
+        window.location.replace("/panel/login");
+      }
+    }
+    verificarSesion();                                  // al cargar
+    window.addEventListener("pageshow", verificarSesion); // al volver con "atras"
   </script>
 </body>
 </html>

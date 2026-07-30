@@ -1,5 +1,8 @@
-"""Rutas de GlowBot — API (§1) + frontend web (Sprint 4)."""
+"""Rutas de GlowBot — API (§1) + frontend web (Sprint 4 y 4.1)."""
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
+from django.contrib.auth import views as auth_views
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -13,7 +16,16 @@ from agenda.api import CitaViewSet, DisponibilidadView, NotificacionesView
 from asistente.api import (
     CancelarCitaPublicaView, ChatView, ConsultarCitaPublicaView, InfoPublicaView,
 )
-from web.views import chat_publico, HorariosView, LoginView, PanelView, ServiciosView
+from facturacion.views import (
+    ColaPagosView, ConfirmarPagoView, MiSuscripcionView, MisPagosView,
+    RechazarPagoView,
+)
+# Alias: web.RegistroView es la PAGINA; cuentas.api.RegistroView es el ENDPOINT.
+# Sin el alias, el segundo import sombrea al primero (colision de nombres).
+from web.views import (
+    chat_publico, HorariosView, LoginView, PanelView,
+    RegistroView as RegistroPaginaView, salud, ServiciosView, SuscripcionView,
+)
 
 router = DefaultRouter(trailing_slash=False)
 router.register("servicios", ServicioViewSet, basename="servicio")
@@ -44,6 +56,14 @@ api_v1 = [
          ConsultarCitaPublicaView.as_view(), name="consultar-cita-publica"),
     path("p/<slug:slug>/citas/cancelar",
          CancelarCitaPublicaView.as_view(), name="cancelar-cita-publica"),
+    # Suscripcion y pagos — Sprint 4.1 (§9)
+    path("mi-suscripcion", MiSuscripcionView.as_view(), name="mi-suscripcion"),
+    path("mi-suscripcion/pagos", MisPagosView.as_view(), name="mis-pagos"),
+    path("admin/pagos", ColaPagosView.as_view(), name="cola-pagos"),
+    path("admin/pagos/<int:pago_id>/confirmar",
+         ConfirmarPagoView.as_view(), name="confirmar-pago"),
+    path("admin/pagos/<int:pago_id>/rechazar",
+         RechazarPagoView.as_view(), name="rechazar-pago"),
     # CRUD del panel (§5, §7)
     path("", include(router.urls)),
 ]
@@ -52,10 +72,37 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", include(api_v1)),
     # ── Frontend (Capa de Presentación, Sprint 4) ──
+    # Sonda de salud para el healthcheck de Railway (no requiere sesion)
+    path("salud", salud, name="salud"),
+    path("registro", RegistroPaginaView.as_view(), name="web-registro"),
     path("panel/login", LoginView.as_view(), name="web-login"),
+    # Recuperacion de contrasena (RF-22). Se usan las vistas de Django, que
+    # ya implementan token firmado con expiracion y no revelan si el correo
+    # existe; solo se personalizan las plantillas para conservar el estilo.
+    path("panel/recuperar", auth_views.PasswordResetView.as_view(
+        template_name="web/recuperar.html",
+        email_template_name="web/correo_recuperar.txt",
+        subject_template_name="web/correo_recuperar_asunto.txt",
+        success_url="/panel/recuperar/enviado",
+    ), name="password_reset"),
+    path("panel/recuperar/enviado", auth_views.PasswordResetDoneView.as_view(
+        template_name="web/recuperar_enviado.html",
+    ), name="password_reset_done"),
+    path("panel/recuperar/<uidb64>/<token>", auth_views.PasswordResetConfirmView.as_view(
+        template_name="web/recuperar_confirmar.html",
+        success_url="/panel/recuperar/listo",
+    ), name="password_reset_confirm"),
+    path("panel/recuperar/listo", auth_views.PasswordResetCompleteView.as_view(
+        template_name="web/recuperar_listo.html",
+    ), name="password_reset_complete"),
     path("panel/servicios", ServiciosView.as_view(), name="web-servicios"),
     path("panel/horarios", HorariosView.as_view(), name="web-horarios"),
+    path("panel/suscripcion", SuscripcionView.as_view(), name="web-suscripcion"),
     path("panel", PanelView.as_view(), name="web-panel"),
     # Enlace público que se comparte por WhatsApp/Instagram
     path("p/<slug:slug>", chat_publico, name="web-chat"),
 ]
+
+# Comprobantes de pago en desarrollo (en produccion los sirve Cloudinary)
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

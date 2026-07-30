@@ -3,6 +3,12 @@
 Endpoints sin autenticación, identificados por el slug del establecimiento.
 El chat tiene límite de peticiones (429) para control anti-abuso y de costos
 de IA (Sistema de Prompts §8).
+
+Sprint 4.1 (RN-10): si la suscripcion del establecimiento esta suspendida,
+se bloquean la informacion publica y el chat (nuevas reservas y consumo de
+tokens de IA). NO se bloquean consultar ni cancelar cita: un cliente final
+que ya reservo debe poder gestionar su cita aunque el negocio no haya
+pagado; penalizarlo seria trasladarle un problema ajeno.
 """
 import uuid
 
@@ -14,6 +20,7 @@ from rest_framework.views import APIView
 
 from negocios.models import Establecimiento, Profesional, Servicio
 from agenda.services import AgendaService
+from facturacion.services import SuscripcionService
 from .services import IAService
 
 
@@ -22,6 +29,19 @@ def _establecimiento_por_slug(slug):
         return Establecimiento.objects.get(slug=slug, activo=True)
     except Establecimiento.DoesNotExist:
         return None
+
+
+def _respuesta_suspendido():
+    """RN-10 — la suscripcion vencio sin pago: la zona publica queda
+    fuera de servicio. Se responde 403 con un mensaje neutro para el
+    cliente final, que no tiene por que enterarse del estado de pago
+    del negocio."""
+    return Response(
+        {"error": "Este negocio no esta recibiendo reservas en linea "
+                  "por el momento. Comunicate directamente con el "
+                  "establecimiento."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 class ChatThrottle(AnonRateThrottle):
@@ -37,6 +57,8 @@ class InfoPublicaView(APIView):
         if not est:
             return Response({"error": "Establecimiento no encontrado."},
                             status=status.HTTP_404_NOT_FOUND)
+        if not SuscripcionService.acceso_activo(est):
+            return _respuesta_suspendido()
         servicios = Servicio.objects.filter(establecimiento=est, activo=True)
         profesionales = Profesional.objects.filter(establecimiento=est, activo=True)
         return Response({
@@ -64,6 +86,8 @@ class ChatView(APIView):
         if not est:
             return Response({"error": "Establecimiento no encontrado."},
                             status=status.HTTP_404_NOT_FOUND)
+        if not SuscripcionService.acceso_activo(est):
+            return _respuesta_suspendido()
         mensaje = (request.data.get("mensaje") or "").strip()
         if not mensaje:
             return Response({"error": "El campo 'mensaje' es obligatorio."},

@@ -2,6 +2,7 @@
 from datetime import date, time
 from urllib.parse import unquote
 
+from django.core import mail
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -192,3 +193,108 @@ class FrontendTest(BaseSprint4Test):
         r = self.client.get("/panel/login")
         self.assertContains(r, "alpinejs")
         self.assertContains(r, "width=device-width")
+
+
+class RecuperarContrasenaTest(TestCase):
+    """RF-22: recuperacion de contrasena por correo (vistas de Django con
+    plantillas propias)."""
+
+    def setUp(self):
+        self.usuario = Usuario.objects.create_user(
+            email="duenio@barberia.com", password="claveVieja123",
+        )
+
+    def test_pagina_recuperar_carga(self):
+        r = self.client.get("/panel/recuperar")
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "Recuperar contrase\u00f1a")
+
+    def test_login_enlaza_a_recuperar(self):
+        r = self.client.get("/panel/login")
+        self.assertContains(r, "/panel/recuperar")
+
+    def test_solicitud_envia_correo_con_enlace(self):
+        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("/panel/recuperar/", mail.outbox[0].body)
+
+    def test_correo_inexistente_no_revela_nada(self):
+        """No debe distinguirse de una solicitud valida: misma redireccion,
+        sin correo enviado."""
+        r = self.client.post("/panel/recuperar", {"email": "nadie@ninguna.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_flujo_completo_cambia_la_contrasena(self):
+        self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        enlace = [l for l in mail.outbox[0].body.split() if "/panel/recuperar/" in l][0]
+        ruta = enlace.split("8000")[-1] if "8000" in enlace else \
+            "/panel/recuperar/" + enlace.split("/panel/recuperar/")[1]
+        # La vista redirige a una URL con el token en sesion antes del formulario.
+        r = self.client.get(ruta, follow=True)
+        self.assertEqual(r.status_code, 200)
+        r = self.client.post(r.redirect_chain[-1][0] if r.redirect_chain else ruta, {
+            "new_password1": "claveNueva456", "new_password2": "claveNueva456",
+        }, follow=True)
+        self.usuario.refresh_from_db()
+        self.assertTrue(self.usuario.check_password("claveNueva456"))
+
+    def test_enlace_invalido_muestra_aviso(self):
+        r = self.client.get("/panel/recuperar/MQ/inventado-123", follow=True)
+        self.assertContains(r, "El enlace ya no sirve")
+
+
+class SesionCerradaTest(TestCase):
+    """Cierre de sesion: los datos quedan protegidos en el servidor y la vista
+    ya pintada no debe poder recuperarse con el boton 'atras' (bfcache)."""
+
+    def setUp(self):
+        self.api = APIClient()
+        usuario = Usuario.objects.create_user(
+            email="admin@barberia.com", password="clave12345",
+        )
+        Establecimiento.objects.create(
+            propietario=usuario, nombre="Barberia Test",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+        )
+
+    def test_api_rechaza_sin_token(self):
+        """La proteccion real: sin token no se obtiene ningun dato."""
+        for ruta in ["/api/v1/citas", "/api/v1/notificaciones",
+                     "/api/v1/mi-suscripcion", "/api/v1/mi-suscripcion/pagos"]:
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.api.get(ruta).status_code, 401)
+
+    def test_paginas_del_panel_traen_guardia_de_sesion(self):
+        """Cada pagina protegida incluye la verificacion que se dispara
+        tambien al restaurarse desde el bfcache."""
+        for ruta in ["/panel", "/panel/servicios", "/panel/horarios",
+                     "/panel/suscripcion"]:
+            with self.subTest(ruta=ruta):
+                html = self.client.get(ruta).content.decode()
+                self.assertIn("verificarSesion", html)
+                self.assertIn('addEventListener("pageshow"', html)
+
+    def test_login_y_recuperar_no_exigen_sesion(self):
+        """Las pantallas publicas del panel no deben auto-redirigir."""
+        for ruta in ["/panel/login", "/panel/recuperar"]:
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.client.get(ruta).status_code, 200)
+
+    def test_salir_usa_replace_para_no_dejar_historial(self):
+        html = self.client.get("/panel/login").content.decode()
+        self.assertIn('window.location.replace("/panel/login")', html)
+
+
+class SaludTest(TestCase):
+    """Sonda de salud usada por el healthcheck de Railway."""
+
+    def test_salud_responde_ok(self):
+        r = self.client.get("/salud")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["estado"], "ok")
+
+    def test_salud_no_requiere_sesion(self):
+        """Railway consulta sin credenciales; debe responder igual."""
+        self.assertEqual(self.client.get("/salud").status_code, 200)

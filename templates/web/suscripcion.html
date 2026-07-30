@@ -1,0 +1,126 @@
+{% extends "web/base.html" %}
+{% block titulo %}Mi suscripción — GlowBot{% endblock %}
+{% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
+{% block contenido %}
+<div x-data="suscripcion()" x-init="cargar()">
+
+  <div class="card" x-show="sub">
+    <h2>Mi suscripción</h2>
+    <div class="fila" style="margin-top:8px">
+      <div>
+        <div class="muted">Estado</div>
+        <b x-text="etiquetaEstado()"
+           :style="sub.estado === 'suspendida' ? 'color:var(--rojo)' : ''"></b>
+      </div>
+      <div>
+        <div class="muted">Vence</div>
+        <b x-text="sub.fecha_vencimiento_actual"></b>
+      </div>
+    </div>
+    <div class="fila" style="margin-top:10px">
+      <div>
+        <div class="muted">Plan</div>
+        <b x-text="sub.plan_nombre"></b>
+      </div>
+      <div>
+        <div class="muted">Valor mensual</div>
+        <b x-text="'$' + sub.precio_mensual.toLocaleString('es-CO')"></b>
+      </div>
+    </div>
+  </div>
+
+  <!-- Carga del comprobante (RF-21) -->
+  <div class="card">
+    <h2>Registrar un pago</h2>
+    <p class="muted">
+      Transfiere el valor mensual por Nequi o Daviplata y sube la captura del
+      comprobante. Verificaremos el pago y tu servicio queda al día.
+    </p>
+
+    <label>Método de pago</label>
+    <select x-model="metodo">
+      <option value="nequi">Nequi</option>
+      <option value="daviplata">Daviplata</option>
+    </select>
+
+    <label>Comprobante (captura de pantalla)</label>
+    <input type="file" accept="image/*" @change="archivo = $event.target.files[0]">
+
+    <p class="error" x-text="error" x-show="error"></p>
+    <p class="ok" x-text="ok" x-show="ok"></p>
+    <br>
+    <button @click="enviar" x-text="cargando ? 'Enviando…' : 'Enviar comprobante'"></button>
+  </div>
+
+  <div class="card">
+    <h2>Historial de pagos</h2>
+    <template x-for="p in pagos" :key="p.id">
+      <div style="border-bottom:1px solid var(--borde); padding:8px 0">
+        <div class="fila">
+          <div>
+            <b x-text="'Período ' + p.periodo"></b>
+            <div class="muted" x-text="p.metodo + ' · $' + Number(p.monto).toLocaleString('es-CO')"></div>
+          </div>
+          <div style="max-width:130px; text-align:right">
+            <span class="chip" x-text="etiquetaPago(p.estado)"
+                  :style="p.estado === 'confirmado' ? 'background:#E5F4EA;color:var(--verde)'
+                        : p.estado === 'rechazado' ? 'background:#FDECEA;color:var(--rojo)' : ''"></span>
+          </div>
+        </div>
+        <div class="error" x-show="p.motivo_rechazo" x-text="p.motivo_rechazo"></div>
+      </div>
+    </template>
+    <p class="muted" x-show="!pagos.length">Aún no has registrado pagos.</p>
+  </div>
+  <div class="espacio-nav"></div>
+</div>
+
+<script>
+function suscripcion() {
+  return {
+    sub: null, pagos: [], metodo: "nequi", archivo: null,
+    error: "", ok: "", cargando: false,
+    // La etiqueta legible la envía el serializer (get_estado_display),
+    // así no se duplica el diccionario de estados en el cliente.
+    etiquetaEstado() { return this.sub.estado_nombre || this.sub.estado; },
+    etiquetaPago(e) {
+      const m = { pendiente_verificacion: "En revisión", confirmado: "Confirmado",
+                  rechazado: "Rechazado" };
+      return m[e] || e;
+    },
+    async cargar() {
+      const r = await api("/mi-suscripcion");
+      if (r && r.ok) this.sub = await r.json();
+      await this.cargarPagos();
+    },
+    async cargarPagos() {
+      const r = await api("/mi-suscripcion/pagos");
+      if (r && r.ok) this.pagos = await r.json();
+    },
+    async enviar() {
+      this.error = ""; this.ok = "";
+      if (!this.archivo) { this.error = "Selecciona la imagen del comprobante."; return; }
+      this.cargando = true;
+      // multipart: no se envía Content-Type manual, lo pone el navegador.
+      const datos = new FormData();
+      datos.append("metodo", this.metodo);
+      datos.append("comprobante", this.archivo);
+      const r = await fetch("/api/v1/mi-suscripcion/pagos", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token() },
+        body: datos,
+      });
+      this.cargando = false;
+      if (!r.ok) { this.error = "No se pudo enviar el comprobante."; return; }
+      this.ok = "Comprobante recibido. Lo verificaremos pronto.";
+      this.archivo = null;
+      await this.cargarPagos();
+    },
+  };
+}
+</script>
+{% endblock %}
+
+{% block nav %}
+{% include "web/_nav.html" with activo="cuenta" %}
+{% endblock %}

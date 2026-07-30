@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "negocios",
     "agenda",
     "asistente",
+    "facturacion",
     "web",
 ]
 
@@ -79,6 +80,37 @@ DATABASES = {
 # ── Usuario personalizado: email como credencial (RF-01) ──
 AUTH_USER_MODEL = "cuentas.Usuario"
 
+# ── Base de datos gestionada (Railway) ──
+# Railway inyecta DATABASE_URL; si existe, prevalece sobre las variables DB_*.
+# conn_max_age reutiliza conexiones entre peticiones y CONN_HEALTH_CHECKS
+# descarta las que el proveedor haya cerrado.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if DATABASE_URL:
+    import dj_database_url
+
+    DATABASES["default"] = dj_database_url.parse(
+        DATABASE_URL, conn_max_age=600, conn_health_checks=True,
+    )
+
+# ── Correo: recuperación de contraseña (RF-22) ──
+# En desarrollo los mensajes se imprimen en la consola de runserver, de modo
+# que el flujo completo se puede probar sin depender de un servidor SMTP.
+# En producción se define EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+# junto con las credenciales del proveedor.
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv(
+    "DEFAULT_FROM_EMAIL", "GlowBot <no-responder@glowbot.com.co>")
+
+# El enlace de recuperación vence en 24 horas. Django usa 3 días por defecto;
+# se acorta porque da acceso a la cuenta y el usuario lo abre de inmediato.
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -113,6 +145,12 @@ TIME_ZONE = "America/Bogota"
 USE_I18N = True
 USE_TZ = True
 
+# ── Archivos subidos: comprobantes de pago (RF-21) ──
+# En local se guardan en disco. En produccion (Railway) el sistema de
+# archivos es efimero: alli se activa Cloudinary con USAR_CLOUDINARY=True.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
@@ -126,4 +164,70 @@ LOGIN_URL = "/ingresar"
 LOGIN_REDIRECT_URL = "/panel/"
 LOGOUT_REDIRECT_URL = "/ingresar"
 
+# ── Cloudinary: persistencia de comprobantes en produccion (Sprint 4.1) ──
+# Se activa por variable de entorno para no exigir credenciales en local.
+if os.getenv("USAR_CLOUDINARY", "False") == "True":
+    INSTALLED_APPS += ["cloudinary_storage", "cloudinary"]
+    CLOUDINARY_STORAGE = {
+        "CLOUD_NAME": os.getenv("CLOUDINARY_CLOUD_NAME", ""),
+        "API_KEY": os.getenv("CLOUDINARY_API_KEY", ""),
+        "API_SECRET": os.getenv("CLOUDINARY_API_SECRET", ""),
+    }
+    DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ── Seguridad en producción (despliegue Railway + Cloudflare) ──
+# Railway y Cloudflare terminan el TLS y reenvían la petición por HTTP; sin
+# esta cabecera Django creería que la conexión es insegura y entraría en un
+# bucle de redirecciones.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Django 4 exige el origen completo (con esquema) para aceptar POST/CSRF.
+# Se deriva de ALLOWED_HOSTS para no mantener dos listas desincronizadas.
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{h}" for h in (x.strip() for x in ALLOWED_HOSTS)
+    if h and h not in ("localhost", "127.0.0.1", "testserver") and "*" not in h
+]
+
+if not DEBUG:
+    # Redirección a HTTPS. IMPORTANTE: con el proxy de Cloudflare activado
+    # (nube naranja), el modo SSL/TLS debe ser "Full" — NO "Full (strict)",
+    # que exigiría un certificado de origen de Cloudflare en Railway.
+    # Con el modo "Flexible", Cloudflare hablaría HTTP con Railway, Django
+    # redirigiría a HTTPS y se produciría un bucle infinito de redirecciones.
+    SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    # HSTS: se arranca en 1 hora para poder revertir sin quedar bloqueado; se
+    # sube a un año cuando el dominio esté estable (RNF-03).
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "3600"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = False
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = "same-origin"
+    X_FRAME_OPTIONS = "DENY"
+
+# ── Registro de eventos ──
+# Railway captura la salida estándar. Sin este bloque, con DEBUG=False Django
+# no escribe los errores en consola y el logging del asistente (IAService)
+# quedaría invisible en producción.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {"format": "{levelname} {asctime} {name} {message}", "style": "{"},
+    },
+    "handlers": {
+        "consola": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "root": {"handlers": ["consola"], "level": "INFO"},
+    "loggers": {
+        "django.request": {"handlers": ["consola"], "level": "ERROR", "propagate": False},
+        "asistente": {"handlers": ["consola"], "level": "INFO", "propagate": False},
+        "facturacion": {"handlers": ["consola"], "level": "INFO", "propagate": False},
+    },
+}

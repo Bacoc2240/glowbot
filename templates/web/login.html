@@ -10,6 +10,12 @@
   <p class="error" x-text="error" x-show="error"></p>
   <br>
   <button @click="entrar" x-text="cargando ? 'Ingresando…' : 'Ingresar'"></button>
+  <p class="muted" style="margin-top:10px; text-align:center">
+    <a href="/panel/recuperar">¿Olvidaste tu contraseña?</a>
+  </p>
+  <p class="muted" style="margin-top:12px; text-align:center">
+    ¿No tienes cuenta? <a href="/registro">Crea tu prueba gratis</a>
+  </p>
 </div>
 <script>
 function login() {
