@@ -80,6 +80,16 @@ DATABASES = {
 # ── Usuario personalizado: email como credencial (RF-01) ──
 AUTH_USER_MODEL = "cuentas.Usuario"
 
+# ── Hosts de Railway ──
+# El healthcheck de Railway llega con el Host "healthcheck.railway.app"; sin
+# permitirlo Django responde 400 y el despliegue se marca como fallido.
+# RAILWAY_PUBLIC_DOMAIN lo inyecta la plataforma y cambia por proyecto, por eso
+# se agrega automaticamente en vez de escribirlo a mano en ALLOWED_HOSTS.
+ALLOWED_HOSTS += ["healthcheck.railway.app"]
+DOMINIO_RAILWAY = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+if DOMINIO_RAILWAY:
+    ALLOWED_HOSTS.append(DOMINIO_RAILWAY)
+
 # ── Base de datos gestionada (Railway) ──
 # Railway inyecta DATABASE_URL; si existe, prevalece sobre las variables DB_*.
 # conn_max_age reutiliza conexiones entre peticiones y CONN_HEALTH_CHECKS
@@ -197,6 +207,9 @@ if not DEBUG:
     # Con el modo "Flexible", Cloudflare hablaría HTTP con Railway, Django
     # redirigiría a HTTPS y se produciría un bucle infinito de redirecciones.
     SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "True") == "True"
+    # El healthcheck viaja por HTTP interno: sin esta excepcion Django
+    # responderia 301 hacia HTTPS y Railway lo tomaria como fallo.
+    SECURE_REDIRECT_EXEMPT = [r"^salud$"]
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     # HSTS: se arranca en 1 hora para poder revertir sin quedar bloqueado; se
