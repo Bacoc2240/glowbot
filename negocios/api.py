@@ -4,8 +4,10 @@ establecimiento del usuario autenticado (aislamiento multi-tenant, RF-02).
 """
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import HorarioBase, Profesional, Servicio
+from .models import Establecimiento, HorarioBase, Profesional, Servicio
 
 
 class _EstablecimientoMixin:
@@ -261,3 +263,93 @@ class _ProfesionalDelTenant(APIView):
     def _profesional(self, request, pk):
         est = request.user.establecimientos.first()
         return Profesional.objects.get(pk=pk, establecimiento=est)
+
+
+# ── Enlace público del establecimiento (Sprint 4.1) ──
+
+class MiEstablecimientoSerializer(serializers.ModelSerializer):
+    """Datos del propio negocio, incluido el slug que forma el enlace
+    público. El slug es el activo comercial del cliente: es lo que comparte
+    por WhatsApp, así que debe poder consultarlo siempre, no solo al
+    registrarse."""
+
+    class Meta:
+        model = Establecimiento
+        fields = ["nombre", "slug", "tipo", "telefono", "direccion", "plan"]
+        read_only_fields = ["plan"]
+
+
+# Rutas propias de la aplicacion que no pueden usarse como slug: si un
+# establecimiento tomara "panel" o "registro", su enlace publico chocaria
+# con una pagina del sistema.
+SLUGS_RESERVADOS = {
+    "panel", "registro", "admin", "api", "salud", "static", "media",
+    "p", "login", "logout", "recuperar", "cuenta", "suscripcion",
+}
+
+
+class SlugSerializer(serializers.Serializer):
+    """Cambio del slug (RF-09). Se valida aparte del resto de campos porque
+    tiene consecuencias externas: los enlaces ya compartidos dejan de
+    funcionar."""
+
+    slug = serializers.SlugField(min_length=3, max_length=60)
+
+    def validate_slug(self, valor):
+        valor = valor.lower().strip("-")
+        if valor in SLUGS_RESERVADOS:
+            raise serializers.ValidationError(
+                "Esa dirección está reservada por el sistema. Elige otra."
+            )
+        if valor.isdigit():
+            raise serializers.ValidationError(
+                "La dirección no puede ser solo números."
+            )
+        actual = self.context.get("establecimiento")
+        existe = Establecimiento.objects.filter(slug=valor)
+        if actual:
+            existe = existe.exclude(pk=actual.pk)
+        if existe.exists():
+            raise serializers.ValidationError(
+                "Esa dirección ya está en uso por otro negocio."
+            )
+        return valor
+
+
+class MiEstablecimientoView(APIView):
+    """GET  → datos del negocio con su enlace público.
+    PATCH → cambio del slug.
+
+    El cambio de slug rompe los enlaces ya compartidos por el cliente con
+    sus propios clientes finales; la advertencia se muestra en la interfaz
+    antes de confirmar, y la respuesta devuelve el slug anterior para poder
+    informarlo."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _establecimiento(self):
+        return self.request.user.establecimientos.first()
+
+    def get(self, request):
+        est = self._establecimiento()
+        if est is None:
+            return Response({"detail": "Sin establecimiento."}, status=404)
+        return Response(MiEstablecimientoSerializer(est).data)
+
+    def patch(self, request):
+        est = self._establecimiento()
+        if est is None:
+            return Response({"detail": "Sin establecimiento."}, status=404)
+        ser = SlugSerializer(data=request.data, context={"establecimiento": est})
+        ser.is_valid(raise_exception=True)
+        anterior = est.slug
+        est.slug = ser.validated_data["slug"]
+        est.save(update_fields=["slug"])
+        return Response({
+            "slug": est.slug,
+            "slug_anterior": anterior,
+            "aviso": (
+                f"El enlace anterior (/p/{anterior}) dejó de funcionar. "
+                "Comparte la nueva dirección con tus clientes."
+            ),
+        })

@@ -3,6 +3,38 @@
 {% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
 {% block contenido %}
 <div x-data="panel()" x-init="cargar()">
+  <!-- Enlace publico: es el activo que el negocio comparte con sus clientes -->
+  <div class="card" x-show="est" style="background:#EAF2FA">
+    <b>Tu enlace para clientes</b>
+    <p class="muted" style="word-break:break-all; margin:6px 0"
+       x-text="enlace()"></p>
+    <div style="display:flex; gap:8px; flex-wrap:wrap">
+      <button @click="copiar()" style="flex:1; min-width:120px"
+              x-text="copiado ? '¡Copiado!' : 'Copiar enlace'"></button>
+      <a class="btn" style="flex:1; min-width:120px; text-align:center"
+         :href="'https://wa.me/?text=' + encodeURIComponent('Agenda tu cita aquí: ' + enlace())"
+         target="_blank">Compartir</a>
+    </div>
+    <p class="muted" style="margin-top:8px">
+      <a href="#" @click.prevent="editando = !editando">Cambiar dirección</a>
+    </p>
+
+    <div x-show="editando" style="border-top:1px solid var(--borde); padding-top:10px">
+      <p class="error" style="margin-bottom:8px">
+        Atención: al cambiar la dirección, el enlace anterior deja de
+        funcionar. Los clientes que ya lo tengan guardado no podrán agendar
+        hasta que les compartas el nuevo.
+      </p>
+      <label>Nueva dirección</label>
+      <input x-model="slugNuevo" placeholder="mi-barberia" @keyup.enter="guardarSlug()">
+      <p class="muted" x-text="'Quedará: ' + origen() + '/p/' + (slugNuevo || '...')"></p>
+      <p class="error" x-text="errorSlug" x-show="errorSlug"></p>
+      <p class="ok" x-text="okSlug" x-show="okSlug"></p>
+      <br>
+      <button @click="guardarSlug()" x-text="guardando ? 'Guardando…' : 'Guardar dirección'"></button>
+    </div>
+  </div>
+
   <!-- Banner de suscripción (RF-20) -->
   <div class="card" x-show="sub && sub.estado !== 'activa'"
        :style="sub && sub.dias_restantes < 0
@@ -69,12 +101,61 @@ function panel() {
   return {
     fecha: new Date().toISOString().slice(0, 10),
     citas: [], notificaciones: [], sub: null,
+    est: null, editando: false, slugNuevo: "", copiado: false,
+    errorSlug: "", okSlug: "", guardando: false,
     get canceladas() { return this.citas.filter(c => c.estado.startsWith("cancelada")).length; },
     get confirmadas() { return this.citas.filter(c => c.estado === "confirmada").length; },
     async cargar() {
+      await this.cargarEstablecimiento();
       await this.cargarSuscripcion();
       await this.cargarCitas();
       await this.cargarNotifs();
+    },
+    origen() { return window.location.origin; },
+    enlace() { return this.est ? this.origen() + "/p/" + this.est.slug : ""; },
+    async cargarEstablecimiento() {
+      const r = await api("/mi-establecimiento");
+      if (r && r.ok) {
+        this.est = await r.json();
+        this.slugNuevo = this.est.slug;
+      }
+    },
+    async copiar() {
+      try {
+        await navigator.clipboard.writeText(this.enlace());
+      } catch (e) {
+        // navigator.clipboard exige contexto seguro (HTTPS); en HTTP local
+        // se recurre al metodo antiguo para no dejar al usuario sin copiar.
+        const t = document.createElement("textarea");
+        t.value = this.enlace();
+        document.body.appendChild(t); t.select();
+        document.execCommand("copy"); document.body.removeChild(t);
+      }
+      this.copiado = true;
+      setTimeout(() => { this.copiado = false; }, 2000);
+    },
+    async guardarSlug() {
+      this.errorSlug = ""; this.okSlug = "";
+      const nuevo = (this.slugNuevo || "").trim().toLowerCase();
+      if (!nuevo) { this.errorSlug = "Escribe una direccion."; return; }
+      if (nuevo === this.est.slug) { this.errorSlug = "Es la direccion actual."; return; }
+      this.guardando = true;
+      const r = await api("/mi-establecimiento", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: nuevo }),
+      });
+      this.guardando = false;
+      if (!r) return;
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        this.errorSlug = (d && d.slug && d.slug[0]) || "No se pudo cambiar la direccion.";
+        return;
+      }
+      this.est.slug = d.slug;
+      this.slugNuevo = d.slug;
+      this.okSlug = d.aviso;
+      this.editando = false;
     },
     async cargarSuscripcion() {
       const r = await api("/mi-suscripcion");

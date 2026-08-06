@@ -12,6 +12,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
 from PIL import Image
 
 from cuentas.models import Usuario
@@ -306,3 +307,77 @@ class RegistroEndpointTests(TestCase):
         )
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.json()["suscripcion"]["precio_mensual"], 35000)
+
+
+class EnlacePublicoTests(BaseFacturacion):
+    """El slug es el activo comercial del cliente: debe poder consultarlo
+    siempre y cambiarlo, asumiendo que rompe los enlaces ya compartidos."""
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.est.propietario)
+
+    def test_consulta_devuelve_el_slug(self):
+        r = self.api.get("/api/v1/mi-establecimiento")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["slug"], self.est.slug)
+
+    def test_cambio_de_slug_actualiza_el_enlace(self):
+        r = self.api.patch("/api/v1/mi-establecimiento",
+                           {"slug": "barberia-eduardo"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.slug, "barberia-eduardo")
+        # La respuesta informa cual era el anterior, para poder avisarlo.
+        self.assertEqual(r.json()["slug_anterior"], "eduardos-barberia")
+
+    def test_enlace_nuevo_funciona_y_el_viejo_no(self):
+        viejo = self.est.slug
+        self.api.patch("/api/v1/mi-establecimiento",
+                       {"slug": "nuevo-nombre"}, format="json")
+        self.assertEqual(self.client.get("/api/v1/p/nuevo-nombre").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/v1/p/{viejo}").status_code, 404)
+
+    def test_slug_duplicado_es_rechazado(self):
+        RegistroService.registrar(
+            email="otro@salon.com", password="clave12345",
+            nombre_negocio="Salon Ocupado", tipo=Establecimiento.Tipo.SALON,
+            telefono="3009998888",
+        )
+        r = self.api.patch("/api/v1/mi-establecimiento",
+                           {"slug": "salon-ocupado"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_slug_reservado_es_rechazado(self):
+        """Un slug como 'panel' chocaria con una ruta del sistema."""
+        for reservado in ["panel", "admin", "api", "registro"]:
+            with self.subTest(slug=reservado):
+                r = self.api.patch("/api/v1/mi-establecimiento",
+                                   {"slug": reservado}, format="json")
+                self.assertEqual(r.status_code, 400)
+
+    def test_slug_invalido_es_rechazado(self):
+        for malo in ["ab", "con espacios", "MAY\u00daSCULAS!", "123"]:
+            with self.subTest(slug=malo):
+                r = self.api.patch("/api/v1/mi-establecimiento",
+                                   {"slug": malo}, format="json")
+                self.assertEqual(r.status_code, 400)
+
+    def test_otro_usuario_no_puede_cambiar_mi_slug(self):
+        """Aislamiento multi-tenant: cada quien toca solo lo suyo."""
+        _, otro_est, _ = RegistroService.registrar(
+            email="intruso@x.com", password="clave12345",
+            nombre_negocio="Otro Negocio", tipo=Establecimiento.Tipo.SPA,
+            telefono="3007776666",
+        )
+        api2 = APIClient()
+        api2.force_authenticate(user=otro_est.propietario)
+        api2.patch("/api/v1/mi-establecimiento",
+                   {"slug": "cambiado-por-intruso"}, format="json")
+        self.est.refresh_from_db()
+        self.assertNotEqual(self.est.slug, "cambiado-por-intruso")
+
+    def test_sin_autenticacion_no_hay_acceso(self):
+        self.assertEqual(
+            APIClient().get("/api/v1/mi-establecimiento").status_code, 401)

@@ -10,7 +10,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from cuentas.api import RegistroView
 from negocios.api import (
     BloqueosView, EliminarBloqueoView, EliminarExcepcionView, ExcepcionesView,
-    HorariosProfesionalView, ProfesionalViewSet, ServicioViewSet,
+    HorariosProfesionalView, MiEstablecimientoView, ProfesionalViewSet,
+    ServicioViewSet,
 )
 from agenda.api import CitaViewSet, DisponibilidadView, NotificacionesView
 from asistente.api import (
@@ -57,6 +58,9 @@ api_v1 = [
     path("p/<slug:slug>/citas/cancelar",
          CancelarCitaPublicaView.as_view(), name="cancelar-cita-publica"),
     # Suscripcion y pagos — Sprint 4.1 (§9)
+    # Enlace publico del negocio (consulta y cambio de slug)
+    path("mi-establecimiento", MiEstablecimientoView.as_view(),
+         name="mi-establecimiento"),
     path("mi-suscripcion", MiSuscripcionView.as_view(), name="mi-suscripcion"),
     path("mi-suscripcion/pagos", MisPagosView.as_view(), name="mis-pagos"),
     path("admin/pagos", ColaPagosView.as_view(), name="cola-pagos"),
