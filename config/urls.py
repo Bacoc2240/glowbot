@@ -25,7 +25,8 @@ from facturacion.views import (
 # Sin el alias, el segundo import sombrea al primero (colision de nombres).
 from web.views import (
     chat_publico, HorariosView, LoginView, PanelView,
-    RegistroView as RegistroPaginaView, salud, ServiciosView, SuscripcionView,
+    RecuperarView, RegistroView as RegistroPaginaView, salud, ServiciosView,
+    SuscripcionView,
 )
 
 router = DefaultRouter(trailing_slash=False)
@@ -83,12 +84,7 @@ urlpatterns = [
     # Recuperacion de contrasena (RF-22). Se usan las vistas de Django, que
     # ya implementan token firmado con expiracion y no revelan si el correo
     # existe; solo se personalizan las plantillas para conservar el estilo.
-    path("panel/recuperar", auth_views.PasswordResetView.as_view(
-        template_name="web/recuperar.html",
-        email_template_name="web/correo_recuperar.txt",
-        subject_template_name="web/correo_recuperar_asunto.txt",
-        success_url="/panel/recuperar/enviado",
-    ), name="password_reset"),
+    path("panel/recuperar", RecuperarView.as_view(), name="password_reset"),
     path("panel/recuperar/enviado", auth_views.PasswordResetDoneView.as_view(
         template_name="web/recuperar_enviado.html",
     ), name="password_reset_done"),

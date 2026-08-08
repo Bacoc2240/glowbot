@@ -2,8 +2,11 @@
 from datetime import date, time
 from urllib.parse import unquote
 
+from unittest import mock
+
+from django.conf import settings
 from django.core import mail
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from cuentas.models import Usuario
@@ -298,3 +301,84 @@ class SaludTest(TestCase):
     def test_salud_no_requiere_sesion(self):
         """Railway consulta sin credenciales; debe responder igual."""
         self.assertEqual(self.client.get("/salud").status_code, 200)
+
+
+class RecuperarRobustoTest(TestCase):
+    """Un servidor de correo caido no debe tumbar la peticion.
+
+    Hallazgo: Django 4.2 ya captura las excepciones de envio en
+    PasswordResetForm.send_mail, asi que un rechazo de SMTP no produce un
+    500. Lo que si tumbaba el worker en produccion era la ESPERA: sin
+    EMAIL_TIMEOUT, un puerto filtrado deja el socket colgado hasta que
+    gunicorn aborta el worker (SystemExit, que no hereda de Exception y
+    por tanto escapa al try/except de Django).
+    """
+
+    def setUp(self):
+        Usuario.objects.create_user(email="duenio@barberia.com", password="clave12345")
+
+    def test_email_timeout_configurado(self):
+        """Sin este limite, un SMTP filtrado consume el worker completo."""
+        from django.conf import settings
+        self.assertLessEqual(settings.EMAIL_TIMEOUT, 15)
+
+    def test_el_timeout_llega_a_la_conexion_smtp(self):
+        """No basta con definir el ajuste: debe viajar al backend."""
+        from django.core.mail import get_connection
+        with override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+            EMAIL_TIMEOUT=7,
+        ):
+            self.assertEqual(get_connection().timeout, 7)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        EMAIL_HOST="127.0.0.1", EMAIL_PORT=1, EMAIL_TIMEOUT=2,
+    )
+    def test_smtp_caido_no_produce_500(self):
+        """El usuario ve la pantalla de confirmacion; el fallo queda en el
+        log. No se le revela que el correo no salio, porque tampoco debe
+        saber si la cuenta existe."""
+        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)
+
+    def test_envio_exitoso_sigue_funcionando(self):
+        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(len(mail.outbox), 1)
+
+
+class CorreoCaidoTest(TestCase):
+    """Un fallo del servidor de correo no debe tumbar la peticion.
+
+    Railway bloquea el puerto 587 fuera del plan Pro, asi que el socket
+    queda colgado. EMAIL_TIMEOUT acota la espera; Django ya registra la
+    excepcion y continua. El usuario ve la pantalla habitual."""
+
+    def setUp(self):
+        Usuario.objects.create_user(email="duenio@barberia.com", password="clave12345")
+
+    def test_existe_email_timeout_configurado(self):
+        """Sin timeout, un puerto filtrado cuelga hasta que gunicorn aborta
+        el worker con SystemExit y devuelve 500."""
+        self.assertTrue(hasattr(settings, "EMAIL_TIMEOUT"))
+        self.assertLessEqual(settings.EMAIL_TIMEOUT, 15)
+
+    def test_smtp_caido_no_genera_500(self):
+        with mock.patch(
+            "django.core.mail.EmailMultiAlternatives.send",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.url, "/panel/recuperar/enviado")
+
+    def test_pantalla_de_confirmacion_es_la_misma(self):
+        """No se revela al usuario si el envio fallo: el mensaje es neutro."""
+        with mock.patch(
+            "django.core.mail.EmailMultiAlternatives.send",
+            side_effect=OSError("Network is unreachable"),
+        ):
+            self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        r = self.client.get("/panel/recuperar/enviado")
+        self.assertContains(r, "Revisa tu correo")
