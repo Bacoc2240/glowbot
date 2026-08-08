@@ -14,6 +14,7 @@ Los endpoints de pago del administrador NO se bloquean cuando la
 suscripción está suspendida: es justamente ahí donde necesita poder
 subir el comprobante para reactivarse.
 """
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.generics import ListAPIView
@@ -24,12 +25,13 @@ from rest_framework.views import APIView
 from .models import Pago, Suscripcion
 from .permissions import EsSuperAdmin
 from .serializers import (
+    DatosPagoSerializer,
     PagoSerializer,
     RechazoSerializer,
     RegistrarPagoSerializer,
     SuscripcionSerializer,
 )
-from .services import PagoService, PagoYaConfirmadoError
+from .services import PagoService, PagoYaConfirmadoError, SuscripcionService
 
 
 def _suscripcion_del_usuario(user) -> Suscripcion:
@@ -38,12 +40,25 @@ def _suscripcion_del_usuario(user) -> Suscripcion:
 
 
 class MiSuscripcionView(APIView):
-    """RF-20 — estado de la suscripción del administrador autenticado."""
+    """RF-20 — estado de la suscripción del administrador autenticado.
+
+    Incluye los datos para transferir: el cliente debe poder ver a donde
+    pagar y cuanto, sin salir de la pantalla."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         sub = _suscripcion_del_usuario(request.user)
-        return Response(SuscripcionSerializer(sub).data)
+        datos = SuscripcionSerializer(sub).data
+        datos["datos_pago"] = DatosPagoSerializer({
+            "titular": settings.PAGO_TITULAR,
+            "llave_breb": settings.PAGO_LLAVE_BREB,
+            "nequi": settings.PAGO_NEQUI,
+            "daviplata": settings.PAGO_DAVIPLATA,
+            "whatsapp": settings.PAGO_WHATSAPP,
+            "monto": SuscripcionService.precio_mensual(sub.establecimiento),
+            "periodo": sub.fecha_vencimiento_actual.strftime("%Y-%m"),
+        }).data
+        return Response(datos)
 
 
 class MisPagosView(APIView):

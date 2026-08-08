@@ -29,6 +29,49 @@
     </div>
   </div>
 
+  <!-- Instrucciones de pago: sin esto el cliente no sabe a donde transferir -->
+  <div class="card" x-show="sub" style="background:#EAF2FA">
+    <h2>Paso 1 — Transfiere</h2>
+    <div style="text-align:center; margin:10px 0">
+      <div class="muted">Valor a transferir</div>
+      <div style="font-size:26px; font-weight:700; color:var(--azul)"
+           x-text="'$' + Number(dp().monto).toLocaleString('es-CO')"></div>
+      <div class="muted" x-text="'Periodo ' + dp().periodo"></div>
+    </div>
+
+    <div x-show="dp().llave_breb" style="border-top:1px solid var(--borde); padding-top:10px">
+      <b>Bre-B</b> <span class="chip" style="background:#E5F4EA;color:var(--verde)">Recomendado</span>
+      <div class="muted">Sirve desde cualquier banco o billetera.</div>
+      <div class="fila" style="margin-top:6px; align-items:center">
+        <b style="font-size:18px" x-text="dp().llave_breb"></b>
+        <button style="max-width:110px" @click="copiar(dp().llave_breb, 'breb')"
+                x-text="copiado==='breb' ? 'Copiado' : 'Copiar'"></button>
+      </div>
+    </div>
+
+    <div x-show="dp().nequi" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
+      <b>Nequi</b>
+      <div class="fila" style="margin-top:6px; align-items:center">
+        <b style="font-size:18px" x-text="dp().nequi"></b>
+        <button style="max-width:110px" @click="copiar(dp().nequi, 'nequi')"
+                x-text="copiado==='nequi' ? 'Copiado' : 'Copiar'"></button>
+      </div>
+    </div>
+
+    <div x-show="dp().daviplata" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
+      <b>Daviplata</b>
+      <div class="fila" style="margin-top:6px; align-items:center">
+        <b style="font-size:18px" x-text="dp().daviplata"></b>
+        <button style="max-width:110px" @click="copiar(dp().daviplata, 'davi')"
+                x-text="copiado==='davi' ? 'Copiado' : 'Copiar'"></button>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top:10px; border-top:1px solid var(--borde); padding-top:8px">
+      Titular: <b x-text="dp().titular"></b>
+    </p>
+  </div>
+
   <!-- Carga del comprobante (RF-21) -->
   <div class="card">
     <h2>Registrar un pago</h2>

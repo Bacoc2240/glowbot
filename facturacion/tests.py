@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from PIL import Image
@@ -381,3 +381,41 @@ class EnlacePublicoTests(BaseFacturacion):
     def test_sin_autenticacion_no_hay_acceso(self):
         self.assertEqual(
             APIClient().get("/api/v1/mi-establecimiento").status_code, 401)
+
+
+@override_settings(
+    PAGO_TITULAR="Wilson Vergara Duarte", PAGO_LLAVE_BREB="3058972145",
+    PAGO_NEQUI="3058972145", PAGO_DAVIPLATA="3058972145",
+    PAGO_WHATSAPP="3058972145",
+)
+class DatosPagoTests(BaseFacturacion):
+    """Sin estos datos el cliente no sabe a donde transferir: el ciclo
+    comercial quedaba abierto."""
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.est.propietario)
+
+    def test_mi_suscripcion_incluye_donde_pagar(self):
+        d = self.api.get("/api/v1/mi-suscripcion").json()["datos_pago"]
+        self.assertEqual(d["llave_breb"], "3058972145")
+        self.assertEqual(d["nequi"], "3058972145")
+        self.assertEqual(d["titular"], "Wilson Vergara Duarte")
+
+    def test_monto_corresponde_al_plan(self):
+        d = self.api.get("/api/v1/mi-suscripcion").json()["datos_pago"]
+        self.assertEqual(d["monto"], 35000)
+        self.est.plan = Establecimiento.Plan.PREMIUM
+        self.est.save()
+        d = self.api.get("/api/v1/mi-suscripcion").json()["datos_pago"]
+        self.assertEqual(d["monto"], 45000)
+
+    def test_periodo_es_el_corte_que_se_paga(self):
+        d = self.api.get("/api/v1/mi-suscripcion").json()["datos_pago"]
+        self.assertEqual(
+            d["periodo"], self.sub.fecha_vencimiento_actual.strftime("%Y-%m"))
+
+    def test_breb_es_metodo_valido(self):
+        pago = PagoService.registrar(self.sub, Pago.Metodo.BREB, _imagen_falsa())
+        self.assertEqual(pago.metodo, "breb")

@@ -177,6 +177,16 @@ LOGIN_URL = "/ingresar"
 LOGIN_REDIRECT_URL = "/panel/"
 LOGOUT_REDIRECT_URL = "/ingresar"
 
+# ── Datos para recibir los pagos de las suscripciones (RF-21) ──
+# Se leen del entorno para no dejar datos financieros en el repositorio y
+# poder cambiarlos sin tocar codigo. Bre-B (Banco de la Republica) admite
+# pagos desde cualquier banco o billetera, por eso se muestra primero.
+PAGO_TITULAR = os.getenv("PAGO_TITULAR", "Wilson Vergara Duarte")
+PAGO_LLAVE_BREB = os.getenv("PAGO_LLAVE_BREB", "")
+PAGO_NEQUI = os.getenv("PAGO_NEQUI", "")
+PAGO_DAVIPLATA = os.getenv("PAGO_DAVIPLATA", "")
+PAGO_WHATSAPP = os.getenv("PAGO_WHATSAPP", "")
+
 # ── Cloudinary: persistencia de comprobantes en produccion (Sprint 4.1) ──
 # Se activa por variable de entorno para no exigir credenciales en local.
 if os.getenv("USAR_CLOUDINARY", "False") == "True":

@@ -92,6 +92,11 @@ class Pago(models.Model):
         RECHAZADO = "rechazado", "Rechazado"
 
     class Metodo(models.TextChoices):
+        # Bre-B (Sistema de Pagos Inmediatos del Banco de la Republica)
+        # permite transferir desde cualquier banco o billetera, por lo que
+        # es el metodo preferente; Nequi y Daviplata se mantienen porque
+        # siguen siendo los mas conocidos en el municipio.
+        BREB = "breb", "Bre-B (desde cualquier banco)"
         NEQUI = "nequi", "Nequi"
         DAVIPLATA = "daviplata", "Daviplata"
 

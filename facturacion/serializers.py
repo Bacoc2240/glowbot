@@ -69,3 +69,16 @@ class PagoSerializer(serializers.ModelSerializer):
 
 class RechazoSerializer(serializers.Serializer):
     motivo = serializers.CharField(max_length=500)
+
+
+class DatosPagoSerializer(serializers.Serializer):
+    """Instrucciones para transferir. Sin estos datos el cliente no sabe a
+    donde pagar: era el hueco que impedia cerrar el ciclo comercial."""
+
+    titular = serializers.CharField()
+    llave_breb = serializers.CharField(allow_blank=True)
+    nequi = serializers.CharField(allow_blank=True)
+    daviplata = serializers.CharField(allow_blank=True)
+    whatsapp = serializers.CharField(allow_blank=True)
+    monto = serializers.IntegerField()
+    periodo = serializers.CharField()
