@@ -671,3 +671,39 @@ class EstadoIncoherenteTests(BaseFacturacion):
 
         self.sub.refresh_from_db()
         self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+
+
+class ComandoVerificarSuscripcionesTests(BaseFacturacion):
+    """El cron diario de Railway (RF-20). Debe informar a quien afecta y
+    terminar limpiamente: un servicio cron que no termina bloquea las
+    ejecuciones siguientes."""
+
+    def _vencer(self, dias):
+        self.sub.fecha_vencimiento_actual = timezone.localdate() - timedelta(days=dias)
+        self.sub.save()
+
+    def test_suspende_e_informa_a_quien(self):
+        self._vencer(5)
+        salida = StringIO()
+        call_command("verificar_suscripciones", stdout=salida)
+        texto = salida.getvalue()
+        self.assertIn("Suspendidas 1", texto)
+        self.assertIn(str(self.est), texto)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.SUSPENDIDA)
+
+    def test_respeta_el_periodo_de_gracia(self):
+        self._vencer(2)
+        salida = StringIO()
+        call_command("verificar_suscripciones", stdout=salida)
+        self.assertIn("Nada que suspender", salida.getvalue())
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.PRUEBA)
+
+    def test_simular_no_modifica_nada(self):
+        self._vencer(5)
+        salida = StringIO()
+        call_command("verificar_suscripciones", "--simular", stdout=salida)
+        self.assertIn("no se modifico nada", salida.getvalue())
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.PRUEBA)
