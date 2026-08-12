@@ -79,9 +79,22 @@ class MisPagosView(APIView):
             metodo=ser.validated_data["metodo"],
             comprobante=ser.validated_data["comprobante"],
         )
+        sub.refresh_from_db()
+        if pago.aplicado:
+            mensaje = (
+                "Listo. Tu servicio quedó activo hasta el "
+                f"{sub.fecha_vencimiento_actual.strftime('%d/%m/%Y')}. "
+                "Confirmaremos tu pago lo más pronto posible."
+            )
+        else:
+            mensaje = (
+                "Comprobante recibido. Lo verificaremos y activaremos tu "
+                "servicio lo más pronto posible."
+            )
         return Response(
             {
-                "mensaje": "Comprobante recibido. Será verificado pronto.",
+                "mensaje": mensaje,
+                "activado": pago.aplicado,
                 "pago": PagoSerializer(pago).data,
             },
             status=status.HTTP_201_CREATED,

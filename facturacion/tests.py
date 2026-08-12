@@ -5,10 +5,12 @@ RN-10. Se ejecutan sobre SQLite para la lógica; la concurrencia real con
 select_for_update() se valida en el entorno PostgreSQL del proyecto.
 """
 import io
+from io import StringIO
 from datetime import date, timedelta
 
 from dateutil.relativedelta import relativedelta
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -419,3 +421,253 @@ class DatosPagoTests(BaseFacturacion):
     def test_breb_es_metodo_valido(self):
         pago = PagoService.registrar(self.sub, Pago.Metodo.BREB, _imagen_falsa())
         self.assertEqual(pago.metodo, "breb")
+
+
+class ActivacionOptimistaTests(BaseFacturacion):
+    """Sprint 4.2: subir el comprobante activa el servicio de inmediato; el
+    rechazo compensa restaurando el estado exacto anterior."""
+
+    def _subir(self, metodo=Pago.Metodo.BREB):
+        return PagoService.registrar(self.sub, metodo, _imagen_falsa())
+
+    def test_subir_comprobante_extiende_el_servicio(self):
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._subir()
+        self.sub.refresh_from_db()
+        self.assertTrue(pago.aplicado)
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.ACTIVA)
+        self.assertEqual(self.sub.fecha_vencimiento_actual,
+                         antes + relativedelta(months=1))
+
+    def test_extension_respeta_el_ancla_fija(self):
+        """La fecha de corte no deriva hacia el dia de pago (RN-09)."""
+        corte = timezone.localdate() - timedelta(days=2)
+        self.sub.fecha_vencimiento_actual = corte
+        self.sub.save()
+        self._subir()
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual,
+                         corte + relativedelta(months=1))
+
+    def test_guarda_el_estado_previo_para_revertir(self):
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._subir()
+        self.assertEqual(pago.vencimiento_previo, antes)
+        self.assertEqual(pago.estado_previo, Suscripcion.Estado.PRUEBA)
+
+    def test_confirmar_no_extiende_dos_veces(self):
+        """El pago ya extendio al subirse: confirmar solo sella el estado."""
+        pago = self._subir()
+        self.sub.refresh_from_db()
+        vencimiento_tras_subir = self.sub.fecha_vencimiento_actual
+        PagoService.confirmar(pago, self.super)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, vencimiento_tras_subir)
+
+    def test_rechazar_revierte_al_estado_exacto(self):
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._subir()
+        PagoService.rechazar(pago, self.super, "El dinero no ingreso")
+        self.sub.refresh_from_db()
+        pago.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.PRUEBA)
+        self.assertFalse(pago.aplicado)
+
+    def test_rechazar_suspendida_vuelve_a_suspendida(self):
+        """Quien estaba suspendido y sube un comprobante falso vuelve a
+        quedar suspendido, no activo."""
+        self.sub.fecha_vencimiento_actual = timezone.localdate() - timedelta(days=10)
+        self.sub.estado = Suscripcion.Estado.SUSPENDIDA
+        self.sub.save()
+        pago = self._subir()
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.ACTIVA)
+        PagoService.rechazar(pago, self.super, "Comprobante de otro mes")
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.estado, Suscripcion.Estado.SUSPENDIDA)
+
+    def test_doble_rechazo_no_resta_dos_veces(self):
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._subir()
+        PagoService.rechazar(pago, self.super, "motivo")
+        PagoService.rechazar(pago, self.super, "motivo")
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+
+    def test_solo_un_pago_aplicado_a_la_vez(self):
+        """Freno 1: la segunda extension no se encadena mientras la primera
+        siga sin resolver."""
+        self._subir()
+        self.sub.refresh_from_db()
+        vencimiento = self.sub.fecha_vencimiento_actual
+        segundo = self._subir()
+        self.sub.refresh_from_db()
+        self.assertFalse(segundo.aplicado)
+        self.assertEqual(self.sub.fecha_vencimiento_actual, vencimiento)
+
+    def test_tras_rechazo_no_hay_activacion_automatica(self):
+        """Freno 2: quien subio un comprobante falso vuelve al flujo manual."""
+        primero = self._subir()
+        PagoService.rechazar(primero, self.super, "No ingreso el dinero")
+        self.sub.refresh_from_db()
+        vencimiento = self.sub.fecha_vencimiento_actual
+        segundo = self._subir()
+        self.sub.refresh_from_db()
+        self.assertFalse(segundo.aplicado)
+        self.assertEqual(self.sub.fecha_vencimiento_actual, vencimiento)
+
+    def test_tras_rechazo_la_confirmacion_manual_si_extiende(self):
+        """El freno no deja atrapado a un cliente legitimo: cuando el
+        superadmin confirma, la extension se aplica."""
+        primero = self._subir()
+        PagoService.rechazar(primero, self.super, "Imagen ilegible")
+        self.sub.refresh_from_db()
+        antes = self.sub.fecha_vencimiento_actual
+        segundo = self._subir()
+        PagoService.confirmar(segundo, self.super)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual,
+                         antes + relativedelta(months=1))
+
+    def test_tras_confirmar_vuelve_la_activacion_automatica(self):
+        """Un cliente que se rehabilita recupera la activacion inmediata."""
+        primero = self._subir()
+        PagoService.rechazar(primero, self.super, "motivo")
+        segundo = self._subir()
+        PagoService.confirmar(segundo, self.super)
+        tercero = self._subir()
+        self.assertTrue(tercero.aplicado)
+
+
+class AdminBlindadoTests(BaseFacturacion):
+    """El estado de un pago solo debe cambiar por PagoService: editarlo a
+    mano en el admin saltaria la compensacion y dejaria al establecimiento
+    con tiempo de servicio sin respaldo."""
+
+    def test_campos_de_negocio_son_de_solo_lectura(self):
+        from django.contrib.admin.sites import site
+        from facturacion.admin import PagoAdmin
+        admin_pago = PagoAdmin(Pago, site)
+        for campo in ["estado", "aplicado", "vencimiento_previo",
+                      "estado_previo", "monto", "periodo"]:
+            with self.subTest(campo=campo):
+                self.assertIn(campo, admin_pago.readonly_fields)
+
+    def test_no_se_pueden_crear_pagos_desde_el_admin(self):
+        from django.contrib.admin.sites import site
+        from facturacion.admin import PagoAdmin
+        self.assertFalse(PagoAdmin(Pago, site).has_add_permission(None))
+
+    def test_borrar_un_pago_aplicado_revierte_la_extension(self):
+        from django.contrib.admin.sites import site
+        from facturacion.admin import PagoAdmin
+        antes = self.sub.fecha_vencimiento_actual
+        pago = PagoService.registrar(self.sub, Pago.Metodo.BREB, _imagen_falsa())
+        self.sub.refresh_from_db()
+        self.assertGreater(self.sub.fecha_vencimiento_actual, antes)
+
+        PagoAdmin(Pago, site).delete_model(None, pago)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+
+
+class RevisarPagosCommandTests(BaseFacturacion):
+    """Comando de reparacion para suscripciones ya descuadradas."""
+
+    def _descuadrar(self):
+        """Reproduce el efecto de cambiar el estado a mano en el admin:
+        rechazado pero con la extension todavia aplicada."""
+        pago = PagoService.registrar(self.sub, Pago.Metodo.BREB, _imagen_falsa())
+        Pago.objects.filter(pk=pago.pk).update(estado=Pago.Estado.RECHAZADO)
+        return pago
+
+    def test_detecta_sin_modificar_nada(self):
+        pago = self._descuadrar()
+        self.sub.refresh_from_db()
+        vencimiento_inflado = self.sub.fecha_vencimiento_actual
+        salida = StringIO()
+        call_command("revisar_pagos", stdout=salida)
+        self.assertIn("rechazado pero", salida.getvalue())
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, vencimiento_inflado)
+
+    def test_repara_restaurando_el_vencimiento(self):
+        pago = self._descuadrar()
+        call_command("revisar_pagos", "--reparar", stdout=StringIO())
+        self.sub.refresh_from_db()
+        pago.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, pago.vencimiento_previo)
+        self.assertFalse(pago.aplicado)
+
+    def test_sin_problemas_no_hace_nada(self):
+        salida = StringIO()
+        call_command("revisar_pagos", stdout=salida)
+        self.assertIn("Todo cuadra", salida.getvalue())
+
+
+class EstadoIncoherenteTests(BaseFacturacion):
+    """Casos donde `estado` y `aplicado` no concuerdan, por ejemplo tras una
+    edicion manual. `aplicado` manda: es la unica fuente de verdad sobre si
+    hay una extension que compensar."""
+
+    def _pago_aplicado(self):
+        return PagoService.registrar(self.sub, Pago.Metodo.BREB, _imagen_falsa())
+
+    def test_rechazar_revierte_aunque_ya_figure_rechazado(self):
+        """El caso real: el estado se marco por fuera del servicio, asi que
+        la extension seguia vigente. Rechazar debe corregirlo, no salir."""
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._pago_aplicado()
+        # Simula la edicion manual: estado rechazado pero extension vigente.
+        Pago.objects.filter(pk=pago.pk).update(estado=Pago.Estado.RECHAZADO)
+        pago.refresh_from_db()
+        self.assertTrue(pago.aplicado)
+
+        PagoService.rechazar(pago, self.super, "Verificado: no ingreso")
+        self.sub.refresh_from_db()
+        pago.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+        self.assertFalse(pago.aplicado)
+
+    def test_confirmar_aplica_si_la_extension_falta(self):
+        """Estado confirmado sin extension: el cliente pago y no recibio su
+        tiempo. Confirmar debe aplicarla."""
+        pago = self._pago_aplicado()
+        PagoService.rechazar(pago, self.super, "motivo")
+        self.sub.refresh_from_db()
+        antes = self.sub.fecha_vencimiento_actual
+        Pago.objects.filter(pk=pago.pk).update(estado=Pago.Estado.CONFIRMADO)
+        pago.refresh_from_db()
+        self.assertFalse(pago.aplicado)
+
+        PagoService.confirmar(pago, self.super)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual,
+                         antes + relativedelta(months=1))
+
+    def test_doble_rechazo_sigue_sin_restar_dos_veces(self):
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._pago_aplicado()
+        PagoService.rechazar(pago, self.super, "motivo")
+        PagoService.rechazar(pago, self.super, "motivo")
+        PagoService.rechazar(pago, self.super, "motivo")
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)
+
+    def test_la_accion_del_admin_revierte_de_verdad(self):
+        """Reproduce el flujo del boton 'Rechazar pago seleccionado'."""
+        from django.contrib.admin.sites import site
+        from facturacion.admin import PagoAdmin
+        antes = self.sub.fecha_vencimiento_actual
+        pago = self._pago_aplicado()
+        Pago.objects.filter(pk=pago.pk).update(estado=Pago.Estado.RECHAZADO)
+
+        peticion = type("R", (), {"user": self.super})()
+        admin_pago = PagoAdmin(Pago, site)
+        mensajes = []
+        admin_pago.message_user = lambda *a, **k: mensajes.append(a)
+        admin_pago.accion_rechazar(peticion, Pago.objects.filter(pk=pago.pk))
+
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, antes)

@@ -125,6 +125,26 @@ class Pago(models.Model):
         blank=True,
         help_text="Explicación visible para el establecimiento cuando se rechaza.",
     )
+    # ── Activacion optimista (Sprint 4.2) ──
+    # Al subir el comprobante el servicio se extiende de inmediato: hacer
+    # esperar a quien ya pago es mala experiencia en un producto que se
+    # vende como automatizado. El riesgo se acota guardando aqui el estado
+    # ANTERIOR, de modo que un rechazo restaure exactamente lo que habia en
+    # vez de calcular la inversa (restar un mes seria incorrecto si entre
+    # medias ocurrio otro movimiento).
+    aplicado = models.BooleanField(
+        default=False,
+        help_text="La extension optimista de este pago sigue vigente.",
+    )
+    vencimiento_previo = models.DateField(
+        null=True, blank=True,
+        help_text="Vencimiento antes de aplicar la extension, para revertir.",
+    )
+    estado_previo = models.CharField(
+        max_length=20, blank=True,
+        help_text="Estado de la suscripcion antes de aplicar la extension.",
+    )
+
     confirmado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name="pagos_confirmados",

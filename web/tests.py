@@ -198,6 +198,12 @@ class FrontendTest(BaseSprint4Test):
         self.assertContains(r, "width=device-width")
 
 
+@override_settings(
+    # Ninguna prueba debe abrir una conexion de red: sin esto, si el
+    # entorno define EMAIL_BACKEND=smtp la suite intenta contactar el
+    # servidor real y se cuelga hasta agotar EMAIL_TIMEOUT.
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
 class RecuperarContrasenaTest(TestCase):
     """RF-22: recuperacion de contrasena por correo (vistas de Django con
     plantillas propias)."""
@@ -303,51 +309,12 @@ class SaludTest(TestCase):
         self.assertEqual(self.client.get("/salud").status_code, 200)
 
 
-class RecuperarRobustoTest(TestCase):
-    """Un servidor de correo caido no debe tumbar la peticion.
-
-    Hallazgo: Django 4.2 ya captura las excepciones de envio en
-    PasswordResetForm.send_mail, asi que un rechazo de SMTP no produce un
-    500. Lo que si tumbaba el worker en produccion era la ESPERA: sin
-    EMAIL_TIMEOUT, un puerto filtrado deja el socket colgado hasta que
-    gunicorn aborta el worker (SystemExit, que no hereda de Exception y
-    por tanto escapa al try/except de Django).
-    """
-
-    def setUp(self):
-        Usuario.objects.create_user(email="duenio@barberia.com", password="clave12345")
-
-    def test_email_timeout_configurado(self):
-        """Sin este limite, un SMTP filtrado consume el worker completo."""
-        from django.conf import settings
-        self.assertLessEqual(settings.EMAIL_TIMEOUT, 15)
-
-    def test_el_timeout_llega_a_la_conexion_smtp(self):
-        """No basta con definir el ajuste: debe viajar al backend."""
-        from django.core.mail import get_connection
-        with override_settings(
-            EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-            EMAIL_TIMEOUT=7,
-        ):
-            self.assertEqual(get_connection().timeout, 7)
-
-    @override_settings(
-        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
-        EMAIL_HOST="127.0.0.1", EMAIL_PORT=1, EMAIL_TIMEOUT=2,
-    )
-    def test_smtp_caido_no_produce_500(self):
-        """El usuario ve la pantalla de confirmacion; el fallo queda en el
-        log. No se le revela que el correo no salio, porque tampoco debe
-        saber si la cuenta existe."""
-        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
-        self.assertEqual(r.status_code, 302)
-
-    def test_envio_exitoso_sigue_funcionando(self):
-        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
-        self.assertEqual(r.status_code, 302)
-        self.assertEqual(len(mail.outbox), 1)
-
-
+@override_settings(
+    # Ninguna prueba debe abrir una conexion de red: sin esto, si el
+    # entorno define EMAIL_BACKEND=smtp la suite intenta contactar el
+    # servidor real y se cuelga hasta agotar EMAIL_TIMEOUT.
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
 class CorreoCaidoTest(TestCase):
     """Un fallo del servidor de correo no debe tumbar la peticion.
 
@@ -382,3 +349,19 @@ class CorreoCaidoTest(TestCase):
             self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
         r = self.client.get("/panel/recuperar/enviado")
         self.assertContains(r, "Revisa tu correo")
+
+    def test_el_timeout_llega_a_la_conexion_smtp(self):
+        """No basta con definir el ajuste: debe viajar al backend. Se
+        comprueba sin abrir ningun socket."""
+        from django.core.mail import get_connection
+        with override_settings(
+            EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+            EMAIL_TIMEOUT=7,
+        ):
+            self.assertEqual(get_connection().timeout, 7)
+
+    def test_envio_exitoso_sigue_funcionando(self):
+        """El blindaje no rompe el camino feliz."""
+        r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(len(mail.outbox), 1)

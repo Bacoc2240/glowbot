@@ -29,59 +29,62 @@
     </div>
   </div>
 
-  <!-- Instrucciones de pago: sin esto el cliente no sabe a donde transferir -->
+  <!-- Instrucciones de pago: sin esto el cliente no sabe a dónde transferir -->
   <div class="card" x-show="sub" style="background:#EAF2FA">
     <h2>Paso 1 — Transfiere</h2>
     <div style="text-align:center; margin:10px 0">
       <div class="muted">Valor a transferir</div>
       <div style="font-size:26px; font-weight:700; color:var(--azul)"
-           x-text="'$' + Number(dp().monto).toLocaleString('es-CO')"></div>
-      <div class="muted" x-text="'Periodo ' + dp().periodo"></div>
+           x-text="'$' + Number(dp.monto || 0).toLocaleString('es-CO')"></div>
+      <div class="muted" x-text="'Período ' + (dp.periodo || '')"></div>
     </div>
 
-    <div x-show="dp().llave_breb" style="border-top:1px solid var(--borde); padding-top:10px">
-      <b>Bre-B</b> <span class="chip" style="background:#E5F4EA;color:var(--verde)">Recomendado</span>
+    <div x-show="dp.llave_breb" style="border-top:1px solid var(--borde); padding-top:10px">
+      <b>Bre-B</b>
+      <span class="chip" style="background:#E5F4EA;color:var(--verde)">Recomendado</span>
       <div class="muted">Sirve desde cualquier banco o billetera.</div>
       <div class="fila" style="margin-top:6px; align-items:center">
-        <b style="font-size:18px" x-text="dp().llave_breb"></b>
-        <button style="max-width:110px" @click="copiar(dp().llave_breb, 'breb')"
-                x-text="copiado==='breb' ? 'Copiado' : 'Copiar'"></button>
+        <b style="font-size:18px" x-text="dp.llave_breb"></b>
+        <button style="max-width:110px" @click="copiar(dp.llave_breb, 'breb')"
+                x-text="copiado === 'breb' ? 'Copiado' : 'Copiar'"></button>
       </div>
     </div>
 
-    <div x-show="dp().nequi" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
+    <div x-show="dp.nequi" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
       <b>Nequi</b>
       <div class="fila" style="margin-top:6px; align-items:center">
-        <b style="font-size:18px" x-text="dp().nequi"></b>
-        <button style="max-width:110px" @click="copiar(dp().nequi, 'nequi')"
-                x-text="copiado==='nequi' ? 'Copiado' : 'Copiar'"></button>
+        <b style="font-size:18px" x-text="dp.nequi"></b>
+        <button style="max-width:110px" @click="copiar(dp.nequi, 'nequi')"
+                x-text="copiado === 'nequi' ? 'Copiado' : 'Copiar'"></button>
       </div>
     </div>
 
-    <div x-show="dp().daviplata" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
+    <div x-show="dp.daviplata" style="border-top:1px solid var(--borde); padding-top:10px; margin-top:10px">
       <b>Daviplata</b>
       <div class="fila" style="margin-top:6px; align-items:center">
-        <b style="font-size:18px" x-text="dp().daviplata"></b>
-        <button style="max-width:110px" @click="copiar(dp().daviplata, 'davi')"
-                x-text="copiado==='davi' ? 'Copiado' : 'Copiar'"></button>
+        <b style="font-size:18px" x-text="dp.daviplata"></b>
+        <button style="max-width:110px" @click="copiar(dp.daviplata, 'davi')"
+                x-text="copiado === 'davi' ? 'Copiado' : 'Copiar'"></button>
       </div>
     </div>
 
-    <p class="muted" style="margin-top:10px; border-top:1px solid var(--borde); padding-top:8px">
-      Titular: <b x-text="dp().titular"></b>
+    <p class="muted" x-show="dp.titular"
+       style="margin-top:10px; border-top:1px solid var(--borde); padding-top:8px">
+      Titular: <b x-text="dp.titular"></b>
     </p>
   </div>
 
   <!-- Carga del comprobante (RF-21) -->
   <div class="card">
-    <h2>Registrar un pago</h2>
+    <h2>Paso 2 — Sube el comprobante</h2>
     <p class="muted">
-      Transfiere el valor mensual por Nequi o Daviplata y sube la captura del
-      comprobante. Verificaremos el pago y tu servicio queda al día.
+      Después de transferir, sube la captura del comprobante. Verificaremos
+      el pago y tu servicio queda al día.
     </p>
 
-    <label>Método de pago</label>
+    <label>Método que usaste</label>
     <select x-model="metodo">
+      <option value="breb">Bre-B</option>
       <option value="nequi">Nequi</option>
       <option value="daviplata">Daviplata</option>
     </select>
@@ -102,7 +105,8 @@
         <div class="fila">
           <div>
             <b x-text="'Período ' + p.periodo"></b>
-            <div class="muted" x-text="p.metodo + ' · $' + Number(p.monto).toLocaleString('es-CO')"></div>
+            <div class="muted"
+                 x-text="etiquetaMetodo(p.metodo) + ' · $' + Number(p.monto).toLocaleString('es-CO')"></div>
           </div>
           <div style="max-width:130px; text-align:right">
             <span class="chip" x-text="etiquetaPago(p.estado)"
@@ -110,7 +114,14 @@
                         : p.estado === 'rechazado' ? 'background:#FDECEA;color:var(--rojo)' : ''"></span>
           </div>
         </div>
-        <div class="error" x-show="p.motivo_rechazo" x-text="p.motivo_rechazo"></div>
+        <div x-show="p.estado === 'rechazado'">
+          <div class="error" x-text="p.motivo_rechazo"></div>
+          <p class="muted" x-show="dp.whatsapp">
+            No pudimos procesar este pago. Escríbenos por WhatsApp al
+            <a :href="'https://wa.me/57' + dp.whatsapp" target="_blank"
+               x-text="dp.whatsapp"></a>.
+          </p>
+        </div>
       </div>
     </template>
     <p class="muted" x-show="!pagos.length">Aún no has registrado pagos.</p>
@@ -121,19 +132,46 @@
 <script>
 function suscripcion() {
   return {
-    sub: null, pagos: [], metodo: "nequi", archivo: null,
-    error: "", ok: "", cargando: false,
-    // La etiqueta legible la envía el serializer (get_estado_display),
-    // así no se duplica el diccionario de estados en el cliente.
+    sub: null, pagos: [], metodo: "breb", archivo: null,
+    error: "", ok: "", cargando: false, copiado: "",
+    // Datos de transferencia. Se inicializa como objeto vacío para que las
+    // expresiones de la plantilla no fallen mientras carga la petición.
+    dp: {},
+
+    // Las etiquetas legibles las envía el serializer (get_*_display), así no
+    // se duplica el diccionario de estados en el cliente.
     etiquetaEstado() { return this.sub.estado_nombre || this.sub.estado; },
     etiquetaPago(e) {
       const m = { pendiente_verificacion: "En revisión", confirmado: "Confirmado",
                   rechazado: "Rechazado" };
       return m[e] || e;
     },
+    etiquetaMetodo(m) {
+      const t = { breb: "Bre-B", nequi: "Nequi", daviplata: "Daviplata" };
+      return t[m] || m;
+    },
+
+    async copiar(texto, cual) {
+      try {
+        await navigator.clipboard.writeText(texto);
+      } catch (e) {
+        // navigator.clipboard exige contexto seguro (HTTPS); en HTTP local se
+        // recurre al método antiguo para no dejar al usuario sin copiar.
+        const t = document.createElement("textarea");
+        t.value = texto;
+        document.body.appendChild(t); t.select();
+        document.execCommand("copy"); document.body.removeChild(t);
+      }
+      this.copiado = cual;
+      setTimeout(() => { this.copiado = ""; }, 2000);
+    },
+
     async cargar() {
       const r = await api("/mi-suscripcion");
-      if (r && r.ok) this.sub = await r.json();
+      if (r && r.ok) {
+        this.sub = await r.json();
+        this.dp = this.sub.datos_pago || {};
+      }
       await this.cargarPagos();
     },
     async cargarPagos() {
@@ -144,20 +182,29 @@ function suscripcion() {
       this.error = ""; this.ok = "";
       if (!this.archivo) { this.error = "Selecciona la imagen del comprobante."; return; }
       this.cargando = true;
-      // multipart: no se envía Content-Type manual, lo pone el navegador.
-      const datos = new FormData();
-      datos.append("metodo", this.metodo);
-      datos.append("comprobante", this.archivo);
-      const r = await fetch("/api/v1/mi-suscripcion/pagos", {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + token() },
-        body: datos,
-      });
-      this.cargando = false;
-      if (!r.ok) { this.error = "No se pudo enviar el comprobante."; return; }
-      this.ok = "Comprobante recibido. Lo verificaremos pronto.";
-      this.archivo = null;
-      await this.cargarPagos();
+      try {
+        // multipart: no se envía Content-Type manual, lo pone el navegador.
+        const datos = new FormData();
+        datos.append("metodo", this.metodo);
+        datos.append("comprobante", this.archivo);
+        const r = await fetch("/api/v1/mi-suscripcion/pagos", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token() },
+          body: datos,
+        });
+        const d = await r.json().catch(() => null);
+        if (!r.ok) { this.error = "No se pudo enviar el comprobante."; return; }
+        // El mensaje lo decide el servidor: solo el backend sabe si la
+        // activacion inmediata procedia (ver puede_activar_de_inmediato).
+        this.ok = (d && d.mensaje) || "Comprobante recibido.";
+        this.archivo = null;
+        await this.cargar();
+      } catch (e) {
+        this.error = "No se pudo contactar el servidor. Intenta de nuevo.";
+        console.error("Envío de comprobante:", e);
+      } finally {
+        this.cargando = false;
+      }
     },
   };
 }

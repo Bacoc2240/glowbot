@@ -5,6 +5,7 @@ Fiel al SRS v1.0 y al Diccionario de Datos v1.0.
 from pathlib import Path
 from datetime import timedelta
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -107,8 +108,16 @@ if DATABASE_URL:
 # que el flujo completo se puede probar sin depender de un servidor SMTP.
 # En producción se define EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
 # junto con las credenciales del proveedor.
-EMAIL_BACKEND = os.getenv(
-    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+# Durante las pruebas el correo SIEMPRE va a memoria: ninguna prueba debe
+# abrir una conexion de red. Django ya sustituye el backend al preparar el
+# entorno de pruebas, pero cualquier override_settings posterior lo restaura
+# al valor del .env y la suite acaba contactando el servidor real, colgandose
+# hasta agotar EMAIL_TIMEOUT. Fijarlo aqui cierra esa via.
+if "test" in sys.argv:
+    EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+else:
+    EMAIL_BACKEND = os.getenv(
+        "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"

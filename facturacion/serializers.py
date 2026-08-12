@@ -62,7 +62,7 @@ class PagoSerializer(serializers.ModelSerializer):
         fields = [
             "id", "establecimiento", "periodo", "monto", "metodo",
             "comprobante", "estado", "motivo_rechazo", "confirmado_en",
-            "creado_en",
+            "creado_en", "aplicado",
         ]
         read_only_fields = fields
 

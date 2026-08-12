@@ -134,49 +134,132 @@ class PagoService:
     # ── Registro del comprobante (lo hace el administrador) ───────────
     @staticmethod
     def registrar(suscripcion: Suscripcion, metodo: str, comprobante) -> Pago:
-        """Crea un Pago pendiente de verificación.
+        """Crea un Pago y, si procede, activa el servicio de inmediato.
 
         El período se calcula como el vencimiento vigente: es 'el corte que
         se está pagando'. Es estable ante reintentos, porque mientras no se
         confirme nada, fecha_vencimiento_actual no se mueve. El monto se
         deriva del plan en el servidor (no se confía en el cliente).
+
+        Activación optimista: extender ya y compensar después es mejor
+        experiencia que hacer esperar a quien pagó. La compensación exacta
+        vive en rechazar(), que restaura el estado guardado en el propio
+        Pago. Ver puede_activar_de_inmediato() para los frenos anti-abuso.
         """
-        periodo = suscripcion.fecha_vencimiento_actual.strftime("%Y-%m")
-        monto = SuscripcionService.precio_mensual(suscripcion.establecimiento)
-        return Pago.objects.create(
-            suscripcion=suscripcion,
-            periodo=periodo,
-            monto=monto,
-            metodo=metodo,
-            comprobante=comprobante,
-            estado=Pago.Estado.PENDIENTE,
+        with transaction.atomic():
+            s = (Suscripcion.objects
+                 .select_for_update()
+                 .get(pk=suscripcion.pk))
+            # Si hay una extension optimista sin resolver, este comprobante es
+            # casi siempre un REINTENTO del mismo periodo (el cliente cree que
+            # el primero no sirvio), no un pago adelantado del mes siguiente.
+            # Heredar su periodo mantiene vigente la unicidad de RN-08.
+            pendiente = s.pagos.filter(
+                aplicado=True, estado=Pago.Estado.PENDIENTE).first()
+            periodo = (pendiente.periodo if pendiente
+                       else s.fecha_vencimiento_actual.strftime("%Y-%m"))
+            monto = SuscripcionService.precio_mensual(s.establecimiento)
+            pago = Pago.objects.create(
+                suscripcion=s,
+                periodo=periodo,
+                monto=monto,
+                metodo=metodo,
+                comprobante=comprobante,
+                estado=Pago.Estado.PENDIENTE,
+            )
+            if PagoService.puede_activar_de_inmediato(s):
+                PagoService._aplicar_extension(s, pago)
+        return pago
+
+    # ── Frenos de la activación optimista ─────────────────────────────
+    @staticmethod
+    def puede_activar_de_inmediato(suscripcion: Suscripcion) -> bool:
+        """Decide si un comprobante recién subido extiende el servicio ya.
+
+        Dos frenos, ambos acordados en el diseño:
+
+        1. Una sola extensión optimista SIN RESOLVER a la vez. Si la
+           primera sigue pendiente, la siguiente no se encadena: revertir la
+           primera borraría el efecto de la segunda y la compensación
+           dejaría de ser exacta. Las ya confirmadas no bloquean.
+        2. Sin segunda oportunidad automática tras un rechazo. Si el último
+           movimiento resuelto fue un rechazo, el cliente vuelve al flujo
+           manual hasta que se le confirme un pago. Así quien sube
+           comprobantes falsos consigue, como mucho, un período de gracia una
+           sola vez.
+        """
+        # Solo bloquean las extensiones SIN resolver: una ya confirmada esta
+        # sellada y no debe impedir la activacion del mes siguiente.
+        if suscripcion.pagos.filter(
+                aplicado=True, estado=Pago.Estado.PENDIENTE).exists():
+            return False
+        ultimo_resuelto = (
+            suscripcion.pagos
+            .filter(estado__in=[Pago.Estado.CONFIRMADO, Pago.Estado.RECHAZADO])
+            .order_by("-confirmado_en", "-id")
+            .first()
         )
+        return not (ultimo_resuelto
+                    and ultimo_resuelto.estado == Pago.Estado.RECHAZADO)
+
+    # ── Extensión y compensación ──────────────────────────────────────
+    @staticmethod
+    def _aplicar_extension(s: Suscripcion, pago: Pago) -> None:
+        """Extiende la suscripción y guarda en el pago el estado anterior.
+
+        Regla RN-09 — ANCLA FIJA: nuevo = vencimiento_actual + 1 mes. La
+        fecha de corte nunca se mueve, así un moroso no puede derivarla
+        pagando tarde; la tardanza leve la absorbe el período de gracia.
+
+        Si la suscripción quedó varios ciclos atrás, se avanza mes a mes
+        hasta situar el vencimiento en el futuro: un pago cubre un período y
+        el corte conserva su día original.
+        """
+        pago.vencimiento_previo = s.fecha_vencimiento_actual
+        pago.estado_previo = s.estado
+
+        hoy = timezone.localdate()
+        if s.dia_corte is None:
+            # Primer pago: el ancla se fija según el fin de prueba.
+            s.dia_corte = min(s.fecha_vencimiento_actual.day, 28)
+
+        nuevo = s.fecha_vencimiento_actual + relativedelta(months=1)
+        while nuevo <= hoy:
+            nuevo = nuevo + relativedelta(months=1)
+        s.fecha_vencimiento_actual = nuevo
+        s.estado = Suscripcion.Estado.ACTIVA  # reactiva si venía suspendida
+        s.save(update_fields=[
+            "fecha_vencimiento_actual", "dia_corte", "estado", "actualizado_en",
+        ])
+
+        pago.aplicado = True
+        pago.save(update_fields=["aplicado", "vencimiento_previo", "estado_previo"])
+
+    @staticmethod
+    def _revertir_extension(s: Suscripcion, pago: Pago) -> None:
+        """Deshace la extensión restaurando el estado guardado.
+
+        Compensación exacta, no cálculo inverso: restar un mes daría un
+        resultado incorrecto si entre medias hubo otro movimiento.
+        """
+        if pago.vencimiento_previo:
+            s.fecha_vencimiento_actual = pago.vencimiento_previo
+        if pago.estado_previo:
+            s.estado = pago.estado_previo
+        s.save(update_fields=[
+            "fecha_vencimiento_actual", "estado", "actualizado_en",
+        ])
+        pago.aplicado = False
 
     # ── Confirmación (la hace el superadmin) ──────────────────────────
     @staticmethod
     def confirmar(pago: Pago, superadmin) -> Pago:
-        """Confirma un pago, extiende el vencimiento y reactiva el servicio.
+        """Confirma un pago. Si la extensión ya se aplicó al subirlo, solo
+        sella el estado; si no (flujo manual tras un rechazo previo), la
+        aplica ahora.
 
-        Regla RN-09 — ANCLA FIJA (no regresión del vencimiento):
-
-            nuevo = fecha_vencimiento_actual + 1 mes
-
-        La fecha de corte NUNCA se mueve: el próximo corte es siempre un mes
-        después del corte anterior, no del día de pago. Así un moroso no
-        puede derivar su fecha día a día pagando tarde; la tardanza leve la
-        absorbe el período de gracia (ver suspender_vencidas), no el ancla.
-
-        Si la suscripción quedó varios ciclos atrás (p. ej. estuvo mucho
-        tiempo suspendida), se avanza mes a mes hasta situar el vencimiento
-        en el futuro: un pago cubre un período y el corte se mantiene anclado
-        al día original.
-
-        El dia_corte se fija en el PRIMER pago confirmado a partir del fin de
-        la prueba (topado en 28 para evitar meses cortos). En el piloto es
-        informativo; en v1.1 anclará el cobro automático.
-
-        Todo ocurre dentro de una transacción con select_for_update() sobre
-        la suscripción, de modo que dos confirmaciones concurrentes se
+        Todo ocurre en una transacción con select_for_update() sobre la
+        suscripción, de modo que dos confirmaciones concurrentes se
         serializan; la segunda choca contra la restricción única parcial
         (RN-08) y se traduce en PagoYaConfirmadoError.
         """
@@ -186,58 +269,64 @@ class PagoService:
                  .get(pk=pago.suscripcion_id))
             pago = Pago.objects.select_for_update().get(pk=pago.pk)
 
-            # Idempotencia: si ya estaba confirmado, no se renueva de nuevo.
-            if pago.estado == Pago.Estado.CONFIRMADO:
+            # Idempotencia: solo se sale si el pago ya esta confirmado Y su
+            # extension esta aplicada. Si el estado dice confirmado pero la
+            # extension falta, el establecimiento pago y no recibio su tiempo,
+            # asi que hay que aplicarla.
+            if pago.estado == Pago.Estado.CONFIRMADO and pago.aplicado:
                 return pago
 
-            hoy = timezone.localdate()
-            if s.dia_corte is None:
-                # Primer pago: el ancla se fija según el fin de prueba
-                # (fecha_vencimiento_actual todavía apunta ahí).
-                s.dia_corte = min(s.fecha_vencimiento_actual.day, 28)
-
-            # Ancla fija: un mes desde el corte anterior, no desde hoy.
-            nuevo = s.fecha_vencimiento_actual + relativedelta(months=1)
-            # Si sigue en el pasado (varios ciclos de mora), avanzar hasta
-            # el próximo corte futuro sin regalar meses.
-            while nuevo <= hoy:
-                nuevo = nuevo + relativedelta(months=1)
-            s.fecha_vencimiento_actual = nuevo
-            s.estado = Suscripcion.Estado.ACTIVA  # reactiva si venía suspendida
+            if not pago.aplicado:
+                PagoService._aplicar_extension(s, pago)
 
             pago.estado = Pago.Estado.CONFIRMADO
             pago.confirmado_por = superadmin
             pago.confirmado_en = timezone.now()
             pago.motivo_rechazo = ""
-
             try:
                 pago.save(update_fields=[
                     "estado", "confirmado_por", "confirmado_en", "motivo_rechazo",
+                    "aplicado", "vencimiento_previo", "estado_previo",
                 ])
             except IntegrityError as exc:
                 # Otro comprobante del mismo período ya fue confirmado.
                 raise PagoYaConfirmadoError(
                     f"El período {pago.periodo} ya tiene un pago confirmado."
                 ) from exc
-
-            s.save(update_fields=[
-                "fecha_vencimiento_actual", "dia_corte", "estado", "actualizado_en",
-            ])
         return pago
 
     # ── Rechazo (la hace el superadmin) ───────────────────────────────
     @staticmethod
     def rechazar(pago: Pago, superadmin, motivo: str) -> Pago:
-        """Rechaza un comprobante indicando el motivo. No toca la suscripción:
-        el establecimiento puede volver a subir otro comprobante del mismo
-        período (nuevo Pago), y solo uno podrá quedar confirmado (RN-08)."""
-        pago.estado = Pago.Estado.RECHAZADO
-        pago.motivo_rechazo = motivo
-        pago.confirmado_por = superadmin
-        pago.confirmado_en = timezone.now()
-        pago.save(update_fields=[
-            "estado", "motivo_rechazo", "confirmado_por", "confirmado_en",
-        ])
+        """Rechaza un comprobante y, si se había activado el servicio de
+        forma optimista, lo revierte al estado exacto anterior.
+
+        El indicador `aplicado` hace la reversión idempotente: un segundo
+        rechazo del mismo pago no vuelve a restar tiempo.
+        """
+        with transaction.atomic():
+            s = (Suscripcion.objects
+                 .select_for_update()
+                 .get(pk=pago.suscripcion_id))
+            pago = Pago.objects.select_for_update().get(pk=pago.pk)
+
+            # La reversion se decide por `aplicado`, NUNCA por `estado`. Un
+            # pago cuyo estado se marco por fuera del servicio conservaria la
+            # extension vigente, y salir aqui comprobando solo el estado
+            # dejaria el descuadre sin corregir. `aplicado` es la unica
+            # fuente de verdad sobre si hay algo que compensar, y pasa a
+            # False al revertir, lo que hace la operacion idempotente.
+            if pago.aplicado:
+                PagoService._revertir_extension(s, pago)
+
+            pago.estado = Pago.Estado.RECHAZADO
+            pago.motivo_rechazo = motivo
+            pago.confirmado_por = superadmin
+            pago.confirmado_en = timezone.now()
+            pago.save(update_fields=[
+                "estado", "motivo_rechazo", "confirmado_por", "confirmado_en",
+                "aplicado",
+            ])
         return pago
 
 
