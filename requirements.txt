@@ -14,3 +14,6 @@ django-cloudinary-storage
 cloudinary
 # ── Despliegue ──
 dj-database-url
+# ── Correo transaccional (Resend via API HTTP) ──
+django-anymail
+

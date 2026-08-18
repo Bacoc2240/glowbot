@@ -365,3 +365,55 @@ class CorreoCaidoTest(TestCase):
         r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
         self.assertEqual(r.status_code, 302)
         self.assertEqual(len(mail.outbox), 1)
+
+
+@override_settings(
+    EMAIL_BACKEND="anymail.backends.resend.EmailBackend",
+    ANYMAIL={"RESEND_API_KEY": "re_prueba"},
+    DEFAULT_FROM_EMAIL="GlowBot <no-responder@glowbot.com.co>",
+)
+class ResendTest(TestCase):
+    """Envio via API HTTP de Resend (django-anymail).
+
+    Railway bloquea el puerto 587 fuera del plan Pro, asi que el correo NO
+    puede salir por SMTP. Anymail usa la API HTTP del proveedor, que viaja
+    por el 443 y no esta bloqueado.
+    """
+
+    def setUp(self):
+        Usuario.objects.create_user(email="duenio@barberia.com", password="clave12345")
+
+    def _pedir_recuperacion(self):
+        """Intercepta la sesion HTTP para no salir a la red y poder
+        inspeccionar la peticion que se habria enviado a Resend."""
+        respuesta = mock.Mock(status_code=200)
+        respuesta.json.return_value = {"id": "abc-123"}
+        respuesta.content = b'{"id": "abc-123"}'
+        sesion = mock.Mock()
+        sesion.request.return_value = respuesta
+        with mock.patch(
+            "anymail.backends.resend.EmailBackend.create_session",
+            return_value=sesion,
+        ):
+            self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        return sesion.request.call_args
+
+    def test_usa_la_api_http_no_smtp(self):
+        llamada = self._pedir_recuperacion()
+        self.assertIsNotNone(llamada, "No se realizo ninguna peticion HTTP")
+        url = llamada.kwargs["url"]
+        self.assertEqual(url, "https://api.resend.com/emails")
+        self.assertEqual(llamada.kwargs["method"], "POST")
+
+    def test_remitente_es_el_dominio_propio(self):
+        llamada = self._pedir_recuperacion()
+        self.assertIn("no-responder@glowbot.com.co", str(llamada))
+
+    def test_un_fallo_de_resend_no_tumba_la_peticion(self):
+        """Misma garantia que con SMTP: el usuario ve la pantalla normal."""
+        with mock.patch(
+            "django.core.mail.EmailMultiAlternatives.send",
+            side_effect=OSError("Resend no disponible"),
+        ):
+            r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
+        self.assertEqual(r.status_code, 302)

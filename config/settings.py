@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "asistente",
     "facturacion",
     "web",
+    "anymail",
 ]
 
 MIDDLEWARE = [
@@ -118,6 +119,11 @@ if "test" in sys.argv:
 else:
     EMAIL_BACKEND = os.getenv(
         "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+# Resend via django-anymail. Se usa la API HTTP del proveedor, no SMTP: en
+# los planes Hobby y Trial de Railway el puerto 587 esta bloqueado, asi que
+# cualquier envio por SMTP se queda colgado hasta agotar el timeout.
+ANYMAIL = {"RESEND_API_KEY": os.getenv("RESEND_API_KEY", "")}
+
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
