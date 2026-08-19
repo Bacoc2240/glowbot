@@ -220,8 +220,9 @@ REGLAS OBLIGATORIAS:
                         f"¡Listo, {cliente.nombre}! Tu cita quedó confirmada: "
                         f"{servicio.nombre}, {fecha_larga(dia)} a las "
                         f"{intencion['hora_inicio']} con {profesional.nombre}.\n\n"
-                        "Guarda este enlace: para consultar o cancelar "
-                        "tu cita, vuelve aqui y escribe tu numero de telefono."
+                        f"Para consultar o cancelar tu cita, entra a "
+                        f"{settings.SITIO_URL}/p/{establecimiento.slug} "
+                        "y escribe tu número de teléfono."
                     ),
                     "accion": "cita_creada",
                     "cita": {

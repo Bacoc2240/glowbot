@@ -16,7 +16,8 @@ from django.db import transaction
 from django.db.models import Q
 
 from negocios.models import (
-    Bloqueo, ExcepcionHorario, HorarioBase, Profesional, Servicio,
+    Bloqueo, Establecimiento, ExcepcionHorario, HorarioBase, Profesional,
+    Servicio,
 )
 from .models import Cita
 
@@ -119,22 +120,51 @@ class AgendaService:
         if not base:
             return []  # no atiende ese día
 
-        bloqueos = cls._bloqueos_del_dia(profesional, dia)
-        ocupacion = cls._ocupacion_del_dia(profesional, dia)
-        ocupados = bloqueos + ocupacion
+        ocupados = (cls._bloqueos_del_dia(profesional, dia)
+                    + cls._ocupacion_del_dia(profesional, dia))
+
+        # El paso depende del modo del establecimiento (RF-07):
+        #   compacto  → cada cita empieza donde termina la anterior, sin
+        #               dejar huecos donde no cabe ningún servicio
+        #   flexible  → rejilla fija, más opciones a costa de fragmentar
+        modo = profesional.establecimiento.modo_agenda
+        paso = duracion if modo == Establecimiento.ModoAgenda.COMPACTO else paso_min
 
         slots = []
-        for ini, fin in base:
-            t = ini
-            while t + duracion <= fin:
-                # ¿el slot [t, t+duracion) choca con algo ocupado?
-                libre = not any(
-                    cls._solapan(t, t + duracion, oi, of) for oi, of in ocupados
-                )
-                if libre:
-                    slots.append(cls._a_time(t))
-                t += paso_min
-        return slots
+        for hueco_ini, hueco_fin in cls._huecos_libres(base, ocupados):
+            t = hueco_ini
+            while t + duracion <= hueco_fin:
+                slots.append(cls._a_time(t))
+                t += paso
+        return sorted(slots)
+
+    @classmethod
+    def _huecos_libres(cls, franjas, ocupados):
+        """Resta lo ocupado de las franjas y devuelve los tramos libres.
+
+        Calcular los huecos ANTES de generar las horas es lo que evita el
+        desperdicio: si una barba termina a las 11:30, el siguiente corte
+        puede empezar a las 11:30 exactas en vez de esperar a la siguiente
+        marca de una rejilla fija. Recorriendo una rejilla y descartando por
+        solape, ese minuto y medio se perdía sin que nadie lo notara.
+        """
+        libres = []
+        for f_ini, f_fin in franjas:
+            tramos = [(f_ini, f_fin)]
+            for o_ini, o_fin in ocupados:
+                nuevos = []
+                for t_ini, t_fin in tramos:
+                    if not cls._solapan(t_ini, t_fin, o_ini, o_fin):
+                        nuevos.append((t_ini, t_fin))
+                        continue
+                    # Lo que quede del tramo a cada lado de lo ocupado
+                    if t_ini < o_ini:
+                        nuevos.append((t_ini, o_ini))
+                    if o_fin < t_fin:
+                        nuevos.append((o_fin, t_fin))
+                tramos = nuevos
+            libres.extend(tramos)
+        return sorted(libres)
 
     # ──────────────────────────────────────────────────────────────
     #  API pública: reservar (atómica, anti double-booking) — RF-11

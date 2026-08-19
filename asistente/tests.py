@@ -397,10 +397,13 @@ class MensajeDeConfirmacionTest(TestCase):
         import inspect
         from asistente.services import IAService
         codigo = inspect.getsource(IAService)
-        self.assertIn("Guarda este enlace", codigo)
-        self.assertIn("escribe tu numero de telefono", codigo)
+        # Debe incluir la URL REAL, no una referencia vaga: decir "guarda
+        # este enlace" sin enlace no le sirve de nada al cliente.
+        self.assertIn("settings.SITIO_URL", codigo)
+        self.assertIn("establecimiento.slug", codigo)
+        self.assertIn("escribe tu n\u00famero de tel\u00e9fono", codigo)
 
     def test_la_consulta_ofrece_cancelar(self):
         import inspect
         from asistente.services import IAService
-        self.assertIn("puede cancelarla desde aqui", inspect.getsource(IAService))
+        self.assertIn("puede cancelarla desde aqu", inspect.getsource(IAService))

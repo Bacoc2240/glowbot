@@ -13,7 +13,10 @@ from negocios.api import (
     HorariosProfesionalView, MiEstablecimientoView, ProfesionalViewSet,
     ServicioViewSet,
 )
-from agenda.api import CitaViewSet, DisponibilidadView, NotificacionesView
+from agenda.api import (
+    CitaViewSet, DisponibilidadView, MarcarRecordatorioView, NotificacionesView,
+    RecordatoriosView,
+)
 from asistente.api import (
     CancelarCitaPublicaView, ChatView, ConsultarCitaPublicaView, InfoPublicaView,
 )
@@ -60,6 +63,10 @@ api_v1 = [
          CancelarCitaPublicaView.as_view(), name="cancelar-cita-publica"),
     # Suscripcion y pagos — Sprint 4.1 (§9)
     # Enlace publico del negocio (consulta y cambio de slug)
+    # Recordatorios de cita al cliente (RF-18)
+    path("recordatorios", RecordatoriosView.as_view(), name="recordatorios"),
+    path("recordatorios/<int:notificacion_id>", MarcarRecordatorioView.as_view(),
+         name="marcar-recordatorio"),
     path("mi-establecimiento", MiEstablecimientoView.as_view(),
          name="mi-establecimiento"),
     path("mi-suscripcion", MiSuscripcionView.as_view(), name="mi-suscripcion"),

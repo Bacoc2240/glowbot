@@ -78,3 +78,14 @@ class Notificacion(models.Model):
     class Meta:
         db_table = "notificacion"
         verbose_name_plural = "notificaciones"
+        constraints = [
+            # Un cliente no debe recibir dos recordatorios de la misma cita.
+            # El servicio ya usa get_or_create, pero si el cron se ejecutara
+            # dos veces en paralelo ambas comprobaciones podrian pasar antes
+            # de que ninguna escriba: la restriccion cierra esa ventana.
+            models.UniqueConstraint(
+                fields=["cita"],
+                condition=models.Q(tipo="recordatorio"),
+                name="uq_un_recordatorio_por_cita",
+            ),
+        ]

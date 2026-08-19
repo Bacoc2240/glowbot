@@ -192,6 +192,13 @@ LOGIN_URL = "/ingresar"
 LOGIN_REDIRECT_URL = "/panel/"
 LOGOUT_REDIRECT_URL = "/ingresar"
 
+# URL publica del sitio, usada en los mensajes que se envian a clientes
+# finales (recordatorios). Sin dominio propio cae al de Railway.
+SITIO_URL = os.getenv(
+    "SITIO_URL",
+    f"https://{DOMINIO_RAILWAY}" if DOMINIO_RAILWAY else "http://127.0.0.1:8000",
+)
+
 # ── Datos para recibir los pagos de las suscripciones (RF-21) ──
 # Se leen del entorno para no dejar datos financieros en el repositorio y
 # poder cambiarlos sin tocar codigo. Bre-B (Banco de la Republica) admite

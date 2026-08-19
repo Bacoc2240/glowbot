@@ -35,6 +35,13 @@ class Establecimiento(models.Model):
         BASICO = "basico", "Básico — hasta 3 profesionales"
         PREMIUM = "premium", "Premium — hasta 6 profesionales"
 
+    class ModoAgenda(models.TextChoices):
+        # Compacto ancla cada cita al final de la anterior: en un negocio de
+        # 1 a 3 profesionales cada hueco perdido es capacidad que no se
+        # recupera. Flexible prioriza que el cliente encuentre su hora.
+        COMPACTO = "compacto", "Compacto — sin huecos entre citas"
+        FLEXIBLE = "flexible", "Flexible — horas cada 15 minutos"
+
     LIMITE_PROFESIONALES = {Plan.BASICO: 3, Plan.PREMIUM: 6}
 
     propietario = models.ForeignKey(
@@ -47,6 +54,14 @@ class Establecimiento(models.Model):
     direccion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20)
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.BASICO)
+    modo_agenda = models.CharField(
+        max_length=10, choices=ModoAgenda.choices, default=ModoAgenda.COMPACTO,
+        help_text=(
+            "Compacto: las citas se ofrecen pegadas una tras otra, sin dejar "
+            "huecos inservibles. Flexible: se ofrecen cada 15 minutos, con "
+            "mas opciones para el cliente a costa de fragmentar la agenda."
+        ),
+    )
     activo = models.BooleanField(default=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 

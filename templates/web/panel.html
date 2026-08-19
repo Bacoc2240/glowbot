@@ -35,6 +35,27 @@
     </div>
   </div>
 
+  <!-- Recordatorios por enviar (RF-18) -->
+  <div class="card" x-show="recordatorios.length" style="background:#FEF8E3">
+    <h2>Recordatorios por enviar</h2>
+    <p class="muted">Citas proximas. Toca Enviar y WhatsApp se abre con el
+       mensaje listo; luego marca que ya lo mandaste.</p>
+    <template x-for="r in recordatorios" :key="r.id">
+      <div style="border-top:1px solid var(--borde); padding:10px 0">
+        <b x-text="r.cliente"></b>
+        <div class="muted"
+             x-text="r.servicio + ' \u00b7 ' + r.hora + ' \u00b7 ' + r.profesional"></div>
+        <div style="display:flex; gap:8px; margin-top:8px" x-show="r.enlace_wa">
+          <a class="btn" style="flex:1; text-align:center" :href="r.enlace_wa"
+             target="_blank">Enviar</a>
+          <button style="flex:1" @click="marcarEnviado(r)">Ya lo envie</button>
+        </div>
+        <p class="error" x-show="!r.enlace_wa">
+          Este cliente no dejo telefono; no se le puede recordar.</p>
+      </div>
+    </template>
+  </div>
+
   <!-- Banner de suscripción (RF-20) -->
   <div class="card" x-show="sub && sub.estado !== 'activa'"
        :style="sub && sub.dias_restantes < 0
@@ -100,7 +121,7 @@
 function panel() {
   return {
     fecha: new Date().toISOString().slice(0, 10),
-    citas: [], notificaciones: [], sub: null,
+    citas: [], notificaciones: [], recordatorios: [], sub: null,
     est: null, editando: false, slugNuevo: "", copiado: false,
     errorSlug: "", okSlug: "", guardando: false,
     get canceladas() { return this.citas.filter(c => c.estado.startsWith("cancelada")).length; },
@@ -110,6 +131,7 @@ function panel() {
       await this.cargarSuscripcion();
       await this.cargarCitas();
       await this.cargarNotifs();
+      await this.cargarRecordatorios();
     },
     origen() { return window.location.origin; },
     enlace() { return this.est ? this.origen() + "/p/" + this.est.slug : ""; },
@@ -156,6 +178,14 @@ function panel() {
       this.slugNuevo = d.slug;
       this.okSlug = d.aviso;
       this.editando = false;
+    },
+    async cargarRecordatorios() {
+      const r = await api("/recordatorios");
+      if (r && r.ok) this.recordatorios = (await r.json()).recordatorios;
+    },
+    async marcarEnviado(rec) {
+      await api("/recordatorios/" + rec.id, { method: "POST" });
+      this.recordatorios = this.recordatorios.filter(x => x.id !== rec.id);
     },
     async cargarSuscripcion() {
       const r = await api("/mi-suscripcion");

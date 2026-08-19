@@ -5,10 +5,12 @@ from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 
 from negocios.models import Profesional, Servicio
-from .models import Cita
+from .models import Cita, Notificacion
+from .recordatorios import RecordatorioService
 from .services import AgendaService, SlotNoDisponible
 
 
@@ -103,6 +105,7 @@ class CitaViewSet(viewsets.ModelViewSet):
 # ═══════════════════════════════════════════════════════════════
 from .models import Notificacion
 from .notificaciones import NotificacionService
+from .recordatorios import RecordatorioService
 
 
 class NotificacionesView(APIView):
@@ -135,3 +138,61 @@ class NotificacionesView(APIView):
                 "creado_en": n.creado_en.isoformat(),
             })
         return Response({"notificaciones": data})
+
+
+class RecordatoriosView(APIView):
+    """GET  /api/v1/recordatorios      pendientes de enviar, con enlace wa.me
+    POST /api/v1/recordatorios/<id>   marca uno como enviado
+
+    Entrega manual del RF-18: el dueno abre el enlace, WhatsApp se abre con
+    el texto listo, y vuelve a marcarlo. Cuesta cero y funciona hoy; cuando
+    se automatice el envio esta vista pasa a ser solo de consulta.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        est = request.user.establecimientos.first()
+        notifs = (
+            Notificacion.objects
+            .filter(
+                cita__establecimiento=est,
+                tipo=Notificacion.Tipo.RECORDATORIO,
+                estado__in=[Notificacion.Estado.PENDIENTE,
+                            Notificacion.Estado.GENERADA],
+                cita__estado=Cita.Estado.CONFIRMADA,
+            )
+            .select_related("cita", "cita__cliente", "cita__servicio",
+                            "cita__profesional", "cita__establecimiento")
+            .order_by("cita__fecha", "cita__hora_inicio")
+        )
+        data = []
+        for n in notifs:
+            enlace = RecordatorioService.enlace_wa(n)
+            data.append({
+                "id": n.id,
+                "cliente": n.cita.cliente.nombre,
+                "telefono": n.cita.cliente.telefono,
+                "servicio": n.cita.servicio.nombre,
+                "profesional": n.cita.profesional.nombre,
+                "fecha": str(n.cita.fecha),
+                "hora": n.cita.hora_inicio.strftime("%H:%M"),
+                "estado": n.estado,
+                # None si el cliente no dejo telefono: la interfaz lo avisa
+                # en vez de mostrar un enlace roto.
+                "enlace_wa": enlace,
+            })
+        return Response({"recordatorios": data})
+
+
+class MarcarRecordatorioView(APIView):
+    """Confirma que el recordatorio ya se envio."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, notificacion_id):
+        est = request.user.establecimientos.first()
+        notif = get_object_or_404(
+            Notificacion, pk=notificacion_id, cita__establecimiento=est,
+            tipo=Notificacion.Tipo.RECORDATORIO,
+        )
+        RecordatorioService.marcar_enviada(notif)
+        return Response({"id": notif.id, "estado": notif.estado})
