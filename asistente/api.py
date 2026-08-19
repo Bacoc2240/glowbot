@@ -51,6 +51,12 @@ class ChatThrottle(AnonRateThrottle):
 class InfoPublicaView(APIView):
     """GET /api/v1/p/{slug} — información pública del establecimiento."""
     permission_classes = [AllowAny]
+    # Sin autenticacion: es una zona publica y el cliente final nunca tiene
+    # sesion. Heredar SessionAuthentication hacia que DRF autenticara con la
+    # cookie de cualquier visitante que tuviera sesion abierta (por ejemplo
+    # en /admin/) y entonces EXIGIERA token CSRF en el POST, devolviendo 403
+    # aunque el endpoint sea AllowAny.
+    authentication_classes = []
 
     def get(self, request, slug):
         est = _establecimiento_por_slug(slug)
@@ -79,6 +85,12 @@ class ChatView(APIView):
     Cuerpo: {"session_id": "...", "mensaje": "..."}.
     Si no llega session_id, se genera uno y se devuelve para continuidad."""
     permission_classes = [AllowAny]
+    # Sin autenticacion: es una zona publica y el cliente final nunca tiene
+    # sesion. Heredar SessionAuthentication hacia que DRF autenticara con la
+    # cookie de cualquier visitante que tuviera sesion abierta (por ejemplo
+    # en /admin/) y entonces EXIGIERA token CSRF en el POST, devolviendo 403
+    # aunque el endpoint sea AllowAny.
+    authentication_classes = []
     throttle_classes = [ChatThrottle]
 
     def post(self, request, slug):
@@ -104,6 +116,12 @@ class ChatView(APIView):
 class ConsultarCitaPublicaView(APIView):
     """POST /api/v1/p/{slug}/citas/consultar — {"telefono": "..."} (RF-12)."""
     permission_classes = [AllowAny]
+    # Sin autenticacion: es una zona publica y el cliente final nunca tiene
+    # sesion. Heredar SessionAuthentication hacia que DRF autenticara con la
+    # cookie de cualquier visitante que tuviera sesion abierta (por ejemplo
+    # en /admin/) y entonces EXIGIERA token CSRF en el POST, devolviendo 403
+    # aunque el endpoint sea AllowAny.
+    authentication_classes = []
 
     def post(self, request, slug):
         est = _establecimiento_por_slug(slug)
@@ -124,6 +142,12 @@ class ConsultarCitaPublicaView(APIView):
 class CancelarCitaPublicaView(APIView):
     """POST /api/v1/p/{slug}/citas/cancelar — {"telefono": "..."} (RF-12, RF-13)."""
     permission_classes = [AllowAny]
+    # Sin autenticacion: es una zona publica y el cliente final nunca tiene
+    # sesion. Heredar SessionAuthentication hacia que DRF autenticara con la
+    # cookie de cualquier visitante que tuviera sesion abierta (por ejemplo
+    # en /admin/) y entonces EXIGIERA token CSRF en el POST, devolviendo 403
+    # aunque el endpoint sea AllowAny.
+    authentication_classes = []
 
     def post(self, request, slug):
         est = _establecimiento_por_slug(slug)

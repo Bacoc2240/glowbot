@@ -10,7 +10,7 @@ import json
 from datetime import date, time
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import Client, TestCase
 
 from cuentas.models import Usuario
 from negocios.models import (
@@ -318,3 +318,57 @@ class FechaLargaTest(TestCase):
 
 
 # Create your tests here.
+
+
+class ZonaPublicaSinSesionTest(TestCase):
+    """La zona publica no debe autenticar a nadie.
+
+    Con SessionAuthentication heredada, un visitante con sesion abierta en
+    /admin/ hacia que DRF lo autenticara por cookie y exigiera token CSRF en
+    el POST, devolviendo 403 aunque la vista sea AllowAny. Le pasaba al
+    superadmin probando el enlace de sus propios clientes.
+    """
+
+    def setUp(self):
+        propietario = Usuario.objects.create_user(
+            email="admin@barberia.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=propietario, nombre="Mi Barberia",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+        )
+
+    def test_las_vistas_publicas_no_autentican(self):
+        from asistente.api import (
+            CancelarCitaPublicaView, ChatView, ConsultarCitaPublicaView,
+            InfoPublicaView,
+        )
+        for vista in [InfoPublicaView, ChatView, ConsultarCitaPublicaView,
+                      CancelarCitaPublicaView]:
+            with self.subTest(vista=vista.__name__):
+                self.assertEqual(
+                    list(vista.authentication_classes), [],
+                    f"{vista.__name__} heredaria SessionAuthentication y"
+                    " exigiria CSRF en el POST",
+                )
+
+    def test_chat_no_exige_csrf_con_sesion_abierta(self):
+        """Reproduce el caso real: sesion de admin viva en el navegador."""
+        cliente = Client(enforce_csrf_checks=True)
+        cliente.force_login(Usuario.objects.create_superuser(
+            email="super@glowbot.com.co", password="x"))
+        # Se aisla la llamada a la API de Claude: lo que se comprueba aqui es
+        # que la peticion ATRAVIESA la capa de autenticacion, no la IA.
+        with patch("asistente.api.IAService") as ia:
+            ia.return_value.responder.return_value = {"respuesta": "hola"}
+            r = cliente.post(
+                f"/api/v1/p/{self.est.slug}/chat",
+                {"mensaje": "hola"}, content_type="application/json",
+            )
+        self.assertNotEqual(
+            r.status_code, 403,
+            "El POST publico fue rechazado por CSRF pese a ser AllowAny",
+        )
+
+    def test_info_publica_sigue_accesible(self):
+        r = self.client.get(f"/api/v1/p/{self.est.slug}")
+        self.assertEqual(r.status_code, 200)
