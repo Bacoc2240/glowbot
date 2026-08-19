@@ -103,7 +103,11 @@ REGLAS OBLIGATORIAS:
    {{"intencion":"cancelar_cita","telefono":"..."}}
 9. NUNCA calcules ni deduzcas el día de la semana de una fecha. Usa el nombre
    del día exactamente como aparece en los datos que recibes. En el JSON de las
-   intenciones la fecha va siempre en formato AAAA-MM-DD."""
+   intenciones la fecha va siempre en formato AAAA-MM-DD.
+10. Si el cliente envía SOLO un número de teléfono (10 dígitos) sin pedir
+   otra cosa, entiendelo como que quiere ver su cita: emite consultar_cita
+   con ese número. Es la via mas rapida para quien vuelve y solo quiere
+   recordar cuando la tiene."""
 
 
     # ──────────────────────────────────────────────────────────────
@@ -215,7 +219,9 @@ REGLAS OBLIGATORIAS:
                     "respuesta": (
                         f"¡Listo, {cliente.nombre}! Tu cita quedó confirmada: "
                         f"{servicio.nombre}, {fecha_larga(dia)} a las "
-                        f"{intencion['hora_inicio']} con {profesional.nombre}."
+                        f"{intencion['hora_inicio']} con {profesional.nombre}.\n\n"
+                        "Guarda este enlace: para consultar o cancelar "
+                        "tu cita, vuelve aqui y escribe tu numero de telefono."
                     ),
                     "accion": "cita_creada",
                     "cita": {
@@ -234,7 +240,8 @@ REGLAS OBLIGATORIAS:
                     f"Próxima cita del cliente: {cita.servicio.nombre} el "
                     f"{fecha_larga(cita.fecha)} a las "
                     f"{cita.hora_inicio.strftime('%H:%M')} con "
-                    f"{cita.profesional.nombre}. Infórmala textualmente."
+                    f"{cita.profesional.nombre}. Infórmala textualmente y "
+                    "recuérdale que puede cancelarla desde aqui si lo necesita."
                 )
 
             if tipo == "cancelar_cita":

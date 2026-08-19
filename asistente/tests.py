@@ -372,3 +372,35 @@ class ZonaPublicaSinSesionTest(TestCase):
     def test_info_publica_sigue_accesible(self):
         r = self.client.get(f"/api/v1/p/{self.est.slug}")
         self.assertEqual(r.status_code, 200)
+
+
+class MensajeDeConfirmacionTest(TestCase):
+    """La funcion de consultar cita ya existia (RF-12) pero el cliente no la
+    descubria: el mensaje de confirmacion terminaba sin decirle que podia
+    volver. Una funcion que nadie encuentra es una funcion que no existe."""
+
+    def test_el_prompt_explica_el_atajo_del_telefono(self):
+        """Regla 10: un numero suelto se interpreta como consulta."""
+        from asistente.services import IAService
+        from cuentas.models import Usuario
+        from negocios.models import Establecimiento
+        u = Usuario.objects.create_user(email="p@b.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="Prueba",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300",
+        )
+        prompt = IAService.construir_prompt_sistema(est)
+        self.assertIn("SOLO un n\u00famero de tel\u00e9fono", prompt)
+        self.assertIn("consultar_cita", prompt)
+
+    def test_la_confirmacion_dice_como_volver(self):
+        import inspect
+        from asistente.services import IAService
+        codigo = inspect.getsource(IAService)
+        self.assertIn("Guarda este enlace", codigo)
+        self.assertIn("escribe tu numero de telefono", codigo)
+
+    def test_la_consulta_ofrece_cancelar(self):
+        import inspect
+        from asistente.services import IAService
+        self.assertIn("puede cancelarla desde aqui", inspect.getsource(IAService))
