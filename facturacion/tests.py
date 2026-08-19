@@ -707,3 +707,69 @@ class ComandoVerificarSuscripcionesTests(BaseFacturacion):
         self.assertIn("no se modifico nada", salida.getvalue())
         self.sub.refresh_from_db()
         self.assertEqual(self.sub.estado, Suscripcion.Estado.PRUEBA)
+
+
+class PlanesTests(BaseFacturacion):
+    """Dos niveles, sin opciones dominadas: antes 'basico' y 'estandar'
+    costaban lo mismo pero el primero admitia menos profesionales."""
+
+    def test_solo_existen_dos_planes(self):
+        valores = [p[0] for p in Establecimiento.Plan.choices]
+        self.assertEqual(sorted(valores), ["basico", "premium"])
+
+    def test_basico_admite_tres_profesionales(self):
+        self.est.plan = Establecimiento.Plan.BASICO
+        self.est.save()
+        self.assertEqual(self.est.limite_profesionales, 3)
+
+    def test_premium_admite_seis(self):
+        self.est.plan = Establecimiento.Plan.PREMIUM
+        self.est.save()
+        self.assertEqual(self.est.limite_profesionales, 6)
+
+    def test_cada_plan_tiene_un_precio_distinto(self):
+        """Si dos planes cuestan igual, el de menor capacidad no lo elegiria
+        nadie: es la incoherencia que motivo este cambio."""
+        precios = {}
+        for valor, _ in Establecimiento.Plan.choices:
+            self.est.plan = valor
+            self.est.save()
+            precios[valor] = SuscripcionService.precio_mensual(self.est)
+        self.assertEqual(len(set(precios.values())), len(precios), precios)
+
+    def test_a_mayor_precio_mayor_capacidad(self):
+        self.est.plan = Establecimiento.Plan.BASICO
+        self.est.save()
+        precio_basico = SuscripcionService.precio_mensual(self.est)
+        limite_basico = self.est.limite_profesionales
+        self.est.plan = Establecimiento.Plan.PREMIUM
+        self.est.save()
+        self.assertGreater(SuscripcionService.precio_mensual(self.est), precio_basico)
+        self.assertGreater(self.est.limite_profesionales, limite_basico)
+
+    def test_registro_acepta_los_dos_planes(self):
+        for plan, esperado in [("basico", 35000), ("premium", 45000)]:
+            with self.subTest(plan=plan):
+                r = self.client.post(
+                    "/api/v1/auth/registro",
+                    {
+                        "email": f"nuevo-{plan}@salon.com", "password": "clave12345",
+                        "nombre_negocio": f"Salon {plan}", "tipo": "salon",
+                        "telefono": "3001112222", "plan": plan,
+                    },
+                    content_type="application/json",
+                )
+                self.assertEqual(r.status_code, 201)
+                self.assertEqual(r.json()["suscripcion"]["precio_mensual"], esperado)
+
+    def test_registro_rechaza_el_plan_retirado(self):
+        r = self.client.post(
+            "/api/v1/auth/registro",
+            {
+                "email": "viejo@salon.com", "password": "clave12345",
+                "nombre_negocio": "Salon Viejo", "tipo": "salon",
+                "telefono": "3001112222", "plan": "estandar",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(r.status_code, 400)

@@ -27,7 +27,6 @@ DIAS_GRACIA = 3
 # 4–6 profesionales $45.000.
 PRECIOS_PLAN = {
     Establecimiento.Plan.BASICO: 35000,
-    Establecimiento.Plan.ESTANDAR: 35000,
     Establecimiento.Plan.PREMIUM: 45000,
 }
 

@@ -27,11 +27,15 @@ class Establecimiento(models.Model):
         MIXTO = "mixto", "Servicios mixtos"
 
     class Plan(models.TextChoices):
-        BASICO = "basico", "Básico — 1 profesional"
-        ESTANDAR = "estandar", "Estándar — hasta 3 profesionales"
+        # Dos niveles, alineados con el modelo de negocio. Antes habia un
+        # tercero ("estandar") al mismo precio que el basico pero con mas
+        # capacidad, lo que convertia al basico en una opcion dominada:
+        # ningun cliente racional la elegiria, y aun asi era la que ofrecia
+        # por defecto la pagina de registro.
+        BASICO = "basico", "Básico — hasta 3 profesionales"
         PREMIUM = "premium", "Premium — hasta 6 profesionales"
 
-    LIMITE_PROFESIONALES = {Plan.BASICO: 1, Plan.ESTANDAR: 3, Plan.PREMIUM: 6}
+    LIMITE_PROFESIONALES = {Plan.BASICO: 3, Plan.PREMIUM: 6}
 
     propietario = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
