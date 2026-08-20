@@ -18,7 +18,7 @@ import json
 import re
 import logging
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -48,7 +48,25 @@ class IAService:
     #  Bloques 1 y 2: prompt de sistema dinámico por establecimiento
     # ──────────────────────────────────────────────────────────────
     @staticmethod
-    def construir_prompt_sistema(establecimiento) -> str:
+    def _calendario(hoy, dias: int = 14) -> str:
+        """Tabla explicita de fecha -> dia de la semana.
+
+        El modelo no sabe en que dia cae una fecha: si se lo pedimos, lo
+        deduce mal. Darle solo "hoy" no basta, porque el cliente dice "el
+        20" o "el jueves" y alguien tiene que hacer la cuenta. Con la tabla
+        delante solo tiene que leer, que es lo unico en lo que es fiable.
+        """
+        relativos = {0: "hoy", 1: "ma\u00f1ana", 2: "pasado ma\u00f1ana"}
+        lineas = []
+        for i in range(dias):
+            f = hoy + timedelta(days=i)
+            etiqueta = relativos.get(i)
+            marca = f" \u2190 {etiqueta}" if etiqueta else ""
+            lineas.append(f"  {f.isoformat()} = {fecha_larga(f)}{marca}")
+        return "\n".join(lineas)
+
+    @classmethod
+    def construir_prompt_sistema(cls, establecimiento) -> str:
         servicios = Servicio.objects.filter(
             establecimiento=establecimiento, activo=True,
         )
@@ -70,6 +88,7 @@ class IAService:
 
         ahora = timezone.localtime()
         fecha_txt = f"{fecha_larga(ahora.date())}, {ahora.strftime('%H:%M')}"
+        calendario = cls._calendario(ahora.date())
 
         return f"""Eres el asistente de agendamiento de {establecimiento.nombre}, \
 un(a) {establecimiento.get_tipo_display()} en Saravena, Arauca.
@@ -82,6 +101,9 @@ PROFESIONALES Y SUS SERVICIOS:
 {lineas_profesionales}
 
 FECHA Y HORA ACTUAL (America/Bogota): {fecha_txt}
+
+CALENDARIO (unica fuente valida para dias de la semana):
+{calendario}
 
 REGLAS OBLIGATORIAS:
 1. Solo ofrece servicios, precios, profesionales y horarios que aparezcan arriba
@@ -101,9 +123,13 @@ REGLAS OBLIGATORIAS:
    {{"intencion":"agendar","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD","hora_inicio":"HH:MM","cliente":{{"nombre":"...","telefono":"...","acepta_datos":true}}}}
    {{"intencion":"consultar_cita","telefono":"..."}}
    {{"intencion":"cancelar_cita","telefono":"..."}}
-9. NUNCA calcules ni deduzcas el día de la semana de una fecha. Usa el nombre
-   del día exactamente como aparece en los datos que recibes. En el JSON de las
-   intenciones la fecha va siempre en formato AAAA-MM-DD.
+9. NUNCA calcules ni deduzcas el día de la semana ni expresiones como "hoy",
+   "mañana" o "pasado mañana". Leelos SIEMPRE del CALENDARIO de arriba, tambien
+   cuando converses en texto libre y aunque aún no hayas consultado nada al
+   sistema. Si el cliente menciona una fecha, busca su linea en el calendario
+   antes de nombrarla; si no aparece, pide que la confirme. Decirle a alguien
+   un dia equivocado hace que pierda su cita. En el JSON de las intenciones la
+   fecha va siempre en formato AAAA-MM-DD.
 10. Si el cliente envía SOLO un número de teléfono (10 dígitos) sin pedir
    otra cosa, entiendelo como que quiere ver su cita: emite consultar_cita
    con ese número. Es la via mas rapida para quien vuelve y solo quiere

@@ -6,6 +6,7 @@ realimentación [SISTEMA]) sin consumir tokens reales.
 
 Cubre los casos de prueba del Sistema de Prompts v1.0 §7.
 """
+from datetime import timedelta
 import json
 from datetime import date, time
 from unittest.mock import patch
@@ -407,3 +408,59 @@ class MensajeDeConfirmacionTest(TestCase):
         import inspect
         from asistente.services import IAService
         self.assertIn("puede cancelarla desde aqu", inspect.getsource(IAService))
+
+
+class CalendarioEnElPromptTest(TestCase):
+    """El modelo nombraba mal los dias: dijo 'miercoles 20 de agosto' cuando
+    el 20 era jueves, y llamo 'manana' al 20 estando en el 18. La Regla 9
+    prohibia deducir, pero solo tenia la fecha de hoy: alguien tenia que
+    hacer la cuenta y la hacia mal. Ahora lee una tabla."""
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="cal@t.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barberia", tipo=Establecimiento.Tipo.BARBERIA,
+            telefono="300",
+        )
+
+    def _prompt(self, hoy):
+        class FalsoAhora:
+            def date(self_): return hoy
+            def strftime(self_, f): return "10:00"
+        with patch("asistente.services.timezone.localtime", return_value=FalsoAhora()):
+            return IAService.construir_prompt_sistema(self.est)
+
+    def test_el_caso_real_que_fallo(self):
+        """Martes 18: el 20 es jueves, no miercoles."""
+        prompt = self._prompt(date(2026, 8, 18))
+        self.assertIn("2026-08-20 = jueves 20 de agosto de 2026", prompt)
+        self.assertNotIn("mi\u00e9rcoles 20 de agosto", prompt)
+
+    def test_manana_es_el_dia_siguiente_no_otro(self):
+        prompt = self._prompt(date(2026, 8, 18))
+        self.assertIn("2026-08-19 = mi\u00e9rcoles 19 de agosto de 2026 \u2190 ma\u00f1ana", prompt)
+        self.assertIn("2026-08-20 = jueves 20 de agosto de 2026 \u2190 pasado ma\u00f1ana", prompt)
+
+    def test_cubre_dos_semanas(self):
+        """Quien pide cita 'el otro viernes' debe encontrarlo en la tabla."""
+        prompt = self._prompt(date(2026, 8, 18))
+        self.assertIn("2026-08-31", prompt)
+
+    def test_los_dias_de_la_tabla_son_correctos(self):
+        """Se verifica contra el calendario real, no contra valores fijos."""
+        hoy = date(2026, 8, 18)
+        prompt = self._prompt(hoy)
+        for i in range(14):
+            f = hoy + timedelta(days=i)
+            with self.subTest(fecha=f):
+                self.assertIn(f"{f.isoformat()} = {fecha_larga(f)}", prompt)
+
+    def test_la_regla_prohibe_deducir_tambien_al_conversar(self):
+        """El fallo ocurrio en texto libre, antes de consultar nada."""
+        prompt = self._prompt(date(2026, 8, 18))
+        self.assertIn("texto libre", prompt)
+        self.assertIn("CALENDARIO", prompt)
+
+    def test_funciona_en_cambio_de_mes(self):
+        prompt = self._prompt(date(2026, 8, 25))
+        self.assertIn("2026-09-01 = martes 1 de septiembre de 2026", prompt)
