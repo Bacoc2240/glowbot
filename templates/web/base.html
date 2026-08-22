@@ -9,6 +9,7 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block titulo %}GlowBot{% endblock %}</title>
+  {% block meta %}{% endblock %}
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   <style>
     :root {
@@ -24,6 +25,10 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
     .top b { font-size: 18px; }
     .top .dorado { color: var(--dorado); }
     main { max-width: 640px; margin: 0 auto; padding: 16px; }
+    /* 640px es la medida comoda de una columna de formulario en el panel,
+       no la de una pagina comercial que se lee de corrido en escritorio.
+       La portada pide el ancho declarando "ancho" en el bloque clase_main. */
+    main.ancho { max-width: 960px; }
     .card { background: #fff; border: 1px solid var(--borde); border-radius: 12px;
             padding: 14px; margin-bottom: 12px; }
     .fila { display: flex; gap: 10px; align-items: center; }
@@ -59,13 +64,14 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
     .espacio-nav { height: 76px; }
     .muted { color: var(--gris); font-size: 13px; }
   </style>
+  {% block estilos %}{% endblock %}
 </head>
 <body>
   <div class="top">
     <b>Glow<span class="dorado">Bot</span></b>
     {% block top_derecha %}{% endblock %}
   </div>
-  <main>{% block contenido %}{% endblock %}</main>
+  <main class="{% block clase_main %}{% endblock %}">{% block contenido %}{% endblock %}</main>
   {% block nav %}{% endblock %}
   <script>
     // Ayudantes compartidos: JWT en localStorage + fetch autenticado

@@ -12,10 +12,37 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.generic import TemplateView
 
+from facturacion.services import DIAS_PRUEBA, planes_publicos
+
 logger = logging.getLogger(__name__)
 
 
-class RegistroView(TemplateView):
+class OfertaMixin:
+    """Contexto comercial compartido: planes vigentes y dias de prueba.
+
+    La capa de presentacion no define precios ni duraciones: los lee de la
+    capa de servicios, que es donde el cobro ocurre de verdad. Antes el
+    registro llevaba los precios escritos a mano en el HTML, de modo que
+    una subida de tarifa exigia recordar tres archivos.
+    """
+
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        contexto["planes"] = planes_publicos()
+        contexto["dias_prueba"] = DIAS_PRUEBA
+        return contexto
+
+
+class PortadaView(OfertaMixin, TemplateView):
+    """Raiz del dominio: que es GlowBot, como funciona y cuanto cuesta.
+
+    Es la unica pagina que explica el producto a quien no lo conoce. Sin
+    ella, el enlace glowbot.com.co no comunicaba nada: devolvia 404.
+    """
+    template_name = "web/portada.html"
+
+
+class RegistroView(OfertaMixin, TemplateView):
     """Pagina publica de alta de establecimientos (RF-19)."""
     template_name = "web/registro.html"
 

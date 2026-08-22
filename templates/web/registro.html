@@ -3,7 +3,7 @@
 {% block contenido %}
 <div class="card" x-data="registro()">
   <h2>Empieza tu prueba gratis</h2>
-  <p class="muted">14 días sin costo. Sin tarjeta de crédito.</p>
+  <p class="muted">{{ dias_prueba }} días sin costo. Sin tarjeta de crédito.</p>
 
   <template x-if="!listo">
     <div>
@@ -23,9 +23,12 @@
       </select>
 
       <label>Plan</label>
+      {# Las opciones salen de facturacion.services: el precio ofrecido
+         aqui es el mismo que cobra PRECIOS_PLAN, no una copia. #}
       <select x-model="plan">
-        <option value="basico">Básico — hasta 3 profesionales · $35.000/mes</option>
-        <option value="premium">Premium — hasta 6 profesionales · $45.000/mes</option>
+        {% for p in planes %}
+        <option value="{{ p.valor }}">{{ p.nombre }} — {{ p.capacidad }} · {{ p.precio_texto }}/mes</option>
+        {% endfor %}
       </select>
 
       <label>Teléfono / WhatsApp</label>

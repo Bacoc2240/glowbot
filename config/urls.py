@@ -27,7 +27,7 @@ from facturacion.views import (
 # Alias: web.RegistroView es la PAGINA; cuentas.api.RegistroView es el ENDPOINT.
 # Sin el alias, el segundo import sombrea al primero (colision de nombres).
 from web.views import (
-    chat_publico, HorariosView, LoginView, PanelView,
+    chat_publico, HorariosView, LoginView, PanelView, PortadaView,
     RecuperarView, RegistroView as RegistroPaginaView, salud, ServiciosView,
     SuscripcionView,
 )
@@ -84,6 +84,9 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/v1/", include(api_v1)),
     # ── Frontend (Capa de Presentación, Sprint 4) ──
+    # Portada: raiz del dominio. Hasta ahora ninguna ruta coincidia con la
+    # cadena vacia y glowbot.com.co respondia 404.
+    path("", PortadaView.as_view(), name="web-portada"),
     # Sonda de salud para el healthcheck de Railway (no requiere sesion)
     path("salud", salud, name="salud"),
     path("registro", RegistroPaginaView.as_view(), name="web-registro"),

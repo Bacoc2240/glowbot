@@ -188,9 +188,16 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
 
 # Rutas de sesión del panel (Sprint 4)
-LOGIN_URL = "/ingresar"
-LOGIN_REDIRECT_URL = "/panel/"
-LOGOUT_REDIRECT_URL = "/ingresar"
+# Apuntaban a "/ingresar" y "/panel/", que no existen: la primera nunca se
+# creó y la segunda lleva barra final, mientras el patrón registrado es
+# path("panel", ...) sin barra (APPEND_SLASH agrega barras, no las quita).
+# Hoy es configuración inerte porque el panel se protege con JWT en el
+# cliente y no hay ningún @login_required; deja de serlo en cuanto exista
+# una vista de Django protegida — el panel del superadmin, por ejemplo —,
+# que redirigiría al usuario a un 404. Una prueba vigila que resuelvan.
+LOGIN_URL = "/panel/login"
+LOGIN_REDIRECT_URL = "/panel"
+LOGOUT_REDIRECT_URL = "/panel/login"
 
 # URL publica del sitio, usada en los mensajes que se envian a clientes
 # finales (recordatorios). Sin dominio propio cae al de Railway.

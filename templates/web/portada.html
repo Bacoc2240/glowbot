@@ -1,0 +1,211 @@
+{% extends "web/base.html" %}
+{% comment %}
+Portada — raiz del dominio.
+
+Hasta ahora glowbot.com.co devolvia 404: no existia ninguna ruta para la
+cadena vacia. Esta pagina es la unica que explica el producto a quien no
+lo conoce, y la que se previsualiza cuando el enlace se comparte por
+WhatsApp (de ahi las etiquetas Open Graph).
+
+Los planes y los dias de prueba NO se escriben aqui: llegan por contexto
+desde facturacion.services, que es donde se cobra. Una prueba comprueba
+que el precio publicado y el precio cobrado coinciden.
+{% endcomment %}
+
+{% block titulo %}GlowBot — tus clientes agendan solos, a cualquier hora{% endblock %}
+
+{% block meta %}
+<meta name="description" content="Asistente de inteligencia artificial que agenda las citas de tu barberia, salon, spa o centro de estetica por chat, las 24 horas. Prueba {{ dias_prueba }} dias gratis.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="GlowBot">
+<meta property="og:locale" content="es_CO">
+<meta property="og:title" content="GlowBot — tus clientes agendan solos, a cualquier hora">
+<meta property="og:description" content="Un asistente de IA atiende por chat, conoce tus servicios y horarios, y deja la cita puesta en tu agenda. Para barberias, salones, unas, estetica y spas.">
+<meta property="og:url" content="{{ request.build_absolute_uri }}">
+<meta name="twitter:card" content="summary">
+{% endblock %}
+
+{% block clase_main %}ancho{% endblock %}
+
+{% block top_derecha %}
+<a href="/panel/login" style="color:#fff; font-size:14px; text-decoration:none">Ingresar</a>
+{% endblock %}
+
+{% block estilos %}
+<style>
+  /* La base define la marca; aqui solo va lo propio de la portada. */
+  .hero { text-align: center; padding: 26px 4px 6px; }
+  .hero h1 { font-size: 26px; line-height: 1.25; margin-bottom: 12px; }
+  .hero p.lead { font-size: 16px; color: var(--gris); line-height: 1.5;
+                 max-width: 560px; margin: 0 auto 18px; }
+  .acciones { display: grid; gap: 10px; max-width: 340px; margin: 0 auto; }
+  .seccion { margin-top: 30px; }
+  .seccion > h2 { text-align: center; font-size: 20px; margin-bottom: 14px; }
+  .rejilla { display: grid; gap: 12px; }
+  .paso b { display: block; margin-bottom: 5px; }
+  .paso .num { display: inline-flex; align-items: center; justify-content: center;
+               width: 26px; height: 26px; border-radius: 999px;
+               background: var(--azul); color: #fff; font-size: 14px;
+               font-weight: 600; margin-bottom: 8px; }
+  .lista { list-style: none; padding: 0; }
+  .lista li { display: flex; gap: 9px; align-items: flex-start;
+              padding: 7px 0; border-bottom: 1px solid var(--borde);
+              line-height: 1.45; }
+  .lista li:last-child { border-bottom: none; }
+  .lista svg { width: 18px; height: 18px; flex: none; margin-top: 3px;
+               color: var(--verde); }
+  .plan { text-align: center; }
+  .plan .precio { font-size: 30px; font-weight: 700; color: var(--azul-osc); }
+  .plan .precio span { font-size: 14px; font-weight: 400; color: var(--gris); }
+  .plan .cap { margin: 4px 0 14px; }
+  .cierre { text-align: center; background: #EAF2FA; border-color: #CFE0F2; }
+  .cierre h2 { margin-bottom: 8px; }
+  footer { text-align: center; color: var(--gris); font-size: 13px;
+           padding: 26px 8px 34px; line-height: 1.7; }
+  footer a { color: var(--gris); }
+  @media (min-width: 720px) {
+    .hero { padding-top: 44px; }
+    .hero h1 { font-size: 34px; }
+    .acciones { grid-auto-flow: column; justify-content: center; max-width: none; }
+    .acciones .btn { width: auto; padding: 12px 26px; }
+    .rejilla.tres { grid-template-columns: repeat(3, 1fr); }
+    .rejilla.dos { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+{% endblock %}
+
+{% block contenido %}
+
+<section class="hero">
+  <h1>Tus clientes agendan solos,<br>a cualquier hora</h1>
+  <p class="lead">
+    GlowBot es un asistente de inteligencia artificial que atiende por chat,
+    conoce tus servicios y tus horarios, y deja la cita puesta en tu agenda.
+    Para barberías, salones, uñas, estética y spas.
+  </p>
+  <div class="acciones">
+    <a class="btn" href="/registro">Empieza gratis {{ dias_prueba }} días</a>
+    <a class="btn btn-borde" href="/panel/login">Ya tengo cuenta</a>
+  </div>
+  <p class="muted" style="margin-top:12px">Sin tarjeta de crédito.</p>
+</section>
+
+<section class="seccion">
+  <h2>Cómo funciona</h2>
+  <div class="rejilla tres">
+    <div class="card paso">
+      <span class="num">1</span>
+      <b>Cargas tus servicios y horarios</b>
+      <p class="muted">
+        Cuánto dura cada servicio, cuánto cuesta, quién lo hace y a qué horas
+        trabaja. Se configura una sola vez.
+      </p>
+    </div>
+    <div class="card paso">
+      <span class="num">2</span>
+      <b>Compartes tu enlace</b>
+      <p class="muted">
+        Recibes una dirección propia para poner en el estado de WhatsApp, en
+        Instagram o en Facebook. El cliente entra y ya está conversando.
+      </p>
+    </div>
+    <div class="card paso">
+      <span class="num">3</span>
+      <b>Las citas llegan solas</b>
+      <p class="muted">
+        El asistente ofrece únicamente las horas que de verdad tienes libres
+        y confirma. La cita aparece en tu panel.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Qué resuelve</h2>
+  <div class="card">
+    <ul class="lista">
+      {% comment %}
+      Cada punto corresponde a algo implementado, no a una promesa:
+      disponibilidad real (AgendaService), constraint EXCLUDE contra el
+      doble agendamiento, horarios/excepciones/bloqueos, modo compacto,
+      recordatorios por wa.me y consulta/cancelacion desde la zona publica.
+      {% endcomment %}
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Atiende cuando estás con un cliente, de noche o con el local cerrado.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Nunca agenda dos citas a la misma hora, ni aunque dos personas
+        escriban en el mismo instante.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Cada profesional con su propio horario, sus días libres y los
+        cambios de última hora.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Agenda compacta: encadena las citas para no dejar huecos de
+        veinte minutos que nadie puede aprovechar.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Recordatorios por WhatsApp para que el cliente no se te pierda.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>El cliente consulta o cancela su cita sin llamarte.</span>
+      </li>
+      <li>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+        <span>Funciona desde el celular. No hay nada que instalar.</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section class="seccion">
+  <h2>Planes</h2>
+  <div class="rejilla dos">
+    {% for p in planes %}
+    <div class="card plan">
+      <h2>{{ p.nombre }}</h2>
+      <div class="precio">{{ p.precio_texto }}<span> /mes</span></div>
+      <p class="muted cap">{{ p.capacidad }}</p>
+      <a class="btn {% if not forloop.first %}btn-borde{% endif %}" href="/registro">Empezar con {{ p.nombre }}</a>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="muted" style="text-align:center; margin-top:12px">
+    Las dos opciones traen todas las funciones; lo único que cambia es cuántos
+    profesionales atiendes. Se paga por Bre-B, Nequi o Daviplata.
+  </p>
+</section>
+
+<section class="seccion">
+  <div class="card cierre">
+    <h2>Pruébalo {{ dias_prueba }} días</h2>
+    <p class="muted" style="margin-bottom:14px">
+      Sin tarjeta y sin compromiso. Si no te sirve, no pagas nada.
+    </p>
+    <div class="acciones">
+      <a class="btn" href="/registro">Crear mi cuenta</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  GlowBot · Saravena, Arauca, Colombia<br>
+  Los datos personales se tratan conforme a la Ley 1581 de 2012.<br>
+  <a href="/panel/login">Ingresar</a> · <a href="/registro">Crear cuenta</a>
+</footer>
+
+{% endblock %}

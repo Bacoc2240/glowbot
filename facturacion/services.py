@@ -31,6 +31,50 @@ PRECIOS_PLAN = {
 }
 
 
+def formato_pesos(monto: int) -> str:
+    """Pesos colombianos con punto como separador de miles ($35.000)."""
+    return "$" + f"{monto:,}".replace(",", ".")
+
+
+@dataclass(frozen=True)
+class PlanPublico:
+    """Un plan tal como se muestra en las paginas publicas.
+
+    Existe para que la portada y el registro no vuelvan a escribir los
+    precios a mano: el numero que se publica es, por construccion, el
+    mismo que cobra PRECIOS_PLAN.
+    """
+
+    valor: str          # "basico" — lo que viaja por la API
+    nombre: str         # "Basico"
+    capacidad: str      # "hasta 3 profesionales"
+    precio: int         # 35000
+    precio_texto: str   # "$35.000"
+
+
+def planes_publicos() -> list[PlanPublico]:
+    """Los planes ofertados, derivados del modelo y de PRECIOS_PLAN.
+
+    El nombre y la capacidad se parten de la etiqueta de
+    Establecimiento.Plan, que tiene la forma "Basico - hasta 3
+    profesionales". Al derivarlos en vez de copiarlos, agregar o retirar
+    un plan del modelo se refleja solo en las paginas publicas y es
+    imposible publicar un precio distinto al que se cobra.
+    """
+    planes = []
+    for valor, etiqueta in Establecimiento.Plan.choices:
+        nombre, _, capacidad = etiqueta.partition("\u2014")
+        precio = PRECIOS_PLAN[Establecimiento.Plan(valor)]
+        planes.append(PlanPublico(
+            valor=valor,
+            nombre=nombre.strip(),
+            capacidad=capacidad.strip(),
+            precio=precio,
+            precio_texto=formato_pesos(precio),
+        ))
+    return planes
+
+
 class PagoYaConfirmadoError(Exception):
     """Se intentó confirmar un pago cuando el período ya tiene uno confirmado."""
 

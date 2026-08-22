@@ -7,6 +7,7 @@ from unittest import mock
 from django.conf import settings
 from django.core import mail
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from cuentas.models import Usuario
@@ -15,6 +16,9 @@ from negocios.models import (
     HorarioBase, Profesional, Servicio,
 )
 from agenda.models import Cita, Notificacion
+from facturacion.services import (
+    PRECIOS_PLAN, SuscripcionService, formato_pesos, planes_publicos,
+)
 from agenda.notificaciones import NotificacionService
 from agenda.services import AgendaService
 
@@ -178,6 +182,120 @@ class NotificacionesTest(BaseSprint4Test):
         self.assertEqual(
             Notificacion.objects.first().estado, Notificacion.Estado.GENERADA,
         )
+
+
+class PortadaTest(TestCase):
+    """La raiz del dominio.
+
+    Hasta este cambio, escribir glowbot.com.co devolvia 404: no existia
+    ninguna ruta para la cadena vacia. Estas pruebas fijan lo que la
+    portada promete y, sobre todo, que lo prometido sea cierto: el precio
+    publicado tiene que ser el precio que se cobra, y los dias de prueba
+    anunciados los que realmente se conceden.
+    """
+
+    def setUp(self):
+        self.respuesta = self.client.get("/")
+        self.html = self.respuesta.content.decode()
+
+    def test_la_raiz_responde_y_no_exige_sesion(self):
+        """Regresion del 404: quien llega sin cuenta debe ver la pagina."""
+        self.assertEqual(self.respuesta.status_code, 200)
+
+    def test_publica_todos_los_planes_del_modelo(self):
+        """Si manana se agrega un plan, la portada debe mostrarlo sola."""
+        for _, etiqueta in Establecimiento.Plan.choices:
+            nombre = etiqueta.split("\u2014")[0].strip()
+            with self.subTest(plan=nombre):
+                self.assertIn(nombre, self.html)
+
+    def test_el_precio_publicado_es_el_precio_que_se_cobra(self):
+        """La regla: publicar una tarifa distinta a la cobrada es un
+        incumplimiento, no un detalle de maquetacion. La comparacion pasa
+        por SuscripcionService, que es quien determina el monto del pago."""
+        usuario = Usuario.objects.create_user(
+            email="tarifas@barberia.com", password="clave12345",
+        )
+        est = Establecimiento.objects.create(
+            propietario=usuario, nombre="Barberia Tarifas",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001110000",
+        )
+        for valor, _ in Establecimiento.Plan.choices:
+            with self.subTest(plan=valor):
+                est.plan = valor
+                est.save()
+                cobrado = SuscripcionService.precio_mensual(est)
+                self.assertIn(formato_pesos(cobrado), self.html)
+
+    def test_anuncia_los_dias_de_prueba_que_realmente_concede(self):
+        """El "gratis N dias" del titular se contrasta contra la
+        suscripcion que crea el alta, no contra la constante."""
+        usuario = Usuario.objects.create_user(
+            email="prueba@barberia.com", password="clave12345",
+        )
+        est = Establecimiento.objects.create(
+            propietario=usuario, nombre="Barberia Prueba",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001110001",
+        )
+        sub = SuscripcionService.crear_prueba(est)
+        dias = (sub.fecha_fin_prueba - timezone.localdate()).days
+        self.assertIn(f"gratis {dias} d", self.html)
+
+    def test_ofrece_las_dos_salidas(self):
+        """Quien no tiene cuenta la crea; quien la tiene, entra."""
+        self.assertIn('href="/registro"', self.html)
+        self.assertIn('href="/panel/login"', self.html)
+
+    def test_se_previsualiza_al_compartirla(self):
+        """El canal real de difusion es WhatsApp: sin Open Graph el enlace
+        aparece como una tarjeta vacia."""
+        self.assertIn('property="og:title"', self.html)
+        self.assertIn('property="og:description"', self.html)
+        self.assertIn('name="description"', self.html)
+
+    def test_usa_el_ancho_de_pagina_comercial(self):
+        """La portada libera el limite de 640px pensado para el panel."""
+        self.assertIn('<main class="ancho"', self.html)
+
+
+class RutasDeSesionTest(TestCase):
+    """LOGIN_URL y compania apuntaban a paginas inexistentes.
+
+    Mientras el panel se proteja solo con JWT en el cliente nadie lo nota,
+    porque Django nunca usa esos ajustes. En cuanto exista una vista
+    protegida con @login_required — el panel del superadmin, por ejemplo —
+    el usuario acabaria en un 404. Se comprueba que resuelvan de verdad.
+    """
+
+    def test_las_rutas_de_sesion_existen(self):
+        for ajuste in ["LOGIN_URL", "LOGIN_REDIRECT_URL", "LOGOUT_REDIRECT_URL"]:
+            ruta = getattr(settings, ajuste)
+            with self.subTest(ajuste=ajuste, ruta=ruta):
+                self.assertEqual(self.client.get(ruta).status_code, 200)
+
+
+class OfertaUnicaTest(TestCase):
+    """Portada y registro deben ofrecer lo mismo.
+
+    Antes el registro llevaba los precios escritos a mano en el HTML: nada
+    impedia que la portada dijera una cosa y el formulario otra.
+    """
+
+    def test_registro_y_portada_muestran_los_mismos_precios(self):
+        portada = self.client.get("/").content.decode()
+        registro = self.client.get("/registro").content.decode()
+        for plan in planes_publicos():
+            with self.subTest(plan=plan.valor):
+                self.assertIn(plan.precio_texto, portada)
+                self.assertIn(plan.precio_texto, registro)
+
+    def test_los_planes_salen_de_la_capa_de_servicios(self):
+        """El precio de cada plan publicado coincide con PRECIOS_PLAN."""
+        for plan in planes_publicos():
+            with self.subTest(plan=plan.valor):
+                self.assertEqual(
+                    plan.precio, PRECIOS_PLAN[Establecimiento.Plan(plan.valor)],
+                )
 
 
 class FrontendTest(BaseSprint4Test):
