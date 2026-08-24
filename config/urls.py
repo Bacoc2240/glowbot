@@ -8,6 +8,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from cuentas.api import RegistroView
+from negocios.api_ajustes import AjustesAgendaView
 from negocios.api import (
     BloqueosView, EliminarBloqueoView, EliminarExcepcionView, ExcepcionesView,
     HorariosProfesionalView, MiEstablecimientoView, ProfesionalViewSet,
@@ -64,6 +65,9 @@ api_v1 = [
     # Suscripcion y pagos — Sprint 4.1 (§9)
     # Enlace publico del negocio (consulta y cambio de slug)
     # Recordatorios de cita al cliente (RF-18)
+    # Ajustes de agenda que edita el propio dueno (antes solo via /admin/)
+    path("mi-establecimiento/ajustes", AjustesAgendaView.as_view(),
+         name="ajustes-agenda"),
     path("recordatorios", RecordatoriosView.as_view(), name="recordatorios"),
     path("recordatorios/<int:notificacion_id>", MarcarRecordatorioView.as_view(),
          name="marcar-recordatorio"),

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "python manage.py generar_recordatorios",
+    "restartPolicyType": "NEVER",
+    "numReplicas": 1
+  }
+}

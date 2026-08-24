@@ -23,6 +23,7 @@ from datetime import datetime, date, timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from agenda.fechas import DIAS, MESES, fecha_larga     # noqa: F401
 from agenda.models import Cita, Notificacion
 from agenda.services import AgendaService, SlotNoDisponible
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
@@ -32,14 +33,7 @@ logger = logging.getLogger(__name__)
 MAX_ITERACIONES = 3     # llamadas al modelo por mensaje del usuario
 MAX_HISTORIAL = 20      # interacciones enviadas (control de costos, §8)
 
-DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
-         "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-
-
-def fecha_larga(f) -> str:
-    """'lunes 27 de julio de 2026' — el modelo nunca deduce el día."""
-    return f"{DIAS[f.weekday()]} {f.day} de {MESES[f.month - 1]} de {f.year}"
+# DIAS, MESES y fecha_larga se importan de agenda.fechas (ver cabecera).
 
 
 class IAService:

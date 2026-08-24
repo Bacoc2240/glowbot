@@ -42,6 +42,26 @@ class Establecimiento(models.Model):
         COMPACTO = "compacto", "Compacto — sin huecos entre citas"
         FLEXIBLE = "flexible", "Flexible — horas cada 15 minutos"
 
+    class Antelacion(models.IntegerChoices):
+        """Cuanto antes se avisa al cliente de su cita.
+
+        Opciones cerradas y no un entero libre: evita valores sin sentido
+        (0, 500), permite un desplegable en vez de un campo de texto, y
+        mantiene corto el numero de grupos que barre el cron —consulta una
+        vez por valor distinto en uso, no una por establecimiento.
+
+        La eleccion no es cosmetica. A 24 horas el cliente que no puede
+        asistir alcanza a cancelar y el hueco se revende; a 2 horas el aviso
+        evita el olvido pero la silla ya se pierde. Cada negocio conoce a su
+        clientela mejor que nosotros, asi que decide el dueno.
+        """
+        UNA = 1, "1 hora antes"
+        DOS = 2, "2 horas antes"
+        CUATRO = 4, "4 horas antes"
+        DOCE = 12, "12 horas antes"
+        UN_DIA = 24, "24 horas antes (el día anterior)"
+        DOS_DIAS = 48, "48 horas antes"
+
     LIMITE_PROFESIONALES = {Plan.BASICO: 3, Plan.PREMIUM: 6}
 
     propietario = models.ForeignKey(
@@ -54,6 +74,14 @@ class Establecimiento(models.Model):
     direccion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20)
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.BASICO)
+    recordatorio_horas_antes = models.PositiveSmallIntegerField(
+        choices=Antelacion.choices, default=Antelacion.DOS,
+        help_text=(
+            "Con cuánta antelación se avisa al cliente de su cita. Más "
+            "antelación le da tiempo de cancelar y liberar el turno; menos "
+            "reduce el riesgo de que se le olvide."
+        ),
+    )
     modo_agenda = models.CharField(
         max_length=10, choices=ModoAgenda.choices, default=ModoAgenda.COMPACTO,
         help_text=(

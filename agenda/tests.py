@@ -306,6 +306,212 @@ class RecordatoriosTest(TestCase):
         self.assertEqual(len(api2.get("/api/v1/recordatorios").json()["recordatorios"]), 0)
 
 
+class AntelacionConfigurableTest(TestCase):
+    """RF-18: cada establecimiento decide con cuanta antelacion se avisa.
+
+    Antes la antelacion era una constante global de 2 horas. La eleccion no
+    es cosmetica: a 24 horas el cliente que no puede asistir alcanza a
+    cancelar y el turno se revende; a 2 horas la silla ya se perdio.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        self.clientes = {}
+        self.ests = {}
+        for etiqueta, horas in [("rapido", 2), ("lento", 24)]:
+            u = Usuario.objects.create_user(
+                email=f"{etiqueta}@b.com", password="clave12345")
+            est = Establecimiento.objects.create(
+                propietario=u, nombre=f"Negocio {etiqueta}",
+                tipo=Establecimiento.Tipo.BARBERIA, telefono="3001110000",
+                slug=etiqueta, recordatorio_horas_antes=horas,
+            )
+            self.ests[etiqueta] = est
+            self.clientes[etiqueta] = ClienteFinal.objects.create(
+                establecimiento=est, nombre="Cliente", telefono="3192846956",
+                acepta_datos=True,
+            )
+
+    def _cita(self, etiqueta, cuando):
+        est = self.ests[etiqueta]
+        prof = Profesional.objects.create(
+            establecimiento=est, nombre="Ana", telefono_whatsapp="3007412599")
+        serv = Servicio.objects.create(
+            establecimiento=est, nombre="Corte", duracion_min=30, precio=15000)
+        return Cita.objects.create(
+            establecimiento=est, profesional=prof, servicio=serv,
+            cliente=self.clientes[etiqueta], fecha=cuando.date(),
+            hora_inicio=cuando.time(),
+            hora_fin=(cuando + timedelta(minutes=30)).time(),
+            estado=Cita.Estado.CONFIRMADA,
+        )
+
+    def test_el_valor_por_defecto_son_dos_horas(self):
+        """Los establecimientos existentes no cambian de comportamiento."""
+        u = Usuario.objects.create_user(email="nuevo@b.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="Nuevo", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="nuevo",
+        )
+        self.assertEqual(est.recordatorio_horas_antes,
+                         Establecimiento.Antelacion.DOS)
+
+    def test_cada_establecimiento_usa_su_propia_antelacion(self):
+        """Misma hora de barrido, dos citas distintas: a cada una le toca
+        segun lo que eligio su dueno, no segun una constante global."""
+        ahora = timezone.localtime().replace(
+            hour=8, minute=0, second=0, microsecond=0)
+        cita_2h = self._cita("rapido", ahora + timedelta(hours=2, minutes=30))
+        cita_24h = self._cita("lento", ahora + timedelta(hours=24, minutes=30))
+
+        creadas = RecordatorioService.generar_pendientes(ahora)
+        recordadas = {n.cita_id for n in creadas}
+        self.assertEqual(recordadas, {cita_2h.id, cita_24h.id})
+
+    def test_no_recuerda_la_cita_que_no_toca_a_ese_establecimiento(self):
+        """La cita a 24 horas del negocio que avisa con 2 no se recuerda aun.
+
+        Es la prueba que falla si el barrido volviera a usar una ventana
+        unica para todos.
+        """
+        ahora = timezone.localtime().replace(
+            hour=8, minute=0, second=0, microsecond=0)
+        self._cita("rapido", ahora + timedelta(hours=24, minutes=30))
+        self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
+
+    def test_la_bandera_horas_ignora_la_configuracion(self):
+        """--horas sirve para simular; debe pasar por encima de cada dueno."""
+        ahora = timezone.localtime().replace(
+            hour=8, minute=0, second=0, microsecond=0)
+        cita = self._cita("lento", ahora + timedelta(hours=2, minutes=30))
+        forzadas = RecordatorioService.generar_pendientes(ahora, horas_antes=2)
+        self.assertEqual([n.cita_id for n in forzadas], [cita.id])
+
+    def test_solo_se_admiten_las_antelaciones_declaradas(self):
+        self.assertEqual(
+            set(Establecimiento.Antelacion.values), {1, 2, 4, 12, 24, 48})
+
+
+class TextoDelRecordatorioTest(TestCase):
+    """El mensaje debe decir la verdad sobre cuando es la cita.
+
+    Regresion: el texto llevaba la palabra "hoy" fija. Con 2 horas de
+    antelacion era cierto; en cuanto un dueno elige 24, el mensaje le decia
+    "hoy" a un cliente cuya cita es manana.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        u = Usuario.objects.create_user(email="texto@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barberia Texto",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bx",
+        )
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+        self.cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson", telefono="3192846956",
+            acepta_datos=True,
+        )
+
+    def _notif(self, fecha):
+        cita = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=self.cliente, fecha=fecha,
+            hora_inicio=time(15, 0), hora_fin=time(15, 30),
+            estado=Cita.Estado.CONFIRMADA,
+        )
+        return Notificacion.objects.create(
+            cita=cita, tipo=Notificacion.Tipo.RECORDATORIO)
+
+    def test_dice_hoy_solo_cuando_es_hoy(self):
+        hoy = date(2026, 8, 24)
+        self.assertIn("hoy a las 15:00",
+                      RecordatorioService.texto(self._notif(hoy), hoy=hoy))
+
+    def test_dice_manana_cuando_es_manana(self):
+        hoy = date(2026, 8, 24)
+        texto = RecordatorioService.texto(self._notif(date(2026, 8, 25)), hoy=hoy)
+        self.assertIn("mañana a las 15:00", texto)
+
+    def test_nunca_dice_hoy_para_una_cita_que_no_es_hoy(self):
+        """La regresion concreta: 24 h de antelacion con el texto viejo."""
+        hoy = date(2026, 8, 24)
+        texto = RecordatorioService.texto(self._notif(date(2026, 8, 25)), hoy=hoy)
+        self.assertNotIn(" hoy ", texto)
+
+    def test_nombra_el_dia_cuando_esta_mas_lejos(self):
+        """26 de agosto de 2026 es miercoles. El nombre sale del diccionario
+        en espanol, no del locale del sistema: el contenedor de Railway no
+        tiene es_CO instalado y diria 'Wednesday'."""
+        hoy = date(2026, 8, 24)
+        texto = RecordatorioService.texto(self._notif(date(2026, 8, 26)), hoy=hoy)
+        self.assertIn("el miércoles 26 de agosto", texto)
+
+    def test_conserva_el_enlace_para_cancelar(self):
+        hoy = date(2026, 8, 24)
+        self.assertIn("/p/bx", RecordatorioService.texto(self._notif(hoy), hoy=hoy))
+
+
+class AjustesAgendaTest(TestCase):
+    """Los ajustes de agenda los cambia el dueno, no el soporte.
+
+    `modo_agenda` existia desde el Sprint 4 sin forma de editarse fuera de
+    /admin/. Un ajuste que solo puede tocar quien administra el servidor no
+    es configuracion del cliente.
+    """
+
+    def setUp(self):
+        self.u = Usuario.objects.create_user(
+            email="ajustes@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.u, nombre="Barberia Ajustes",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="ba",
+        )
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.u)
+
+    def test_devuelve_los_valores_y_sus_opciones(self):
+        d = self.api.get("/api/v1/mi-establecimiento/ajustes").json()
+        self.assertEqual(d["recordatorio_horas_antes"], 2)
+        valores = [o["valor"] for o in d["opciones"]["recordatorio_horas_antes"]]
+        self.assertEqual(valores, [1, 2, 4, 12, 24, 48])
+
+    def test_el_dueno_cambia_la_antelacion(self):
+        r = self.api.patch("/api/v1/mi-establecimiento/ajustes",
+                           {"recordatorio_horas_antes": 24}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.recordatorio_horas_antes, 24)
+
+    def test_rechaza_una_antelacion_fuera_de_las_opciones(self):
+        """Un entero cualquiera pasaria la conversion y dejaria al negocio
+        con un valor que ningun desplegable puede volver a mostrar."""
+        r = self.api.patch("/api/v1/mi-establecimiento/ajustes",
+                           {"recordatorio_horas_antes": 7}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.recordatorio_horas_antes, 2)
+
+    def test_exige_sesion(self):
+        self.assertEqual(
+            APIClient().get("/api/v1/mi-establecimiento/ajustes").status_code, 401)
+
+    def test_cada_dueno_solo_toca_lo_suyo(self):
+        otro = Usuario.objects.create_user(email="otro2@b.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=otro, nombre="Otra", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="otra2", recordatorio_horas_antes=48,
+        )
+        api2 = APIClient(); api2.force_authenticate(user=otro)
+        api2.patch("/api/v1/mi-establecimiento/ajustes",
+                   {"recordatorio_horas_antes": 12}, format="json")
+        self.est.refresh_from_db()
+        self.assertEqual(self.est.recordatorio_horas_antes, 2)
+
+
 class ModoAgendaTest(TestCase):
     """RF-07: el modo compacto empaqueta las citas sin dejar huecos donde no
     cabe ningun servicio. En un negocio de 1 a 3 profesionales, cada hueco

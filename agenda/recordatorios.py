@@ -19,11 +19,15 @@ from urllib.parse import quote
 from django.conf import settings
 from django.utils import timezone
 
+from negocios.models import Establecimiento
+
+from .fechas import dia_relativo
 from .models import Cita, Notificacion
 
-# Antelación del recordatorio. Dos horas da margen para reorganizarse sin
-# ser tan pronto que se olvide.
-HORAS_ANTES = getattr(settings, "RECORDATORIO_HORAS_ANTES", 2)
+# Antelación por defecto de un establecimiento nuevo. Ya no es una constante
+# global: cada establecimiento elige la suya (Establecimiento.Antelacion).
+# Se conserva el nombre porque el comando la muestra en su ayuda.
+HORAS_ANTES = Establecimiento.Antelacion.DOS
 
 
 class RecordatorioService:
@@ -36,16 +40,16 @@ class RecordatorioService:
         return timezone.make_aware(ingenuo, timezone.get_current_timezone())
 
     @classmethod
-    def citas_por_recordar(cls, ahora=None, horas_antes=None):
-        """Citas confirmadas que empiezan dentro de la ventana de aviso.
+    def _ventana(cls, ahora, horas_antes, solo_con_antelacion=None):
+        """Citas confirmadas que empiezan en [ahora+N h, ahora+N h+1 h).
 
-        La ventana es [ahora + N h, ahora + N h + 1 h). Con el cron corriendo
-        cada hora, cada cita cae en exactamente una ventana: ni se duplica ni
-        se escapa. La restricción única en Notificacion es el respaldo por si
-        una ejecución se repite.
+        Con el cron corriendo cada hora, cada cita cae en exactamente una
+        ventana: ni se duplica ni se escapa. La restricción única en
+        Notificacion es el respaldo por si una ejecución se repite.
+
+        `solo_con_antelacion` acota a los establecimientos que eligieron ese
+        valor; sin él, la ventana aplica a todos por igual.
         """
-        ahora = ahora or timezone.localtime()
-        horas_antes = HORAS_ANTES if horas_antes is None else horas_antes
         desde = ahora + timedelta(hours=horas_antes)
         hasta = desde + timedelta(hours=1)
 
@@ -61,7 +65,37 @@ class RecordatorioService:
             .select_related("cliente", "servicio", "profesional",
                             "establecimiento")
         )
+        if solo_con_antelacion is not None:
+            candidatas = candidatas.filter(
+                establecimiento__recordatorio_horas_antes=solo_con_antelacion)
         return [c for c in candidatas if desde <= cls._momento(c) < hasta]
+
+    @classmethod
+    def citas_por_recordar(cls, ahora=None, horas_antes=None):
+        """Citas a las que toca recordarles, según la antelación de cada dueño.
+
+        Cada establecimiento elige su antelación, así que no hay una ventana
+        única sino una por valor en uso. Se consulta agrupando por valor
+        distinto y no por establecimiento: con seis opciones posibles, el
+        barrido hace como mucho seis consultas por más inquilinos que haya.
+
+        `horas_antes` fuerza una antelación única para todos e ignora la
+        configuración. Es lo que usa la bandera --horas del comando para
+        poder simular, y lo que mantiene deterministas las pruebas.
+        """
+        ahora = ahora or timezone.localtime()
+        if horas_antes is not None:
+            return cls._ventana(ahora, horas_antes)
+
+        en_uso = set(
+            Establecimiento.objects
+            .values_list("recordatorio_horas_antes", flat=True)
+            .distinct()
+        )
+        citas = []
+        for horas in en_uso:
+            citas.extend(cls._ventana(ahora, horas, solo_con_antelacion=horas))
+        return citas
 
     @classmethod
     def generar_pendientes(cls, ahora=None, horas_antes=None) -> list:
@@ -97,12 +131,22 @@ class RecordatorioService:
         return numero
 
     @staticmethod
-    def texto(notificacion: Notificacion) -> str:
+    def texto(notificacion: Notificacion, hoy=None) -> str:
+        """El mensaje que recibe el cliente.
+
+        El día se nombra con dia_relativo y no con un "hoy" fijo. Antes el
+        texto decía siempre "hoy": cierto con dos horas de antelación, falso
+        con veinticuatro. Ahora que el dueño elige, el texto tiene que ser
+        verdadero para cualquier antelación.
+        """
         cita = notificacion.cita
+        hoy = hoy or timezone.localdate()
+        cuando = dia_relativo(cita.fecha, hoy)
         return (
             f"Hola {cita.cliente.nombre}, te recordamos tu cita en "
-            f"{cita.establecimiento.nombre}: {cita.servicio.nombre} hoy a las "
-            f"{cita.hora_inicio.strftime('%H:%M')} con {cita.profesional.nombre}. "
+            f"{cita.establecimiento.nombre}: {cita.servicio.nombre} {cuando} "
+            f"a las {cita.hora_inicio.strftime('%H:%M')} con "
+            f"{cita.profesional.nombre}. "
             f"Si no puedes asistir, cancélala aquí: "
             f"{settings.SITIO_URL}/p/{cita.establecimiento.slug}"
         )
@@ -129,8 +173,17 @@ class RecordatorioService:
         contrate un proveedor, aquí se hace la llamada a su API y se marca
         ENVIADA. El resto del módulo no cambia.
 
-        Coste de referencia (Onurix, agosto 2026): ~$19 COP por mensaje con
-        IVA, tanto SMS como notificación WhatsApp. Con 10 citas diarias son
-        unos $5.700 COP mensuales por establecimiento.
+        Coste de referencia (agosto 2026): la Cloud API de Meta cobra los
+        mensajes de plantilla de categoria utility a ~0,0008 USD para
+        destinatarios en Colombia, unos $3 COP. Con 10 citas diarias son
+        menos de $1.000 COP mensuales por establecimiento. La cifra de ~$19
+        COP que figuraba aqui era la de un agregador con su margen encima, y
+        llevo a descartar la automatizacion por un coste seis veces mayor
+        que el real.
+
+        La restriccion que manda no es el precio sino el remitente: un
+        numero migrado a la API deja de funcionar en las apps de WhatsApp,
+        de modo que no puede ser el del establecimiento. Envia GlowBot en su
+        nombre, con plantilla aprobada por Meta.
         """
         return False

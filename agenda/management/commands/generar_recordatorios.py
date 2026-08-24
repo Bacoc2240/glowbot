@@ -1,11 +1,16 @@
 """Genera los recordatorios de las citas proximas (RF-18).
 
-Se ejecuta cada hora como servicio cron en Railway. Busca las citas que
-empiezan dentro de la ventana de aviso y crea su notificacion; el dueno las
-ve en el panel y las envia por WhatsApp con un toque.
+Se ejecuta cada hora como servicio cron propio en Railway (config en
+railway.recordatorios.json). Busca las citas que entran en la ventana de
+aviso de su establecimiento y crea la notificacion; el dueno las ve en el
+panel y las envia por WhatsApp con un toque.
 
     Schedule:  0 * * * *      (cada hora en punto)
     Command:   python manage.py generar_recordatorios
+
+Debe correr cada hora aunque un establecimiento avise con 24 horas: la
+ventana dura una hora, y un barrido diario dejaria sin recordatorio a toda
+cita reservada despues de que el barrido paso.
 
 Cuando se automatice el envio, este mismo comando llamara a
 RecordatorioService.entregar() y no hara falta la intervencion del dueno.
@@ -22,7 +27,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--horas", type=int, default=None,
-            help=f"Antelacion en horas (por defecto {HORAS_ANTES}).",
+            help=("Fuerza esta antelacion para todos e ignora lo que cada "
+                  "establecimiento tenga configurado. Sin la bandera se "
+                  "respeta la configuracion de cada uno."),
         )
         parser.add_argument(
             "--simular", action="store_true",
@@ -32,9 +39,10 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         ahora = timezone.localtime()
         horas = options["horas"]
+        antelacion = f"{horas} h forzadas" if horas else "segun cada establecimiento"
         self.stdout.write(
             f"Recordatorios — {ahora.strftime('%Y-%m-%d %H:%M')} "
-            f"(antelacion: {horas or HORAS_ANTES} h)"
+            f"(antelacion: {antelacion})"
         )
 
         if options["simular"]:
