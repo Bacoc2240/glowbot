@@ -8,9 +8,10 @@ panel y las envia por WhatsApp con un toque.
     Schedule:  0 * * * *      (cada hora en punto)
     Command:   python manage.py generar_recordatorios
 
-Debe correr cada hora aunque un establecimiento avise con 24 horas: la
-ventana dura una hora, y un barrido diario dejaria sin recordatorio a toda
-cita reservada despues de que el barrido paso.
+Corre cada hora para que el aviso salga cerca de su momento. La frecuencia
+ya no es una condicion de correccion: el barrido busca las citas a las que
+YA les tocaba aviso y siguen sin tenerlo, de modo que si una ejecucion falla
+o se salta, la siguiente recupera lo pendiente.
 
 Cuando se automatice el envio, este mismo comando llamara a
 RecordatorioService.entregar() y no hara falta la intervencion del dueno.

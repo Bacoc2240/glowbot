@@ -8,7 +8,7 @@ from agenda.models import Notificacion
 from rest_framework.test import APIClient
 from datetime import timedelta
 from django.utils import timezone
-from datetime import date, time
+from datetime import date, datetime, time
 
 from django.test import TestCase
 
@@ -223,31 +223,69 @@ class RecordatoriosTest(TestCase):
             estado=Cita.Estado.CONFIRMADA,
         )
 
-    def test_genera_para_las_citas_de_la_ventana(self):
+    def test_genera_cuando_ya_le_toca(self):
+        """Antelacion 2 h y cita dentro de 1 h: el aviso vencio hace media
+        hora, asi que toca ahora."""
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         creadas = RecordatorioService.generar_pendientes(ahora)
         self.assertEqual(len(creadas), 1)
 
-    def test_ignora_las_citas_fuera_de_la_ventana(self):
+    def test_no_genera_antes_de_tiempo(self):
+        """Cita dentro de 6 h con antelacion de 2: todavia no le toca."""
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(minutes=30))   # demasiado pronto
-        self._cita(ahora + timedelta(hours=6))      # demasiado lejos
+        self._cita(ahora + timedelta(hours=6))
         self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
+
+    def test_no_genera_para_una_cita_que_ya_empezo(self):
+        """Recordarle a alguien una cita que ya paso no es un recordatorio,
+        es un reproche."""
+        ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
+        self._cita(ahora - timedelta(minutes=30))
+        self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
+
+    def test_recupera_la_cita_reservada_despues_de_su_momento_de_aviso(self):
+        """El defecto que la ventana estrecha ocultaba.
+
+        Con antelacion de 1 h, a una cita de las 09:40 le tocaba aviso a las
+        08:40. Si se reservo a las 08:38 —despues del barrido de las 08:00—
+        la ventana [09:00, 10:00) ya no la cubria y no se recordaba nunca.
+        Con antelacion de 24 h el agujero se tragaba casi todas las reservas.
+
+        El barrido de las 09:00 tiene que recuperarla: tarde, no nunca.
+        """
+        self.est.recordatorio_horas_antes = Establecimiento.Antelacion.UNA
+        self.est.save()
+        hoy = timezone.localdate()
+        cuando = timezone.make_aware(
+            datetime.combine(hoy, time(9, 40)),
+            timezone.get_current_timezone())
+        self._cita(cuando)
+
+        barrido = cuando.replace(hour=9, minute=0)
+        self.assertEqual(len(RecordatorioService.generar_pendientes(barrido)), 1)
 
     def test_no_duplica_el_recordatorio(self):
         """Si el cron corre dos veces, el cliente no recibe dos avisos."""
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         RecordatorioService.generar_pendientes(ahora)
         self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
         self.assertEqual(
             Notificacion.objects.filter(
                 tipo=Notificacion.Tipo.RECORDATORIO).count(), 1)
 
+    def test_una_vez_avisada_no_reaparece_en_barridos_siguientes(self):
+        """Sin esto la lista crece cada hora y --simular mentiria."""
+        ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
+        self._cita(ahora + timedelta(hours=1))
+        RecordatorioService.generar_pendientes(ahora)
+        mas_tarde = ahora + timedelta(minutes=30)
+        self.assertEqual(len(RecordatorioService.citas_por_recordar(mas_tarde)), 0)
+
     def test_ignora_las_citas_canceladas(self):
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        cita = self._cita(ahora + timedelta(hours=2, minutes=30))
+        cita = self._cita(ahora + timedelta(hours=1))
         cita.estado = Cita.Estado.CANCELADA_CLIENTE
         cita.save()
         self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
@@ -256,7 +294,7 @@ class RecordatoriosTest(TestCase):
         """Es la diferencia con la alerta de cancelacion (RF-13). Confundirlas
         enviaria al barbero el recordatorio de su propio cliente."""
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         notif = RecordatorioService.generar_pendientes(ahora)[0]
         enlace = RecordatorioService.enlace_wa(notif)
         self.assertIn("573192846956", enlace)          # telefono del cliente
@@ -264,7 +302,7 @@ class RecordatoriosTest(TestCase):
 
     def test_el_texto_incluye_el_enlace_para_cancelar(self):
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         notif = RecordatorioService.generar_pendientes(ahora)[0]
         texto = RecordatorioService.texto(notif)
         self.assertIn("/p/bt", texto)
@@ -274,13 +312,13 @@ class RecordatoriosTest(TestCase):
         self.cliente.telefono = ""
         self.cliente.save()
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         notif = RecordatorioService.generar_pendientes(ahora)[0]
         self.assertIsNone(RecordatorioService.enlace_wa(notif))
 
     def test_el_panel_los_lista_y_permite_marcarlos(self):
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         notif = RecordatorioService.generar_pendientes(ahora)[0]
 
         r = self.api.get("/api/v1/recordatorios")
@@ -300,7 +338,7 @@ class RecordatoriosTest(TestCase):
             telefono="300", slug="otra",
         )
         ahora = timezone.localtime().replace(hour=8, minute=0, second=0, microsecond=0)
-        self._cita(ahora + timedelta(hours=2, minutes=30))
+        self._cita(ahora + timedelta(hours=1))
         RecordatorioService.generar_pendientes(ahora)
         api2 = APIClient(); api2.force_authenticate(user=otro)
         self.assertEqual(len(api2.get("/api/v1/recordatorios").json()["recordatorios"]), 0)
@@ -361,29 +399,29 @@ class AntelacionConfigurableTest(TestCase):
         segun lo que eligio su dueno, no segun una constante global."""
         ahora = timezone.localtime().replace(
             hour=8, minute=0, second=0, microsecond=0)
-        cita_2h = self._cita("rapido", ahora + timedelta(hours=2, minutes=30))
-        cita_24h = self._cita("lento", ahora + timedelta(hours=24, minutes=30))
+        cita_2h = self._cita("rapido", ahora + timedelta(hours=1))
+        cita_24h = self._cita("lento", ahora + timedelta(hours=20))
 
         creadas = RecordatorioService.generar_pendientes(ahora)
         recordadas = {n.cita_id for n in creadas}
         self.assertEqual(recordadas, {cita_2h.id, cita_24h.id})
 
     def test_no_recuerda_la_cita_que_no_toca_a_ese_establecimiento(self):
-        """La cita a 24 horas del negocio que avisa con 2 no se recuerda aun.
+        """La cita a 20 horas del negocio que avisa con 2 no se recuerda aun.
 
         Es la prueba que falla si el barrido volviera a usar una ventana
         unica para todos.
         """
         ahora = timezone.localtime().replace(
             hour=8, minute=0, second=0, microsecond=0)
-        self._cita("rapido", ahora + timedelta(hours=24, minutes=30))
+        self._cita("rapido", ahora + timedelta(hours=20))
         self.assertEqual(len(RecordatorioService.generar_pendientes(ahora)), 0)
 
     def test_la_bandera_horas_ignora_la_configuracion(self):
         """--horas sirve para simular; debe pasar por encima de cada dueno."""
         ahora = timezone.localtime().replace(
             hour=8, minute=0, second=0, microsecond=0)
-        cita = self._cita("lento", ahora + timedelta(hours=2, minutes=30))
+        cita = self._cita("lento", ahora + timedelta(hours=1))
         forzadas = RecordatorioService.generar_pendientes(ahora, horas_antes=2)
         self.assertEqual([n.cita_id for n in forzadas], [cita.id])
 

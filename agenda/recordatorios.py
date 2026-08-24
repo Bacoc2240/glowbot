@@ -40,44 +40,59 @@ class RecordatorioService:
         return timezone.make_aware(ingenuo, timezone.get_current_timezone())
 
     @classmethod
-    def _ventana(cls, ahora, horas_antes, solo_con_antelacion=None):
-        """Citas confirmadas que empiezan en [ahora+N h, ahora+N h+1 h).
+    def _vencidas(cls, ahora, horas_antes, solo_con_antelacion=None):
+        """Citas a las que ya les toca aviso y aun no lo tienen.
 
-        Con el cron corriendo cada hora, cada cita cae en exactamente una
-        ventana: ni se duplica ni se escapa. La restricción única en
-        Notificacion es el respaldo por si una ejecución se repite.
+            momento_cita - antelacion  <=  ahora  <  momento_cita
 
-        `solo_con_antelacion` acota a los establecimientos que eligieron ese
-        valor; sin él, la ventana aplica a todos por igual.
+        La version anterior preguntaba "que citas caen en ESTA hora", con la
+        ventana [ahora+N, ahora+N+1). Eso exigia que el barrido y la reserva
+        estuvieran sincronizados, y dejaba un agujero: una cita reservada
+        despues de que su ventana paso no se recordaba nunca. Con antelacion
+        de 24 h el agujero se tragaba practicamente todas las reservas, que
+        en una barberia se hacen el mismo dia o el anterior.
+
+        Preguntar "a quien le toca ya y sigue sin aviso" elimina el agujero:
+        si un barrido no la vio, el siguiente si. Una cita reservada dentro
+        de su propia ventana recibe el aviso en el barrido siguiente —tarde,
+        pero no nunca—; una que ya empezo no lo recibe, por el < estricto.
+
+        Se excluyen en la consulta las que ya tienen recordatorio: sin eso la
+        lista crece con cada barrido y `--simular` mentiria, mostrando como
+        pendientes citas ya avisadas.
         """
-        desde = ahora + timedelta(hours=horas_antes)
-        hasta = desde + timedelta(hours=1)
+        limite = ahora + timedelta(hours=horas_antes)
 
         # Se filtra por fecha en la base (hay índice) y se afina en Python:
         # combinar fecha y hora en SQL con zona horaria es propenso a errores
-        # y el volumen diario de un establecimiento es pequeño.
+        # y el volumen de un establecimiento es pequeño.
         candidatas = (
             Cita.objects
-            .filter(
-                estado=Cita.Estado.CONFIRMADA,
-                fecha__in={desde.date(), hasta.date()},
-            )
+            .filter(estado=Cita.Estado.CONFIRMADA,
+                    fecha__gte=ahora.date(), fecha__lte=limite.date())
+            .exclude(notificaciones__tipo=Notificacion.Tipo.RECORDATORIO)
             .select_related("cliente", "servicio", "profesional",
                             "establecimiento")
         )
         if solo_con_antelacion is not None:
             candidatas = candidatas.filter(
                 establecimiento__recordatorio_horas_antes=solo_con_antelacion)
-        return [c for c in candidatas if desde <= cls._momento(c) < hasta]
+
+        pendientes = []
+        for cita in candidatas:
+            momento = cls._momento(cita)
+            if momento - timedelta(hours=horas_antes) <= ahora < momento:
+                pendientes.append(cita)
+        return pendientes
 
     @classmethod
     def citas_por_recordar(cls, ahora=None, horas_antes=None):
         """Citas a las que toca recordarles, según la antelación de cada dueño.
 
-        Cada establecimiento elige su antelación, así que no hay una ventana
-        única sino una por valor en uso. Se consulta agrupando por valor
-        distinto y no por establecimiento: con seis opciones posibles, el
-        barrido hace como mucho seis consultas por más inquilinos que haya.
+        Cada establecimiento elige su antelación, así que se consulta
+        agrupando por valor distinto en uso y no por establecimiento: con
+        seis opciones posibles, el barrido hace como mucho seis consultas
+        por más inquilinos que haya.
 
         `horas_antes` fuerza una antelación única para todos e ignora la
         configuración. Es lo que usa la bandera --horas del comando para
@@ -85,7 +100,7 @@ class RecordatorioService:
         """
         ahora = ahora or timezone.localtime()
         if horas_antes is not None:
-            return cls._ventana(ahora, horas_antes)
+            return cls._vencidas(ahora, horas_antes)
 
         en_uso = set(
             Establecimiento.objects
@@ -94,7 +109,7 @@ class RecordatorioService:
         )
         citas = []
         for horas in en_uso:
-            citas.extend(cls._ventana(ahora, horas, solo_con_antelacion=horas))
+            citas.extend(cls._vencidas(ahora, horas, solo_con_antelacion=horas))
         return citas
 
     @classmethod
