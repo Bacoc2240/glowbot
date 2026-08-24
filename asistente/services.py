@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from agenda.fechas import DIAS, MESES, fecha_larga     # noqa: F401
 from agenda.models import Cita, Notificacion
-from agenda.services import AgendaService, SlotNoDisponible
+from agenda.services import AgendaService, SlotNoDisponible, TopeCitasAlcanzado
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
 from .models import ConversacionIA
 
@@ -223,11 +223,25 @@ REGLAS OBLIGATORIAS:
                 if not datos_cli.get("acepta_datos"):
                     return None, ("El cliente debe aceptar el aviso de privacidad "
                                   "antes de confirmar (RN-07). Solicita la aceptación.")
+                # La identidad es (telefono, nombre). Buscar solo por
+                # telefono devolvia el registro del primero que hubiera usado
+                # ese numero y descartaba el nombre nuevo, porque en
+                # get_or_create los `defaults` solo se aplican al crear: la
+                # confirmacion, el recordatorio y la agenda del barbero
+                # nombraban a otra persona.
                 cliente, _ = ClienteFinal.objects.get_or_create(
                     establecimiento=establecimiento,
                     telefono=datos_cli["telefono"],
-                    defaults={"nombre": datos_cli["nombre"], "acepta_datos": True},
+                    nombre=ClienteFinal.normalizar_nombre(datos_cli["nombre"]),
+                    defaults={"acepta_datos": True},
                 )
+                # El consentimiento se reafirma en cada reserva. Antes vivia
+                # en `defaults`, asi que un cliente registrado sin aceptar
+                # seguia figurando como que no acepto, aunque acabara de
+                # hacerlo (RN-07, Ley 1581).
+                if not cliente.acepta_datos:
+                    cliente.acepta_datos = True
+                    cliente.save(update_fields=["acepta_datos"])
                 dia = date.fromisoformat(intencion["fecha"])
                 hora = datetime.strptime(intencion["hora_inicio"], "%H:%M").time()
                 cita = AgendaService.reservar(
@@ -293,6 +307,12 @@ REGLAS OBLIGATORIAS:
         except (KeyError, ValueError):
             return None, ("La intención tiene datos inválidos. Verifica fecha "
                           "(AAAA-MM-DD) y hora (HH:MM).")
+        except TopeCitasAlcanzado as e:
+            # A diferencia del slot ocupado, ofrecer otra hora no resuelve
+            # nada: el limite es del cliente, no del horario.
+            return None, (f"{e} NO ofrezcas otras horas ni otros profesionales: "
+                          f"el limite es por cliente. Explicaselo y sugiere "
+                          f"que cancele una cita existente.")
         except SlotNoDisponible as e:
             return None, f"{e} Consulta la disponibilidad y ofrece alternativas."
 

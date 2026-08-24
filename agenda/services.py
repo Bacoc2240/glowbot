@@ -14,12 +14,22 @@ from datetime import date, datetime, time, timedelta
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from negocios.models import (
     Bloqueo, Establecimiento, ExcepcionHorario, HorarioBase, Profesional,
     Servicio,
 )
 from .models import Cita
+
+
+class TopeCitasAlcanzado(Exception):
+    """El telefono ya tiene tantas citas futuras como permite el negocio.
+
+    Se distingue de SlotNoDisponible a proposito: ahi el problema es la hora
+    y ofrecer otra resuelve; aqui el problema es el cliente y ofrecer otra
+    hora no resolveria nada. El asistente tiene que decir cosas distintas.
+    """
 
 
 class SlotNoDisponible(Exception):
@@ -181,10 +191,48 @@ class AgendaService:
           2) la restricción EXCLUDE de PostgreSQL rechaza físicamente
              cualquier solape que sobreviva (nivel de base de datos).
 
-        Lanza SlotNoDisponible si el horario ya está tomado.
+        Lanza SlotNoDisponible si el horario ya está tomado, y
+        TopeCitasAlcanzado si el teléfono ya llegó a su límite de citas
+        futuras.
         """
         fin_min = cls._a_minutos(hora_inicio) + servicio.duracion_min
         hora_fin = cls._a_time(fin_min)
+
+        # 0) Tope de citas abiertas por telefono.
+        #    (Regla nueva; falta asignarle numero de RN en el SRS.)
+        #
+        #    Con servicios de 30 minutos, un dia de un profesional son unos
+        #    16 turnos; a 20 mensajes por minuto que permite el throttle del
+        #    chat, una sola persona podia llenarlo en menos de diez minutos.
+        #    El tope corta eso de raiz: al tercer intento ya no hay cupo.
+        #
+        #    Se cuenta por TELEFONO y no por cliente porque la identidad es
+        #    (telefono, nombre): sin esto bastaria con inventarse un nombre
+        #    distinto en cada reserva para saltarse el limite.
+        #
+        #    LIMITACION CONOCIDA: el conteo no lleva cerrojo. No puede
+        #    llevarlo: un cerrojo de fila solo protege filas que existen, y
+        #    aqui lo que hay que impedir es que aparezcan mas. Si dos
+        #    reservas del mismo telefono entran en el mismo instante, ambas
+        #    ven el mismo conteo y el tope puede excederse en uno o dos.
+        #    Es aceptable: esto es un freno, no un invariante. El invariante
+        #    que de verdad importa —que no haya dos citas encimadas— lo sigue
+        #    imponiendo la restriccion EXCLUDE del motor. Si algun dia hiciera
+        #    falta exactitud, el instrumento seria un cerrojo consultivo
+        #    (pg_advisory_xact_lock) sobre el telefono.
+        tope = establecimiento.max_citas_abiertas
+        abiertas = Cita.objects.filter(
+            establecimiento=establecimiento,
+            cliente__telefono=cliente.telefono,
+            estado=Cita.Estado.CONFIRMADA,
+            fecha__gte=timezone.localdate(),
+        ).count()
+        if abiertas >= tope:
+            raise TopeCitasAlcanzado(
+                f"Ya tienes {abiertas} cita(s) pendientes con este número, que "
+                f"es el máximo que permite el establecimiento. Cancela alguna "
+                f"antes de agendar otra."
+            )
 
         # 1) Cerrojo pesimista sobre la agenda del profesional ese día.
         confirmadas = list(

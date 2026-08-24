@@ -23,6 +23,12 @@
     </select>
     <p class="muted">Más antelación le da tiempo de cancelar y liberar el
        turno; menos reduce el riesgo de que se le olvide.</p>
+
+    <label>Citas pendientes por cliente</label>
+    <input type="number" min="1" max="20" x-model.number="ajustes.max_citas_abiertas"
+           @change="guardarAjustes">
+    <p class="muted">Cuántas citas futuras puede tener un mismo teléfono al
+       tiempo. Evita que una sola persona acapare la agenda del día.</p>
     <p class="ok" x-show="ajustesGuardados">Ajustes guardados ✓</p>
   </div>
 
@@ -112,7 +118,7 @@ function horarios() {
     dias: ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
       .map(n => ({ nombre: n, activo: false, inicio: "09:00", fin: "18:00" })),
     excepciones: [], bloqueos: [], guardado: false,
-    ajustes: { modo_agenda: "", recordatorio_horas_antes: 2 },
+    ajustes: { modo_agenda: "", recordatorio_horas_antes: 2, max_citas_abiertas: 3 },
     opciones: { modo_agenda: [], recordatorio_horas_antes: [] },
     ajustesGuardados: false,
     exc: { fecha: "", hora_inicio: "09:00", hora_fin: "18:00" },
@@ -125,6 +131,7 @@ function horarios() {
         this.ajustes = {
           modo_agenda: d.modo_agenda,
           recordatorio_horas_antes: d.recordatorio_horas_antes,
+          max_citas_abiertas: d.max_citas_abiertas,
         };
         this.opciones = d.opciones;
       }

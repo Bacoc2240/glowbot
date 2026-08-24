@@ -130,6 +130,62 @@ class ConversacionTest(BaseIATest):
         self.assertEqual(cita.canal, Cita.Canal.IA)
         self.assertEqual(cita.hora_fin, time(9, 30))  # RN-03
 
+    def test_un_telefono_compartido_no_roba_el_nombre(self):
+        """Regresion real reportada en produccion.
+
+        Wilson agendo con el 319... y despues Santiago agendo con el mismo
+        numero. El asistente confirmo "¡Listo, Wilson Vergara!" a Santiago,
+        porque get_or_create buscaba solo por telefono y el nombre iba en
+        `defaults`, que Django solo aplica al crear.
+
+        No era cosmetico: el recordatorio saludaria a Wilson, la agenda del
+        barbero mostraria a Wilson, y el consentimiento de la Ley 1581
+        quedaba a nombre de quien no lo dio.
+        """
+        def agendar(nombre, hora, sesion):
+            intencion = json.dumps({
+                "intencion": "agendar",
+                "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
+                "fecha": "2026-06-15", "hora_inicio": hora,
+                "cliente": {"nombre": nombre, "telefono": "3192846956",
+                            "acepta_datos": True},
+            })
+            with patch(RUTA_LLAMAR, side_effect=self._mock(intencion)):
+                return IAService.procesar_mensaje(self.est, sesion, "Confirmo")
+
+        primera = agendar("Wilson Vergara", "09:00", "sA")
+        segunda = agendar("Santiago Castro", "10:00", "sB")
+
+        cita_wilson = Cita.objects.get(pk=primera["cita"]["id"])
+        cita_santiago = Cita.objects.get(pk=segunda["cita"]["id"])
+
+        self.assertEqual(cita_wilson.cliente.nombre, "Wilson Vergara")
+        self.assertEqual(cita_santiago.cliente.nombre, "Santiago Castro")
+        self.assertNotEqual(cita_wilson.cliente_id, cita_santiago.cliente_id)
+        # El telefono los sigue agrupando: bloquear por numero alcanza a ambos.
+        self.assertEqual(cita_wilson.cliente.telefono,
+                         cita_santiago.cliente.telefono)
+
+    def test_el_consentimiento_se_reafirma_en_cada_reserva(self):
+        """Vivia en `defaults`, asi que un cliente registrado sin aceptar
+        seguia figurando como que no acepto (RN-07)."""
+        from negocios.models import ClienteFinal
+        ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=False)
+        intencion = json.dumps({
+            "intencion": "agendar",
+            "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
+            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
+                        "acepta_datos": True},
+        })
+        with patch(RUTA_LLAMAR, side_effect=self._mock(intencion)):
+            IAService.procesar_mensaje(self.est, "sC", "Confirmo")
+        cliente = ClienteFinal.objects.get(
+            establecimiento=self.est, telefono="3192846956")
+        self.assertTrue(cliente.acepta_datos)
+
     def test_agendar_sin_acepta_datos_es_rechazado(self):
         """RN-07: sin aceptación del aviso de privacidad no se confirma."""
         intencion = json.dumps({

@@ -31,6 +31,7 @@ class AjustesAgendaView(APIView):
         return Response({
             "modo_agenda": est.modo_agenda,
             "recordatorio_horas_antes": est.recordatorio_horas_antes,
+            "max_citas_abiertas": est.max_citas_abiertas,
             "opciones": {
                 "modo_agenda": _opciones(Establecimiento.ModoAgenda.choices),
                 "recordatorio_horas_antes": _opciones(
@@ -63,6 +64,17 @@ class AjustesAgendaView(APIView):
             est.recordatorio_horas_antes = valor
             cambios.append("recordatorio_horas_antes")
 
+        if "max_citas_abiertas" in request.data:
+            try:
+                valor = int(request.data["max_citas_abiertas"])
+            except (TypeError, ValueError):
+                return Response({"error": "Tope no válido."}, status=400)
+            if not 1 <= valor <= 20:
+                return Response(
+                    {"error": "El tope debe estar entre 1 y 20."}, status=400)
+            est.max_citas_abiertas = valor
+            cambios.append("max_citas_abiertas")
+
         if not cambios:
             return Response({"error": "No se envió ningún ajuste."}, status=400)
 
@@ -70,4 +82,5 @@ class AjustesAgendaView(APIView):
         return Response({
             "modo_agenda": est.modo_agenda,
             "recordatorio_horas_antes": est.recordatorio_horas_antes,
+            "max_citas_abiertas": est.max_citas_abiertas,
         })

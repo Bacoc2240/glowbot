@@ -4,6 +4,7 @@ Cubre el algoritmo de 3 capas y la prevención de double-booking (RF-11).
 La cobertura objetivo de este servicio es del 90% (es la lógica más crítica).
 """
 from agenda.recordatorios import RecordatorioService
+from agenda.services import TopeCitasAlcanzado
 from agenda.models import Notificacion
 from rest_framework.test import APIClient
 from datetime import timedelta
@@ -548,6 +549,166 @@ class AjustesAgendaTest(TestCase):
                    {"recordatorio_horas_antes": 12}, format="json")
         self.est.refresh_from_db()
         self.assertEqual(self.est.recordatorio_horas_antes, 2)
+
+
+class IdentidadClienteTest(TestCase):
+    """Un telefono puede ser de varias personas.
+
+    En Arauca el celular se comparte: la madre agenda para el hijo, un hogar
+    tiene un solo equipo, el local presta el suyo. La identidad del cliente
+    final es (telefono, nombre), no el telefono solo.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="ident@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barberia Ident",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bi",
+        )
+
+    def _cliente(self, nombre, telefono="3192846956"):
+        from negocios.models import ClienteFinal
+        cliente, _ = ClienteFinal.objects.get_or_create(
+            establecimiento=self.est, telefono=telefono,
+            nombre=ClienteFinal.normalizar_nombre(nombre),
+            defaults={"acepta_datos": True},
+        )
+        return cliente
+
+    def test_dos_personas_pueden_compartir_telefono(self):
+        """Regresion: el segundo en agendar heredaba el nombre del primero,
+        y la confirmacion, el recordatorio y la agenda del barbero nombraban
+        a quien no era."""
+        wilson = self._cliente("Wilson Vergara")
+        santiago = self._cliente("Santiago Castro")
+        self.assertNotEqual(wilson.pk, santiago.pk)
+        self.assertEqual(santiago.nombre, "Santiago Castro")
+
+    def test_el_mismo_nombre_no_se_duplica(self):
+        primero = self._cliente("Wilson Vergara")
+        segundo = self._cliente("Wilson Vergara")
+        self.assertEqual(primero.pk, segundo.pk)
+
+    def test_las_variantes_de_escritura_son_la_misma_persona(self):
+        """Sin normalizar, cada forma de teclear el nombre crearia un
+        cliente nuevo y el historial se partiria."""
+        primero = self._cliente("Wilson Vergara")
+        for variante in ["wilson vergara", "WILSON VERGARA", "  Wilson   Vergara "]:
+            with self.subTest(variante=variante):
+                self.assertEqual(self._cliente(variante).pk, primero.pk)
+
+    def test_el_telefono_sigue_agrupando_a_todos(self):
+        """Es lo que permite bloquear o rastrear por numero: nadie escapa de
+        un bloqueo cambiandose el nombre."""
+        from negocios.models import ClienteFinal
+        self._cliente("Wilson Vergara")
+        self._cliente("Santiago Castro")
+        del_numero = ClienteFinal.objects.filter(
+            establecimiento=self.est, telefono="3192846956")
+        self.assertEqual(del_numero.count(), 2)
+
+    def test_el_mismo_nombre_en_otro_telefono_es_otra_persona(self):
+        uno = self._cliente("Wilson Vergara", "3192846956")
+        otro = self._cliente("Wilson Vergara", "3001112222")
+        self.assertNotEqual(uno.pk, otro.pk)
+
+
+class TopeCitasAbiertasTest(TestCase):
+    """Un solo telefono no puede acaparar la agenda.
+
+    Con servicios de 30 minutos, un dia de un profesional son unos 16 turnos;
+    a 20 mensajes por minuto que permite el throttle del chat, una persona
+    podia llenarlo en menos de diez minutos. El tope corta eso.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        u = Usuario.objects.create_user(email="tope@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barberia Tope",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bt2",
+            max_citas_abiertas=2,
+        )
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+        self.cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=True)
+
+    def _reservar(self, dias_adelante, hora, cliente=None):
+        return AgendaService.reservar(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=cliente or self.cliente,
+            dia=timezone.localdate() + timedelta(days=dias_adelante),
+            hora_inicio=time(hora, 0),
+        )
+
+    def test_permite_hasta_el_tope(self):
+        self._reservar(1, 9)
+        self._reservar(2, 9)
+        self.assertEqual(Cita.objects.count(), 2)
+
+    def test_rechaza_la_que_pasa_del_tope(self):
+        self._reservar(1, 9)
+        self._reservar(2, 9)
+        with self.assertRaises(TopeCitasAlcanzado):
+            self._reservar(3, 9)
+        self.assertEqual(Cita.objects.count(), 2)
+
+    def test_cancelar_libera_cupo(self):
+        """El tope cuenta citas vivas, no historial: quien cancela no queda
+        castigado."""
+        primera = self._reservar(1, 9)
+        self._reservar(2, 9)
+        primera.estado = Cita.Estado.CANCELADA_CLIENTE
+        primera.save()
+        self._reservar(3, 9)
+        self.assertEqual(
+            Cita.objects.filter(estado=Cita.Estado.CONFIRMADA).count(), 2)
+
+    def test_las_citas_pasadas_no_ocupan_cupo(self):
+        """Si contara el historial, un cliente fiel se quedaria sin poder
+        agendar despues de tres visitas."""
+        Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=self.cliente, fecha=timezone.localdate() - timedelta(days=5),
+            hora_inicio=time(9, 0), hora_fin=time(9, 30),
+            estado=Cita.Estado.CONFIRMADA)
+        self._reservar(1, 9)
+        self._reservar(2, 9)
+        with self.assertRaises(TopeCitasAlcanzado):
+            self._reservar(3, 9)
+
+    def test_no_se_esquiva_cambiando_de_nombre(self):
+        """El conteo es por TELEFONO. Si fuera por cliente, bastaria con
+        inventarse un nombre distinto en cada reserva."""
+        from negocios.models import ClienteFinal
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Santiago Castro",
+            telefono="3192846956", acepta_datos=True)
+        self._reservar(1, 9)
+        self._reservar(2, 9)
+        with self.assertRaises(TopeCitasAlcanzado):
+            self._reservar(3, 9, cliente=otro)
+
+    def test_otro_telefono_no_se_ve_afectado(self):
+        from negocios.models import ClienteFinal
+        vecino = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana Diaz",
+            telefono="3001112222", acepta_datos=True)
+        self._reservar(1, 9)
+        self._reservar(2, 9)
+        self._reservar(3, 9, cliente=vecino)
+        self.assertEqual(Cita.objects.count(), 3)
+
+    def test_el_tope_por_defecto_son_tres(self):
+        u = Usuario.objects.create_user(email="def@b.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="Nueva", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="nueva2")
+        self.assertEqual(est.max_citas_abiertas, 3)
 
 
 class ModoAgendaTest(TestCase):

@@ -1,7 +1,7 @@
 """Modelos de negocio — Diccionario de Datos §2.2 a §2.9."""
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -74,6 +74,14 @@ class Establecimiento(models.Model):
     direccion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20)
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.BASICO)
+    max_citas_abiertas = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(20)],
+        help_text=(
+            "Cuántas citas futuras puede tener un mismo teléfono al tiempo. "
+            "Evita que una sola persona acapare la agenda del día."
+        ),
+    )
     recordatorio_horas_antes = models.PositiveSmallIntegerField(
         choices=Antelacion.choices, default=Antelacion.DOS,
         help_text=(
@@ -271,11 +279,41 @@ class ClienteFinal(models.Model):
 
     objects = TenantManager()
 
+    @staticmethod
+    def normalizar_nombre(nombre: str) -> str:
+        """Forma canonica del nombre, para no partir a una persona en dos.
+
+        Ahora que la identidad incluye el nombre, "wilson vergara" y
+        "Wilson  Vergara" crearian dos registros del mismo cliente. Se
+        recortan los espacios sobrantes y se capitaliza.
+
+        No resuelve todo: "Wilson" y "Wilson Vergara" siguen siendo dos. Para
+        una lista de contactos de barberia es tolerable; para algo que
+        exigiera identidad exacta haria falta verificar el telefono.
+        """
+        return " ".join((nombre or "").split()).title()
+
+    def save(self, *args, **kwargs):
+        self.nombre = self.normalizar_nombre(self.nombre)
+        return super().save(*args, **kwargs)
+
     class Meta:
         db_table = "cliente_final"
         constraints = [
+            # La identidad de un cliente final es (telefono, nombre), no el
+            # telefono solo. En Arauca un celular se comparte: la madre agenda
+            # para el hijo, un hogar tiene un solo equipo. Con la restriccion
+            # anterior, el segundo en agendar heredaba el nombre del primero:
+            # el mensaje de confirmacion, el recordatorio y la agenda del
+            # barbero nombraban a otra persona, y el consentimiento de la Ley
+            # 1581 quedaba registrado a nombre de quien no lo dio.
+            #
+            # El telefono sigue estando en cada registro, de modo que bloquear
+            # o rastrear POR NUMERO alcanza a todas las personas que lo usan:
+            # nadie escapa de un bloqueo cambiandose el nombre.
             models.UniqueConstraint(
-                fields=["establecimiento", "telefono"], name="uq_cliente_tenant_telefono",
+                fields=["establecimiento", "telefono", "nombre"],
+                name="uq_cliente_tenant_telefono_nombre",
             )
         ]
 
