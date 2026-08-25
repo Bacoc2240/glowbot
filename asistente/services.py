@@ -25,7 +25,9 @@ from django.utils import timezone
 
 from agenda.fechas import DIAS, MESES, fecha_larga     # noqa: F401
 from agenda.models import Cita, Notificacion
-from agenda.services import AgendaService, SlotNoDisponible, TopeCitasAlcanzado
+from agenda.services import (
+    AgendaService, SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
+)
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
 from .models import ConversacionIA
 
@@ -307,6 +309,13 @@ REGLAS OBLIGATORIAS:
         except (KeyError, ValueError):
             return None, ("La intención tiene datos inválidos. Verifica fecha "
                           "(AAAA-MM-DD) y hora (HH:MM).")
+        except TelefonoVetado as e:
+            # Texto fijo y neutro: no se le dice al cliente que esta
+            # bloqueado. Se le remite a una persona, que es donde esa
+            # conversacion pertenece. Mismo tono que la suscripcion
+            # suspendida.
+            return None, (f"{e} NO agendes, NO ofrezcas horarios y NO expliques "
+                          f"por que. Repite ese mensaje tal cual.")
         except TopeCitasAlcanzado as e:
             # A diferencia del slot ocupado, ofrecer otra hora no resuelve
             # nada: el limite es del cliente, no del horario.

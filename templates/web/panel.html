@@ -96,6 +96,9 @@
         <button class="btn-peligro" style="padding:6px;font-size:12px;margin-top:4px"
                 x-show="c.estado === 'confirmada'"
                 @click="cancelar(c.id)">Cancelar</button>
+        <button class="btn btn-borde" style="width:auto;padding:6px 10px;font-size:13px"
+                x-show="c.estado === 'confirmada' && yaEmpezo(c)"
+                @click="noAsistio(c.id)">No asistió</button>
       </div>
     </div>
   </template>
@@ -202,6 +205,33 @@ function panel() {
     async cancelar(id) {
       if (!confirm("¿Cancelar esta cita? El espacio quedará libre.")) return;
       await api(`/citas/${id}/cancelar`, { method: "PATCH" });
+      await this.cargar();
+    },
+    yaEmpezo(c) {
+      // Se puede marcar desde que EMPIEZA, no desde que termina: si el de
+      // las 9:00 no llego, a las 9:10 el barbero ya lo sabe.
+      return new Date(`${c.fecha}T${c.hora_inicio}`) <= new Date();
+    },
+    async noAsistio(id) {
+      if (!confirm("¿Marcar que el cliente no asistió?")) return;
+      const r = await api(`/citas/${id}/no-asistio`, { method: "PATCH" });
+      if (r && r.ok) {
+        const d = await r.json();
+        // El bloqueo NUNCA es automatico: se ofrece, decide el dueno.
+        if (!d.bloqueado && d.inasistencias >= 2) {
+          const veces = d.inasistencias;
+          if (confirm(`Este número (${d.telefono}) acumula ${veces} `
+                    + `inasistencias. ¿Bloquearlo para que no pueda agendar `
+                    + `en línea? Podrás desbloquearlo en Horarios, y seguirás `
+                    + `pudiendo agendarle tú manualmente.`)) {
+            await api("/clientes/bloqueos", {
+              method: "POST",
+              body: JSON.stringify({ telefono: d.telefono,
+                                     motivo: `${veces} inasistencias` }),
+            });
+          }
+        }
+      }
       await this.cargar();
     },
   };

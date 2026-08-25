@@ -18,9 +18,13 @@ from django.utils import timezone
 
 from negocios.models import (
     Bloqueo, Establecimiento, ExcepcionHorario, HorarioBase, Profesional,
-    Servicio,
+    Servicio, TelefonoBloqueado,
 )
 from .models import Cita
+
+
+class TelefonoVetado(Exception):
+    """El establecimiento bloqueó este número para reservas en línea."""
 
 
 class TopeCitasAlcanzado(Exception):
@@ -182,7 +186,8 @@ class AgendaService:
     @classmethod
     @transaction.atomic
     def reservar(cls, *, establecimiento, profesional, servicio, cliente,
-                 dia: date, hora_inicio: time, canal=Cita.Canal.IA) -> Cita:
+                 dia: date, hora_inicio: time, canal=Cita.Canal.IA,
+                 respetar_bloqueo: bool = True) -> Cita:
         """Crea una cita de forma atómica.
 
         Doble blindaje contra el double-booking (RN-01):
@@ -198,7 +203,21 @@ class AgendaService:
         fin_min = cls._a_minutos(hora_inicio) + servicio.duracion_min
         hora_fin = cls._a_time(fin_min)
 
-        # 0) Tope de citas abiertas por telefono.
+        # 0a) Telefono vetado por el establecimiento.
+        #
+        #     `respetar_bloqueo=False` es la puerta que conserva el dueno:
+        #     si el cliente llama y se disculpa, el barbero puede agendarle
+        #     a mano desde el panel. El bloqueo quita el autoservicio, no la
+        #     potestad de quien manda en el negocio.
+        if respetar_bloqueo and TelefonoBloqueado.objects.filter(
+                establecimiento=establecimiento,
+                telefono=cliente.telefono).exists():
+            raise TelefonoVetado(
+                "No puedo agendar en línea con este número. Comunícate "
+                "directamente con el establecimiento."
+            )
+
+        # 0b) Tope de citas abiertas por telefono.
         #    (Regla nueva; falta asignarle numero de RN en el SRS.)
         #
         #    Con servicios de 30 minutos, un dia de un profesional son unos

@@ -4,7 +4,7 @@ Cubre el algoritmo de 3 capas y la prevención de double-booking (RF-11).
 La cobertura objetivo de este servicio es del 90% (es la lógica más crítica).
 """
 from agenda.recordatorios import RecordatorioService
-from agenda.services import TopeCitasAlcanzado
+from agenda.services import TelefonoVetado, TopeCitasAlcanzado
 from agenda.models import Notificacion
 from rest_framework.test import APIClient
 from datetime import timedelta
@@ -709,6 +709,231 @@ class TopeCitasAbiertasTest(TestCase):
             propietario=u, nombre="Nueva", tipo=Establecimiento.Tipo.SPA,
             telefono="300", slug="nueva2")
         self.assertEqual(est.max_citas_abiertas, 3)
+
+
+class InasistenciaTest(TestCase):
+    """Marcar al que no llego, para que el dueno pueda decidir.
+
+    Solo se marca la asistencia que FALTA, nunca la que se cumplio: un dueno
+    no cierra sesenta citas al mes una por una, pero si tiene motivo para
+    registrar al que le hizo perder el turno.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        self.u = Usuario.objects.create_user(
+            email="falta@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.u, nombre="Barberia Falta",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bf")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+        self.cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=True)
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.u)
+
+    def _cita(self, cuando, cliente=None):
+        return Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=cliente or self.cliente, fecha=cuando.date(),
+            hora_inicio=cuando.time(),
+            hora_fin=(cuando + timedelta(minutes=30)).time(),
+            estado=Cita.Estado.CONFIRMADA)
+
+    def test_marca_una_cita_que_ya_empezo(self):
+        cita = self._cita(timezone.localtime() - timedelta(minutes=10))
+        r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        self.assertEqual(r.status_code, 200)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.NO_ASISTIO)
+
+    def test_no_marca_una_cita_futura(self):
+        """Marcar como ausente a quien todavia no tenia que llegar es un
+        error de dedo, no una intencion."""
+        cita = self._cita(timezone.localtime() + timedelta(hours=3))
+        r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        self.assertEqual(r.status_code, 409)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_no_marca_una_cita_cancelada(self):
+        cita = self._cita(timezone.localtime() - timedelta(hours=1))
+        cita.estado = Cita.Estado.CANCELADA_CLIENTE
+        cita.save()
+        self.assertEqual(
+            self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio").status_code, 409)
+
+    def test_devuelve_el_acumulado_para_que_el_dueno_decida(self):
+        """El panel necesita el numero para ofrecer el bloqueo. El sistema
+        informa; la persona juzga."""
+        for h in (3, 2):
+            c = self._cita(timezone.localtime() - timedelta(hours=h))
+            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+        ultima = self._cita(timezone.localtime() - timedelta(minutes=10))
+        d = self.api.patch(f"/api/v1/citas/{ultima.id}/no-asistio").json()
+        self.assertEqual(d["inasistencias"], 3)
+        self.assertEqual(d["telefono"], "3192846956")
+        self.assertFalse(d["bloqueado"])
+
+    def test_marcar_no_bloquea_por_si_solo(self):
+        """Ningun numero de inasistencias veta a nadie automaticamente."""
+        from negocios.models import TelefonoBloqueado
+        for h in (5, 4, 3, 2, 1):
+            c = self._cita(timezone.localtime() - timedelta(hours=h))
+            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+        self.assertEqual(TelefonoBloqueado.objects.count(), 0)
+
+    def test_las_inasistencias_se_cuentan_por_telefono(self):
+        """Si contaran por registro de cliente, bastaria con dar otro nombre
+        para reiniciar el historial."""
+        from negocios.models import ClienteFinal
+        from negocios.clientes import ClienteService
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Santiago Castro",
+            telefono="3192846956", acepta_datos=True)
+        for cli in (self.cliente, otro):
+            c = self._cita(timezone.localtime() - timedelta(hours=2), cliente=cli)
+            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+        self.assertEqual(
+            ClienteService.contar_inasistencias(self.est, "3192846956"), 2)
+
+    def test_un_dueno_no_marca_citas_de_otro(self):
+        otro = Usuario.objects.create_user(email="ajeno@b.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=otro, nombre="Ajena", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="ajena")
+        cita = self._cita(timezone.localtime() - timedelta(minutes=10))
+        api2 = APIClient(); api2.force_authenticate(user=otro)
+        with self.assertRaises(Cita.DoesNotExist):
+            api2.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+
+
+class BloqueoTelefonoTest(TestCase):
+    """El bloqueo quita el autoservicio, no la potestad del dueno."""
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        self.u = Usuario.objects.create_user(
+            email="bloq@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.u, nombre="Barberia Bloq",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bb2")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+        self.cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=True)
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.u)
+
+    def _reservar(self, dias=1, respetar_bloqueo=True, cliente=None):
+        return AgendaService.reservar(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=cliente or self.cliente,
+            dia=timezone.localdate() + timedelta(days=dias),
+            hora_inicio=time(9, 0), respetar_bloqueo=respetar_bloqueo)
+
+    def test_el_bloqueado_no_puede_reservar_en_linea(self):
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956", "3 inasistencias")
+        with self.assertRaises(TelefonoVetado):
+            self._reservar()
+
+    def test_el_dueno_si_puede_agendarle_manualmente(self):
+        """Si el cliente llama y se disculpa, el sistema no debe estorbarle
+        al barbero. El bloqueo es contra el autoservicio."""
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956")
+        cita = self._reservar(respetar_bloqueo=False)
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_no_se_esquiva_cambiando_de_nombre(self):
+        """Se bloquea el TELEFONO, no el registro del cliente."""
+        from negocios.models import ClienteFinal
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956")
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Otro Nombre",
+            telefono="3192846956", acepta_datos=True)
+        with self.assertRaises(TelefonoVetado):
+            self._reservar(cliente=otro)
+
+    def test_el_bloqueo_es_de_un_solo_establecimiento(self):
+        """Que alguien este vetado en una barberia no puede afectarle en
+        otra: el juicio lo hizo un negocio, no la plataforma."""
+        from negocios.models import ClienteFinal
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956")
+
+        otro_u = Usuario.objects.create_user(email="v@b.com", password="clave12345")
+        vecina = Establecimiento.objects.create(
+            propietario=otro_u, nombre="Vecina", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="vecina")
+        prof2 = Profesional.objects.create(
+            establecimiento=vecina, nombre="Luis", telefono_whatsapp="3007412599")
+        serv2 = Servicio.objects.create(
+            establecimiento=vecina, nombre="Corte", duracion_min=30, precio=15000)
+        cli2 = ClienteFinal.objects.create(
+            establecimiento=vecina, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=True)
+        cita = AgendaService.reservar(
+            establecimiento=vecina, profesional=prof2, servicio=serv2,
+            cliente=cli2, dia=timezone.localdate() + timedelta(days=1),
+            hora_inicio=time(9, 0))
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_desbloquear_devuelve_el_autoservicio(self):
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956")
+        ClienteService.desbloquear(self.est, "3192846956")
+        self.assertEqual(self._reservar().estado, Cita.Estado.CONFIRMADA)
+
+    def test_bloquear_dos_veces_no_falla(self):
+        from negocios.clientes import ClienteService
+        from negocios.models import TelefonoBloqueado
+        ClienteService.bloquear(self.est, "3192846956", "primera")
+        ClienteService.bloquear(self.est, "3192846956", "segunda")
+        self.assertEqual(TelefonoBloqueado.objects.filter(
+            establecimiento=self.est).count(), 1)
+
+    def test_el_endpoint_bloquea_y_desbloquea(self):
+        r = self.api.post("/api/v1/clientes/bloqueos",
+                          {"telefono": "3192846956", "motivo": "no llega"},
+                          format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["bloqueado"])
+        r = self.api.delete("/api/v1/clientes/bloqueos",
+                            {"telefono": "3192846956"}, format="json")
+        self.assertFalse(r.json()["bloqueado"])
+
+    def test_el_resumen_muestra_todos_los_nombres_del_numero(self):
+        """Un celular se comparte. Sin los nombres, el dueno no sabria a
+        quien esta bloqueando."""
+        from negocios.models import ClienteFinal
+        from negocios.clientes import ClienteService
+        ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Santiago Castro",
+            telefono="3192846956", acepta_datos=True)
+        ClienteService.bloquear(self.est, "3192846956")
+        fila = self.api.get("/api/v1/clientes/bloqueos").json()["clientes"][0]
+        self.assertEqual(fila["nombres"], ["Santiago Castro", "Wilson Vergara"])
+        self.assertTrue(fila["bloqueado"])
+
+    def test_cada_dueno_solo_ve_sus_bloqueos(self):
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956")
+        otro = Usuario.objects.create_user(email="x@b.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=otro, nombre="X", tipo=Establecimiento.Tipo.SPA,
+            telefono="300", slug="x2")
+        api2 = APIClient(); api2.force_authenticate(user=otro)
+        self.assertEqual(api2.get("/api/v1/clientes/bloqueos").json()["clientes"], [])
 
 
 class ModoAgendaTest(TestCase):

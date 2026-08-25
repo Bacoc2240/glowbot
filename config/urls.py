@@ -9,6 +9,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from cuentas.api import RegistroView
 from negocios.api_ajustes import AjustesAgendaView
+from negocios.api_clientes import ClientesView
 from negocios.api import (
     BloqueosView, EliminarBloqueoView, EliminarExcepcionView, ExcepcionesView,
     HorariosProfesionalView, MiEstablecimientoView, ProfesionalViewSet,
@@ -68,6 +69,7 @@ api_v1 = [
     # Ajustes de agenda que edita el propio dueno (antes solo via /admin/)
     path("mi-establecimiento/ajustes", AjustesAgendaView.as_view(),
          name="ajustes-agenda"),
+    path("clientes/bloqueos", ClientesView.as_view(), name="clientes-bloqueos"),
     path("recordatorios", RecordatoriosView.as_view(), name="recordatorios"),
     path("recordatorios/<int:notificacion_id>", MarcarRecordatorioView.as_view(),
          name="marcar-recordatorio"),

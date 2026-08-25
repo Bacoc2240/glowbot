@@ -32,6 +32,27 @@
     <p class="ok" x-show="ajustesGuardados">Ajustes guardados ✓</p>
   </div>
 
+  <div class="card" x-show="clientes.length">
+    <h2>Clientes con inasistencias</h2>
+    <p class="muted">Un número bloqueado no puede agendar en línea. Tú sí
+       puedes seguir agendándole manualmente.</p>
+    <template x-for="c in clientes" :key="c.telefono">
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  gap:10px;padding:9px 0;border-bottom:1px solid var(--borde)">
+        <div style="min-width:0">
+          <b x-text="c.telefono"></b>
+          <span x-show="c.bloqueado" style="color:var(--rojo);font-size:13px">
+            · bloqueado</span>
+          <div class="muted" style="overflow:hidden;text-overflow:ellipsis"
+               x-text="c.nombres.join(', ') + ' · ' + c.inasistencias + ' inasistencia(s)'"></div>
+        </div>
+        <button class="btn btn-borde" style="width:auto;padding:6px 12px;font-size:13px"
+                @click="alternarBloqueo(c)"
+                x-text="c.bloqueado ? 'Desbloquear' : 'Bloquear'"></button>
+      </div>
+    </template>
+  </div>
+
   <div class="card">
     <label>Profesional</label>
     <select x-model.number="profesionalId" @change="cargarTodo">
@@ -121,6 +142,7 @@ function horarios() {
     ajustes: { modo_agenda: "", recordatorio_horas_antes: 2, max_citas_abiertas: 3 },
     opciones: { modo_agenda: [], recordatorio_horas_antes: [] },
     ajustesGuardados: false,
+    clientes: [],
     exc: { fecha: "", hora_inicio: "09:00", hora_fin: "18:00" },
     blo: { recurrente: false, fecha: "", dia_semana: 6, diaCompleto: true,
            hora_inicio: "12:00", hora_fin: "14:00", motivo: "" },
@@ -144,8 +166,24 @@ function horarios() {
         setTimeout(() => this.ajustesGuardados = false, 2500);
       }
     },
+    async cargarClientes() {
+      const r = await api("/clientes/bloqueos");
+      if (r && r.ok) this.clientes = (await r.json()).clientes;
+    },
+    async alternarBloqueo(c) {
+      const metodo = c.bloqueado ? "DELETE" : "POST";
+      if (!c.bloqueado && !confirm(
+            `¿Bloquear ${c.telefono}? No podrá agendar en línea, pero tú `
+          + `podrás seguir agendándole manualmente.`)) return;
+      await api("/clientes/bloqueos", {
+        method: metodo,
+        body: JSON.stringify({ telefono: c.telefono }),
+      });
+      await this.cargarClientes();
+    },
     async cargar() {
       await this.cargarAjustes();
+      await this.cargarClientes();
       const r = await api("/profesionales");
       if (r && r.ok) {
         const d = await r.json(); this.profesionales = d.results || d;

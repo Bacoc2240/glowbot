@@ -186,6 +186,36 @@ class ConversacionTest(BaseIATest):
             establecimiento=self.est, telefono="3192846956")
         self.assertTrue(cliente.acepta_datos)
 
+    def test_un_telefono_vetado_no_logra_agendar_por_chat(self):
+        """El bloqueo se impone en el servidor, no en el prompt.
+
+        Es la misma filosofia que el resto: la IA propone, el backend
+        dispone. Un modelo persuadido no puede saltarse una regla que vive
+        en AgendaService.
+        """
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3192846956", "3 inasistencias")
+        intencion = json.dumps({
+            "intencion": "agendar",
+            "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
+            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
+                        "acepta_datos": True},
+        })
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            intencion,
+            "No puedo agendar en línea con este número. Comunícate "
+            "directamente con el establecimiento.",
+        )) as m:
+            r = IAService.procesar_mensaje(self.est, "sV", "Confirmo")
+
+        self.assertIsNone(r["accion"])
+        self.assertEqual(Cita.objects.count(), 0)
+        # Al modelo se le entrega el texto exacto y la orden de no explicar.
+        feedback = m.call_args_list[1].args[1][-1]["content"]
+        self.assertIn("No puedo agendar en línea con este número", feedback)
+        self.assertIn("NO expliques", feedback)
+
     def test_agendar_sin_acepta_datos_es_rechazado(self):
         """RN-07: sin aceptación del aviso de privacidad no se confirma."""
         intencion = json.dumps({

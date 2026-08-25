@@ -263,6 +263,51 @@ class Bloqueo(models.Model):
             raise ValidationError("Defina ambas horas o ninguna (día completo).")
 
 
+class TelefonoBloqueado(models.Model):
+    """Numeros a los que este establecimiento no permite reservar en linea.
+
+    Se bloquea el TELEFONO y no el ClienteFinal porque la identidad del
+    cliente es (telefono, nombre): bloquear el registro dejaria la puerta
+    abierta a volver a entrar dando otro nombre.
+
+    El bloqueo es POR ESTABLECIMIENTO. Que alguien este vetado en una
+    barberia no puede afectarle en otra: es el mismo aislamiento multi-tenant
+    del resto del sistema, y ademas seria injusto —el juicio lo hizo un
+    negocio, no la plataforma.
+
+    Lo que impide es el AUTOSERVICIO. El dueno conserva la potestad de
+    agendarle manualmente desde el panel si el cliente llama y se disculpa;
+    la autoridad es suya, el bloqueo solo le quita el automatico. Y el
+    bloqueado puede seguir consultando y cancelando lo que ya tenia:
+    impedirselo dejaria turnos muertos en la agenda.
+    """
+
+    establecimiento = models.ForeignKey(
+        Establecimiento, on_delete=models.CASCADE,
+        related_name="telefonos_bloqueados", db_index=True,
+    )
+    telefono = models.CharField(max_length=20)
+    # Texto libre que el dueno escribe SOBRE UNA PERSONA. Bajo la Ley 1581
+    # es tratamiento de datos con un juicio subjetivo, y el titular tiene
+    # derecho a conocerlo y rectificarlo. Se mantiene corto y opcional.
+    motivo = models.CharField(max_length=200, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    objects = TenantManager()
+
+    class Meta:
+        db_table = "telefono_bloqueado"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["establecimiento", "telefono"],
+                name="uq_bloqueo_tenant_telefono",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.telefono} ({self.establecimiento.nombre})"
+
+
 class ClienteFinal(models.Model):
     """Diccionario §2.9 (RN-06, RN-07 — Ley 1581 de 2012)."""
 

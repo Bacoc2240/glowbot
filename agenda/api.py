@@ -8,7 +8,10 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 
-from negocios.models import Profesional, Servicio
+from django.utils import timezone
+
+from negocios.clientes import ClienteService
+from negocios.models import Profesional, Servicio, TelefonoBloqueado
 from .models import Cita, Notificacion
 from .recordatorios import RecordatorioService
 from .services import AgendaService, SlotNoDisponible
@@ -99,11 +102,54 @@ class CitaViewSet(viewsets.ModelViewSet):
         AgendaService.cancelar(cita, por_cliente=False)
         return Response(CitaSerializer(cita).data)
 
+    @action(detail=True, methods=["patch"], url_path="no-asistio")
+    def no_asistio(self, request, pk=None):
+        """PATCH /citas/{id}/no-asistio — el cliente no llego.
+
+        Solo se marca la asistencia que FALTA, nunca la que se cumplio: un
+        dueno no va a cerrar sesenta citas al mes una por una, pero si tiene
+        motivo propio para registrar al que le hizo perder el turno. La
+        ausencia de marca significa que vino.
+
+        Se permite desde que la cita EMPEZO, no desde que termino: si el de
+        las 9:00 no llego, a las 9:10 ya se sabe y no hay por que esperar.
+        Una cita futura no se puede marcar; eso seria un error de dedo.
+
+        Devuelve cuantas inasistencias acumula el telefono para que el panel
+        pueda ofrecer el bloqueo. El sistema informa; el dueno juzga.
+        """
+        cita = self.get_queryset().get(pk=pk)
+
+        if cita.estado != Cita.Estado.CONFIRMADA:
+            return Response(
+                {"error": "Solo se puede marcar una cita confirmada."},
+                status=status.HTTP_409_CONFLICT)
+
+        inicio = timezone.make_aware(
+            datetime.combine(cita.fecha, cita.hora_inicio),
+            timezone.get_current_timezone())
+        if timezone.localtime() < inicio:
+            return Response(
+                {"error": "La cita todavía no ha empezado."},
+                status=status.HTTP_409_CONFLICT)
+
+        cita.estado = Cita.Estado.NO_ASISTIO
+        cita.save(update_fields=["estado"])
+
+        telefono = cita.cliente.telefono
+        return Response({
+            "cita": CitaSerializer(cita).data,
+            "telefono": telefono,
+            "inasistencias": ClienteService.contar_inasistencias(
+                cita.establecimiento, telefono),
+            "bloqueado": TelefonoBloqueado.objects.filter(
+                establecimiento=cita.establecimiento, telefono=telefono).exists(),
+        })
+
 
 # ═══════════════════════════════════════════════════════════════
 #  Sprint 4 — Notificaciones del panel (RF-13)
 # ═══════════════════════════════════════════════════════════════
-from .models import Notificacion
 from .notificaciones import NotificacionService
 from .recordatorios import RecordatorioService
 
