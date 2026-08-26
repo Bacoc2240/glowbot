@@ -626,6 +626,22 @@ class SaludTest(TestCase):
         """Railway consulta sin credenciales; debe responder igual."""
         self.assertEqual(self.client.get("/salud").status_code, 200)
 
+    def test_con_la_base_caida_responde_503(self):
+        """La rama que de verdad importa, y que nunca se habia ejecutado.
+
+        Un proceso vivo con la base caida NO esta sano. Si respondiera 200,
+        el healthcheck de Railway daria por bueno un despliegue roto y el
+        monitoreo externo no veria nada: el codigo de estado es lo unico que
+        un vigilante generico sabe interpretar.
+        """
+        from django.db.utils import OperationalError
+        with mock.patch("web.views.connections") as conexiones:
+            conexiones.__getitem__.return_value.cursor.side_effect = \
+                OperationalError("conexion rechazada")
+            r = self.client.get("/salud")
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["estado"], "base_de_datos_no_disponible")
+
 
 @override_settings(
     # Ninguna prueba debe abrir una conexion de red: sin esto, si el
