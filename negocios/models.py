@@ -337,6 +337,38 @@ class ClienteFinal(models.Model):
     # saber a que documento se refiere un consentimiento anterior.
     fecha_consentimiento = models.DateTimeField(null=True, blank=True)
     version_aviso = models.CharField(max_length=20, blank=True)
+
+    class OrigenConsentimiento(models.TextChoices):
+        # El titular actuo el mismo en la zona publica: hay constancia
+        # digital de que vio el aviso y de que fue el quien acepto. Es la
+        # prueba mas fuerte, y la unica que sirve como opt-in ante Meta,
+        # porque el titular si interactuo con el sistema que le va a
+        # escribir.
+        AUTOSERVICIO = "autoservicio", "El titular aceptó en la zona pública"
+        # El dueno declara haber informado al titular y haber obtenido su
+        # autorizacion oral, estando presente. El articulo 7 del Decreto
+        # 1377 de 2013 admite la autorizacion oral, de modo que cumple la
+        # Ley 1581; pero NO sirve como opt-in ante Meta, porque el titular
+        # nunca vio ni acepto nada del remitente. De ahi que el origen
+        # decida el canal de entrega del recordatorio.
+        VERBAL_PRESENCIAL = "verbal_presencial", "El dueño declara autorización verbal"
+
+    origen_consentimiento = models.CharField(
+        max_length=20, choices=OrigenConsentimiento.choices,
+        default=OrigenConsentimiento.AUTOSERVICIO,
+        help_text="Cómo se obtuvo la autorización. Decide por dónde se entrega el recordatorio.",
+    )
+    # Quien registro la declaracion. Solo aplica al origen verbal: en el
+    # autoservicio no hay intermediario que responda por ella.
+    #
+    # Es PROTECT y no SET_NULL porque el articulo 8 del Decreto 1377 obliga a
+    # CONSERVAR la prueba de la autorizacion. Si al borrar un usuario se
+    # perdiera el nombre de quien dio fe, la constancia quedaria sin autor y
+    # dejaria de ser prueba de nada.
+    consentimiento_registrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.PROTECT, related_name="consentimientos_registrados",
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
 
     objects = TenantManager()
@@ -376,7 +408,22 @@ class ClienteFinal(models.Model):
             models.UniqueConstraint(
                 fields=["establecimiento", "telefono", "nombre"],
                 name="uq_cliente_tenant_telefono_nombre",
-            )
+            ),
+            # La coherencia entre origen y autor se cierra en la base y no
+            # solo en el servicio, por la misma razon que el EXCLUDE de la
+            # agenda: el servicio es la puerta principal, no la unica. Un
+            # consentimiento verbal sin autor no prueba nada —nadie responde
+            # por el—, y uno de autoservicio CON autor insinuaria que
+            # intervino alguien donde no intervino nadie.
+            models.CheckConstraint(
+                check=(
+                    models.Q(origen_consentimiento="verbal_presencial",
+                             consentimiento_registrado_por__isnull=False)
+                    | models.Q(origen_consentimiento="autoservicio",
+                               consentimiento_registrado_por__isnull=True)
+                ),
+                name="ck_consentimiento_origen_coherente",
+            ),
         ]
 
     def __str__(self):

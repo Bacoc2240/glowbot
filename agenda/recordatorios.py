@@ -19,7 +19,7 @@ from urllib.parse import quote
 from django.conf import settings
 from django.utils import timezone
 
-from negocios.models import Establecimiento
+from negocios.models import ClienteFinal, Establecimiento
 
 from .fechas import dia_relativo
 from .models import Cita, Notificacion
@@ -158,12 +158,40 @@ class RecordatorioService:
         hoy = hoy or timezone.localdate()
         cuando = dia_relativo(cita.fecha, hoy)
         return (
-            f"Hola {cita.cliente.nombre}, te recordamos tu cita en "
-            f"{cita.establecimiento.nombre}: {cita.servicio.nombre} {cuando} "
-            f"a las {cita.hora_inicio.strftime('%H:%M')} con "
-            f"{cita.profesional.nombre}. "
-            f"Si no puedes asistir, cancélala aquí: "
+            f"Recordatorio de tu cita en {cita.establecimiento.nombre}.\n\n"
+            f"Hola {cita.cliente.nombre}, tienes reservado tu servicio de "
+            f"{cita.servicio.nombre}. Es {cuando} a las "
+            f"{cita.hora_inicio.strftime('%H:%M')} con "
+            f"{cita.profesional.nombre}.\n\n"
+            f"Ver o cancelar tu cita: "
             f"{settings.SITIO_URL}/p/{cita.establecimiento.slug}"
+        )
+
+    @staticmethod
+    def puede_enviarse_automatico(notificacion: Notificacion) -> bool:
+        """Si este recordatorio puede salir por la API o debe ir a mano.
+
+        El opt-in que exige Meta es hacia el REMITENTE, y el remitente sera
+        "GlowBot Citas", una marca con la que el cliente final nunca trato.
+        Solo quien acepto por si mismo en la zona publica vio de quien venia
+        el mensaje y por que canal: ese si es opt-in.
+
+        Del consentimiento verbal que declara el dueno no se sigue lo mismo.
+        Vale ante la Ley 1581 —el articulo 7 del Decreto 1377 admite la
+        autorizacion oral— pero no ante Meta, y un reporte por spam no
+        castiga a ese establecimiento sino la calificacion de calidad del
+        numero, que es una sola para todos los inquilinos.
+
+        Por eso el origen decide el canal: los verbales salen por el enlace
+        wa.me desde el numero del propio establecimiento, que es un mensaje
+        de persona a persona del Responsable a su cliente, fuera de la
+        Business API y por el numero que ese cliente ya conoce.
+        """
+        cliente = notificacion.cita.cliente
+        return bool(
+            cliente.acepta_datos
+            and cliente.origen_consentimiento ==
+            ClienteFinal.OrigenConsentimiento.AUTOSERVICIO
         )
 
     @classmethod
@@ -184,9 +212,12 @@ class RecordatorioService:
     def entregar(cls, notificacion: Notificacion) -> bool:
         """Punto de enganche para la automatización (v1.1).
 
-        Hoy devuelve False: la entrega es manual desde el panel. Cuando se
-        contrate un proveedor, aquí se hace la llamada a su API y se marca
-        ENVIADA. El resto del módulo no cambia.
+        Hoy devuelve False SIEMPRE: el numero de GlowBot todavia no esta
+        registrado en la Cloud API, asi que toda la entrega es manual desde
+        el panel. La compuerta por origen ya esta puesta y probada aparte
+        (`puede_enviarse_automatico`) para que el dia que se conecte la API
+        no haya que acordarse de anadirla; aqui se consulta primero, de modo
+        que el orden correcto quede escrito.
 
         Coste de referencia (agosto 2026): la Cloud API de Meta cobra los
         mensajes de plantilla de categoria utility a ~0,0008 USD para
@@ -201,4 +232,7 @@ class RecordatorioService:
         de modo que no puede ser el del establecimiento. Envia GlowBot en su
         nombre, con plantilla aprobada por Meta.
         """
+        if not cls.puede_enviarse_automatico(notificacion):
+            return False
+        # Aqui ira la llamada a la Cloud API cuando el numero este registrado.
         return False

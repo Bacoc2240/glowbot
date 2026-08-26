@@ -67,6 +67,21 @@ titular a saber quien trata sus datos no depende de que el negocio este al dia.
   <p>También queda registrada la conversación que sostiene con el asistente, para
      procesar su solicitud y verificar que el sistema funciona correctamente.</p>
 
+  <h2>Cómo le llega el recordatorio</h2>
+  <p>El recordatorio de su cita le llega <b>por WhatsApp</b>. Puede llegarle desde el
+     número de <b>{{ responsable.nombre }}</b>, o desde el número de
+     <b>GlowBot Citas</b>, que lo envía por cuenta del establecimiento en su calidad
+     de Encargado. Se lo advertimos porque el mensaje puede aparecerle a nombre de
+     GlowBot y no del establecimiento donde usted agendó.</p>
+  <p><b>Ese número solo envía recordatorios y no atiende respuestas.</b> Para cambiar
+     o cancelar su cita use el enlace del propio mensaje, o comuníquese directamente
+     con {{ responsable.nombre }}
+     {% if responsable.telefono %}al {{ responsable.telefono }}{% endif %}.</p>
+  <p><b>Puede pedir que dejemos de escribirle en cualquier momento</b>, sin perder por
+     eso su cita ni su derecho a agendar. Basta con solicitarlo a
+     {{ responsable.nombre }} o al correo del Encargado indicado arriba. Retirar el
+     consentimiento para los recordatorios no exige retirar el resto.</p>
+
   <div class="card aviso-ojo">
     <h2 style="margin-top:0">Dos cosas que debe saber</h2>
     <p><b>Si no se presenta a una cita, queda registrado.</b> El establecimiento

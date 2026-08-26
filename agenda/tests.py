@@ -3,6 +3,8 @@
 Cubre el algoritmo de 3 capas y la prevención de double-booking (RF-11).
 La cobertura objetivo de este servicio es del 90% (es la lógica más crítica).
 """
+from unittest.mock import patch
+
 from agenda.recordatorios import RecordatorioService
 from agenda.services import TelefonoVetado, TopeCitasAlcanzado
 from agenda.models import Notificacion
@@ -1014,3 +1016,141 @@ class ModoAgendaTest(TestCase):
         self._reservar(self.barba, time(9, 0), time(9, 30))
         self._reservar(self.barba, time(10, 30), time(11, 0))
         self.assertIn("09:30", self._horas(self.barba))
+
+
+class CanalDelRecordatorioTest(TestCase):
+    """El origen del consentimiento decide por donde sale el recordatorio.
+
+    El opt-in que exige Meta es hacia el remitente. Solo quien acepto por si
+    mismo en la zona publica vio de quien venia el mensaje. El consentimiento
+    verbal vale ante la Ley 1581 pero no ante Meta, y un reporte por spam no
+    castiga a ese establecimiento sino la calificacion del numero, que es una
+    sola para todos los inquilinos.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        self.Origen = ClienteFinal.OrigenConsentimiento
+        self.duenio = Usuario.objects.create_user(
+            email="canal@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Barberia Canal",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="bcanal",
+        )
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+
+    def _notif(self, origen, autor=None):
+        from negocios.models import ClienteFinal
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson", telefono="3192846956",
+            acepta_datos=True, origen_consentimiento=origen,
+            consentimiento_registrado_por=autor,
+        )
+        cita = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof, servicio=self.serv,
+            cliente=cliente, fecha=date(2026, 9, 22),
+            hora_inicio=time(15, 0), hora_fin=time(15, 30),
+            estado=Cita.Estado.CONFIRMADA,
+        )
+        return Notificacion.objects.create(
+            cita=cita, tipo=Notificacion.Tipo.RECORDATORIO)
+
+    def test_el_autoservicio_habilita_el_envio_automatico(self):
+        notif = self._notif(self.Origen.AUTOSERVICIO)
+        self.assertTrue(RecordatorioService.puede_enviarse_automatico(notif))
+
+    def test_el_verbal_no_habilita_el_envio_automatico(self):
+        """Va por el enlace wa.me desde el numero del propio establecimiento:
+        mensaje de persona a persona, fuera de la Business API."""
+        notif = self._notif(self.Origen.VERBAL_PRESENCIAL, autor=self.duenio)
+        self.assertFalse(RecordatorioService.puede_enviarse_automatico(notif))
+
+    def test_sin_consentimiento_no_hay_envio_automatico(self):
+        notif = self._notif(self.Origen.AUTOSERVICIO)
+        notif.cita.cliente.acepta_datos = False
+        notif.cita.cliente.save(update_fields=["acepta_datos"])
+        notif.refresh_from_db()
+        self.assertFalse(RecordatorioService.puede_enviarse_automatico(notif))
+
+    def test_entregar_consulta_la_compuerta_antes_de_enviar(self):
+        """Hoy entregar() devuelve False siempre porque el numero aun no esta
+        registrado en la Cloud API. Lo que se fija aqui es el ORDEN: primero
+        se pregunta por el origen. Sin esto, el dia que se conecte la API
+        habria que acordarse de anadir la comprobacion."""
+        notif = self._notif(self.Origen.VERBAL_PRESENCIAL, autor=self.duenio)
+        with patch.object(RecordatorioService, "puede_enviarse_automatico",
+                          return_value=False) as compuerta:
+            RecordatorioService.entregar(notif)
+        compuerta.assert_called_once_with(notif)
+
+
+class EstructuraDelTextoTest(TestCase):
+    """El establecimiento va en el PRIMER renglon del recordatorio.
+
+    El remitente que ve el cliente final es "GlowBot Citas", una marca que no
+    conoce. Lo que decide si abre la notificacion es la primera linea de la
+    vista previa: si ahi no aparece el nombre del negocio donde agendo, el
+    mensaje parece de un desconocido y sube el riesgo de que lo reporte.
+    """
+
+    def setUp(self):
+        from negocios.models import ClienteFinal
+        u = Usuario.objects.create_user(email="estr@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barberia El Turco",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="turco",
+        )
+        prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
+        serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson", telefono="3192846956",
+            acepta_datos=True,
+        )
+        cita = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cliente, fecha=date(2026, 8, 25),
+            hora_inicio=time(15, 0), hora_fin=time(15, 30),
+            estado=Cita.Estado.CONFIRMADA,
+        )
+        self.notif = Notificacion.objects.create(
+            cita=cita, tipo=Notificacion.Tipo.RECORDATORIO)
+
+    def _primer_renglon(self):
+        texto = RecordatorioService.texto(self.notif, hoy=date(2026, 8, 24))
+        return texto.splitlines()[0]
+
+    def test_el_primer_renglon_nombra_al_establecimiento(self):
+        primer = self._primer_renglon()
+        self.assertIn("Barberia El Turco", primer)
+        # Sin esta segunda comprobacion la prueba no muerde: si el mensaje no
+        # llevara saltos de linea, splitlines()[0] devolveria el texto entero
+        # y el nombre apareceria "en el primer renglon" por accidente. Lo
+        # detecto el arnes de mutacion.
+        self.assertNotIn("Hola", primer)
+
+    def test_el_establecimiento_va_antes_que_el_saludo(self):
+        """La regresion concreta, medida por POSICION y no por presencia: el
+        texto viejo empezaba con "Hola {nombre}" y el negocio quedaba en
+        tercera posicion, fuera de la vista previa de la notificacion."""
+        texto = RecordatorioService.texto(self.notif, hoy=date(2026, 8, 24))
+        self.assertLess(texto.index("Barberia El Turco"), texto.index("Hola"))
+
+    def test_el_saludo_no_va_antes_que_el_establecimiento(self):
+        """La regresion concreta: el texto empezaba por "Hola {nombre}" y el
+        negocio quedaba en tercera posicion, fuera de la vista previa."""
+        self.assertNotIn("Hola", self._primer_renglon())
+
+    def test_sigue_diciendo_la_verdad_sobre_cuando_es(self):
+        """Reestructurar no puede romper lo que ya estaba probado."""
+        texto = RecordatorioService.texto(self.notif, hoy=date(2026, 8, 24))
+        self.assertIn("mañana a las 15:00", texto)
+        self.assertNotIn("hoy a las", texto)
+
+    def test_conserva_el_enlace_para_cancelar(self):
+        texto = RecordatorioService.texto(self.notif, hoy=date(2026, 8, 24))
+        self.assertIn("/p/turco", texto)

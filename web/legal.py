@@ -14,7 +14,17 @@ quedaran ligados a la version que efectivamente vieron.
 import os
 
 # Subir al cambiar el texto de los avisos. Formato: AAAA-MM.
-VERSION_AVISO = os.getenv("VERSION_AVISO", "2026-09")
+#
+# 2026-10: el aviso pasa a declarar el CANAL (WhatsApp), el REMITENTE
+# ("GlowBot Citas", que puede no ser el nombre del establecimiento) y como
+# pedir que dejen de escribirle. Sin subir la version, un consentimiento
+# recogido con el texto nuevo seria indistinguible de uno recogido con el
+# viejo, y el viejo no mencionaba WhatsApp en ninguna parte.
+#
+# Se elige 2026-10 y no 2026-09 porque es la version que rige desde el
+# piloto en adelante. Si prefieres otra etiqueta basta con la variable de
+# entorno: nada en el codigo compara contra un valor concreto.
+VERSION_AVISO = os.getenv("VERSION_AVISO", "2026-10")
 
 # ── GlowBot como Responsable (datos de los establecimientos) ──────────
 RESPONSABLE = {

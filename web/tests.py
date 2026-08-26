@@ -274,6 +274,27 @@ class PrivacidadTest(TestCase):
         self.assertIn("Si no se presenta a una cita, queda registrado", html)
         self.assertIn("puede bloquear su número", html)
 
+    def test_el_aviso_declara_el_canal_y_el_remitente(self):
+        """La finalidad "recordarle su cita" ya estaba declarada, pero no POR
+        DONDE ni DE PARTE DE QUIEN. El opt-in que exige Meta es hacia el
+        remitente, y el cliente va a ver llegar un mensaje de "GlowBot
+        Citas", una marca que no conoce. Si el aviso no lo advierte, la
+        autorizacion no es informada respecto del canal."""
+        import re
+        html = re.sub(r"\s+", " ",
+                      self.client.get("/p/el-turco/privacidad").content.decode())
+        self.assertIn("por WhatsApp", html)
+        self.assertIn("GlowBot Citas", html)
+        self.assertIn("solo envía recordatorios y no atiende respuestas", html)
+
+    def test_el_aviso_explica_como_dejar_de_recibir_mensajes(self):
+        """Revocar el consentimiento de los recordatorios no puede exigir
+        renunciar al resto ni perder la cita ya reservada."""
+        import re
+        html = re.sub(r"\s+", " ",
+                      self.client.get("/p/el-turco/privacidad").content.decode())
+        self.assertIn("dejemos de escribirle en cualquier momento", html)
+
     def test_el_aviso_se_sirve_aunque_la_suscripcion_este_suspendida(self):
         """El derecho del titular a saber quien trata sus datos no depende de
         que el negocio este al dia con su pago."""

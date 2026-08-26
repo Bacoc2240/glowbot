@@ -24,11 +24,11 @@ from django.conf import settings
 from django.utils import timezone
 
 from agenda.fechas import DIAS, MESES, fecha_larga     # noqa: F401
-from web.legal import VERSION_AVISO
 from agenda.models import Cita, Notificacion
 from agenda.services import (
     AgendaService, SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
 )
+from negocios.clientes import ClienteService
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
 from .models import ConversacionIA
 
@@ -229,27 +229,22 @@ REGLAS OBLIGATORIAS:
                 if not datos_cli.get("acepta_datos"):
                     return None, ("El cliente debe aceptar el aviso de privacidad "
                                   "antes de confirmar (RN-07). Solicita la aceptación.")
-                # La identidad es (telefono, nombre). Buscar solo por
-                # telefono devolvia el registro del primero que hubiera usado
-                # ese numero y descartaba el nombre nuevo, porque en
-                # get_or_create los `defaults` solo se aplican al crear: la
-                # confirmacion, el recordatorio y la agenda del barbero
-                # nombraban a otra persona.
-                cliente, _ = ClienteFinal.objects.get_or_create(
+                # El alta pasa por ClienteService y no por un
+                # get_or_create aqui: es la misma puerta por la que entra el
+                # alta manual del panel, y es lo que garantiza que ningun
+                # cliente exista sin que conste COMO autorizo. La identidad
+                # (telefono, nombre) y la reafirmacion del consentimiento en
+                # cada reserva viven ahora en el servicio.
+                #
+                # El origen es AUTOSERVICIO porque quien acepto fue el propio
+                # titular en la zona publica: es la prueba fuerte, y la unica
+                # que habilita el envio automatico del recordatorio.
+                cliente = ClienteService.registrar_con_consentimiento(
                     establecimiento=establecimiento,
+                    nombre=datos_cli["nombre"],
                     telefono=datos_cli["telefono"],
-                    nombre=ClienteFinal.normalizar_nombre(datos_cli["nombre"]),
-                    defaults={"acepta_datos": True},
+                    origen=ClienteFinal.OrigenConsentimiento.AUTOSERVICIO,
                 )
-                # El consentimiento se reafirma en cada reserva, con la fecha
-                # y la version del aviso vigente. La ley exige que la
-                # autorizacion sea DEMOSTRABLE: un booleano no dice cuando se
-                # dio ni que texto acepto la persona (RN-07, Ley 1581).
-                cliente.acepta_datos = True
-                cliente.fecha_consentimiento = timezone.now()
-                cliente.version_aviso = VERSION_AVISO
-                cliente.save(update_fields=[
-                    "acepta_datos", "fecha_consentimiento", "version_aviso"])
                 dia = date.fromisoformat(intencion["fecha"])
                 hora = datetime.strptime(intencion["hora_inicio"], "%H:%M").time()
                 cita = AgendaService.reservar(
