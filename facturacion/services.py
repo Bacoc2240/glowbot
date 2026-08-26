@@ -382,7 +382,7 @@ class RegistroService:
     def registrar(*, email: str, password: str, nombre_negocio: str,
                   tipo: str, telefono: str,
                   plan: str = Establecimiento.Plan.BASICO,
-                  direccion: str = "") -> tuple:
+                  municipio: str = "", direccion: str = "") -> tuple:
         """Crea, en una sola transacción, el usuario Admin, el
         establecimiento (con su slug) y la suscripción en prueba.
 
@@ -400,6 +400,7 @@ class RegistroService:
             tipo=tipo,
             telefono=telefono,
             plan=plan,
+            municipio=municipio,
             direccion=direccion,
         )
         suscripcion = SuscripcionService.crear_prueba(establecimiento)

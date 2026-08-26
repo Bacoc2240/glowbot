@@ -23,8 +23,7 @@
       </select>
 
       <label>Plan</label>
-      {# Las opciones salen de facturacion.services: el precio ofrecido
-         aqui es el mismo que cobra PRECIOS_PLAN, no una copia. #}
+      
       <select x-model="plan">
         {% for p in planes %}
         <option value="{{ p.valor }}">{{ p.nombre }} — {{ p.capacidad }} · {{ p.precio_texto }}/mes</option>
@@ -34,6 +33,11 @@
       <label>Teléfono / WhatsApp</label>
       <input x-model="telefono" inputmode="tel" placeholder="3001234567">
 
+      <label>Municipio</label>
+      
+  
+      <input x-model="municipio" placeholder="Saravena, Arauca">
+
       <label>Correo electrónico</label>
       <input type="email" x-model="email" placeholder="tu@correo.com">
 
@@ -41,9 +45,31 @@
       <input type="password" x-model="password" placeholder="Mínimo 8 caracteres"
              @keyup.enter="crear">
 
+      
+  
+      <label style="display:flex; gap:9px; align-items:flex-start; margin-top:16px;
+                    font-weight:400; line-height:1.45">
+        <input type="checkbox" x-model="acepta_politica"
+               style="width:auto; margin-top:3px; flex:none">
+        <span>He leído y acepto la
+          <a href="/privacidad" target="_blank">Política de Tratamiento de Datos
+          Personales</a> de GlowBot, incluida la transferencia internacional de mis
+          datos.</span>
+      </label>
+
+      <label style="display:flex; gap:9px; align-items:flex-start; margin-top:10px;
+                    font-weight:400; line-height:1.45">
+        <input type="checkbox" x-model="acepta_encargo"
+               style="width:auto; margin-top:3px; flex:none">
+        <span>Autorizo a GlowBot a actuar como Encargado del Tratamiento de los
+          datos personales de mis clientes, y reconozco que soy el Responsable de
+          esos datos ante ellos y ante la autoridad.</span>
+      </label>
+
       <p class="error" x-text="error" x-show="error"></p>
       <br>
-      <button @click="crear" x-text="cargando ? 'Creando…' : 'Crear mi cuenta'"></button>
+      <button @click="crear" x-text="cargando ? 'Creando…' : 'Crear mi cuenta'"
+              :disabled="cargando || !acepta_politica || !acepta_encargo"></button>
       <p class="muted" style="margin-top:12px; text-align:center">
         ¿Ya tienes cuenta? <a href="/panel/login">Ingresa aquí</a>
       </p>
@@ -69,7 +95,8 @@
 function registro() {
   return {
     nombre_negocio: "", tipo: "barberia", plan: "basico",
-    telefono: "", email: "", password: "",
+    telefono: "", municipio: "", email: "", password: "",
+    acepta_politica: false, acepta_encargo: false,
     error: "", cargando: false, listo: false, enlace: "", dias: 0,
 
     // Lee la cookie CSRF. Necesaria porque DRF tiene SessionAuthentication
@@ -117,6 +144,9 @@ function registro() {
             email: this.email, password: this.password,
             nombre_negocio: this.nombre_negocio, tipo: this.tipo,
             telefono: this.telefono, plan: this.plan,
+            municipio: this.municipio,
+            acepta_politica: this.acepta_politica,
+            acepta_encargo: this.acepta_encargo,
           }),
         });
 

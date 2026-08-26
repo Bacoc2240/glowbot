@@ -29,7 +29,28 @@ class RegistroSerializer(serializers.Serializer):
         choices=Establecimiento.Plan.choices,
         required=False, default=Establecimiento.Plan.BASICO,
     )
+    # El municipio es el domicilio del Responsable en el aviso que vera su
+    # cliente final. Sin el, ese aviso saldria incompleto (Ley 1581).
+    municipio = serializers.CharField(max_length=80)
     direccion = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    # Dos autorizaciones separadas y ambas obligatorias. Agruparlas en una
+    # sola casilla impediria revocar una sin la otra, y son cosas distintas:
+    # una es sobre los datos del dueno, la otra sobre los de sus clientes.
+    acepta_politica = serializers.BooleanField()
+    acepta_encargo = serializers.BooleanField()
+
+    def validate_acepta_politica(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                "Debes aceptar la política de tratamiento de datos.")
+        return value
+
+    def validate_acepta_encargo(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                "Debes autorizar a GlowBot como Encargado del Tratamiento de "
+                "los datos de tus clientes.")
+        return value
 
     def validate_email(self, value):
         if Usuario.objects.filter(email__iexact=value).exists():
@@ -44,6 +65,7 @@ class RegistroSerializer(serializers.Serializer):
             tipo=validated["tipo"],
             telefono=validated["telefono"],
             plan=validated.get("plan", Establecimiento.Plan.BASICO),
+            municipio=validated["municipio"],
             direccion=validated.get("direccion", ""),
         )
 

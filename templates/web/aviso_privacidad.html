@@ -1,0 +1,106 @@
+{% extends "web/base.html" %}
+{% comment %}
+Aviso de privacidad del cliente final.
+
+El Responsable que se muestra es EL ESTABLECIMIENTO, no GlowBot: la barberia
+capta al cliente y decide para que usa sus datos. GlowBot aparece como
+Encargado. Confundir las dos figuras haria que el aviso mintiera sobre quien
+debe atender una reclamacion.
+
+Se sirve sin sesion y aunque la suscripcion este suspendida: el derecho del
+titular a saber quien trata sus datos no depende de que el negocio este al dia.
+{% endcomment %}
+
+{% block titulo %}Aviso de privacidad — {{ est.nombre }}{% endblock %}
+
+{% block meta %}
+<meta name="robots" content="noindex">
+{% endblock %}
+
+{% block top_derecha %}
+<a href="/p/{{ est.slug }}" style="color:#fff; font-size:14px; text-decoration:none">Volver</a>
+{% endblock %}
+
+{% block estilos %}
+<style>
+  .legal h1 { font-size: 22px; margin-bottom: 4px; }
+  .legal h2 { font-size: 17px; margin: 22px 0 8px; color: var(--azul-osc); }
+  .legal p, .legal li { line-height: 1.6; margin-bottom: 10px; }
+  .legal ul { padding-left: 20px; }
+  .legal table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  .legal th, .legal td { text-align: left; padding: 8px 10px; font-size: 14px;
+                         border-bottom: 1px solid var(--borde); vertical-align: top; }
+  .legal th { background: #EAF2FA; width: 38%; }
+  .aviso-ojo { background: #FFF8E1; border-color: #F0DFA8; }
+  .legal .sello { color: var(--gris); font-size: 13px; }
+</style>
+{% endblock %}
+
+{% block contenido %}
+<div class="card legal">
+
+  <h1>Aviso de privacidad</h1>
+  <p class="sello">{{ est.nombre }}</p>
+
+  <h2>Quién responde por sus datos</h2>
+  <table>
+    <tr><th>Responsable</th><td>{{ responsable.nombre }}</td></tr>
+    <tr><th>Domicilio</th><td>{{ responsable.domicilio }}</td></tr>
+    {% if responsable.direccion %}
+    <tr><th>Dirección</th><td>{{ responsable.direccion }}</td></tr>
+    {% endif %}
+    <tr><th>Teléfono</th><td>{{ responsable.telefono }}</td></tr>
+  </table>
+  <p>{{ est.nombre }} usa <b>GlowBot</b> para gestionar sus citas. GlowBot actúa
+     como <b>Encargado del Tratamiento</b>: procesa sus datos por cuenta de este
+     establecimiento y siguiendo sus instrucciones. Puede contactarlo en
+     <a href="mailto:{{ encargado.correo }}">{{ encargado.correo }}</a>.</p>
+
+  <h2>Qué datos pedimos y para qué</h2>
+  <p>Para agendar su cita le pedimos <b>su nombre y su número de teléfono</b>. Los
+     usamos para:</p>
+  <ul>
+    <li>Identificarlo y reservar su turno con el profesional y el servicio que elija.</li>
+    <li>Recordarle su cita antes de la hora.</li>
+    <li>Contactarlo si hay algún cambio, o si usted consulta o cancela su cita.</li>
+  </ul>
+  <p>También queda registrada la conversación que sostiene con el asistente, para
+     procesar su solicitud y verificar que el sistema funciona correctamente.</p>
+
+  <div class="card aviso-ojo">
+    <h2 style="margin-top:0">Dos cosas que debe saber</h2>
+    <p><b>Si no se presenta a una cita, queda registrado.</b> El establecimiento
+       puede llevar cuenta de las citas incumplidas.</p>
+    <p><b>El establecimiento puede bloquear su número</b> para impedir nuevas
+       reservas en línea, y puede anotar el motivo. Si eso ocurre, usted tiene
+       derecho a conocer ese motivo y a solicitar su corrección si lo considera
+       equivocado.</p>
+    <p style="margin-bottom:0">Se lo decimos por adelantado porque es su derecho
+       saberlo antes de entregar sus datos, no después.</p>
+  </div>
+
+  <h2>Sus datos salen del país</h2>
+  <p>GlowBot funciona sobre servicios alojados fuera de Colombia, principalmente en
+     Estados Unidos. Al continuar, usted autoriza esa transferencia internacional,
+     en los términos del artículo 26 de la Ley 1581 de 2012.</p>
+
+  <h2>Sus derechos</h2>
+  <p>Usted puede en cualquier momento conocer, actualizar y rectificar sus datos;
+     pedir prueba de la autorización que dio; saber cómo se han usado; revocar la
+     autorización o pedir que se supriman; y presentar quejas ante la
+     Superintendencia de Industria y Comercio.</p>
+  <p>Para ejercerlos, comuníquese con <b>{{ responsable.nombre }}</b> al
+     <b>{{ responsable.telefono }}</b>, que es el Responsable. También puede
+     escribir a <a href="mailto:{{ encargado.correo }}">{{ encargado.correo }}</a>
+     y trasladaremos su solicitud.</p>
+  <p>Las consultas se atienden en un máximo de <b>10 días hábiles</b> y los
+     reclamos en un máximo de <b>15 días hábiles</b>, conforme a los artículos 14 y
+     15 de la Ley 1581 de 2012.</p>
+
+  <h2>Dónde leer más</h2>
+  <p>La política completa de tratamiento de GlowBot está en
+     <a href="/privacidad">glowbot.com.co/privacidad</a>.</p>
+
+  <p class="sello" style="margin-top:24px">Aviso versión {{ version }}</p>
+</div>
+{% endblock %}

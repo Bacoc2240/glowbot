@@ -7,7 +7,12 @@ from unittest import mock
 from django.conf import settings
 from django.core import mail
 from django.test import TestCase, override_settings
+from django.conf import settings
 from django.utils import timezone
+
+from cuentas.api import RegistroSerializer
+from facturacion.models import Suscripcion
+from web import legal
 from rest_framework.test import APIClient
 
 from cuentas.models import Usuario
@@ -29,7 +34,8 @@ class BaseSprint4Test(TestCase):
         r = self.api.post("/api/v1/auth/registro", {
             "email": "admin@glowbot.co", "password": "ClaveSegura2026",
             "nombre_negocio": "Barbería El Patrón", "tipo": "barberia",
-            "telefono": "3115550172",
+            "telefono": "3115550172", "municipio": "Saravena, Arauca",
+            "acepta_politica": True, "acepta_encargo": True,
         }, format="json")
         self.api.credentials(HTTP_AUTHORIZATION="Bearer " + r.json()["access"])
         self.est = Establecimiento.objects.get(slug="barberia-el-patron")
@@ -182,6 +188,200 @@ class NotificacionesTest(BaseSprint4Test):
         self.assertEqual(
             Notificacion.objects.first().estado, Notificacion.Estado.GENERADA,
         )
+
+
+class PrivacidadTest(TestCase):
+    """Ley 1581: el aviso debe existir y ser accesible ANTES de recolectar.
+
+    Estas pruebas fijan el contenido minimo que exige el Decreto 1074 y, sobre
+    todo, quien figura como Responsable: la barberia, no GlowBot.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="pol@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barbería El Turco",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001110000",
+            slug="el-turco", municipio="Saravena, Arauca",
+        )
+
+    # ── Politica de GlowBot ──────────────────────────────────────────
+    def test_la_politica_es_publica(self):
+        self.assertEqual(self.client.get("/privacidad").status_code, 200)
+
+    def test_la_politica_trae_el_contenido_minimo(self):
+        """Decreto 1074: identidad, domicilio, correo y telefono del
+        responsable; tratamiento y finalidad; derechos; procedimiento con sus
+        plazos; y vigencia."""
+        # Se normalizan los espacios: el contenido no puede depender de donde
+        # el HTML parta las lineas, ni de si un plazo queda dentro de un <b>.
+        import re
+        html = re.sub(r"\s+", " ",
+                      self.client.get("/privacidad").content.decode())
+        for exigido in [
+            legal.RESPONSABLE["nombre"], legal.RESPONSABLE["domicilio"],
+            legal.RESPONSABLE["correo"], legal.RESPONSABLE["telefono"],
+            "diez (10) días hábiles", "quince (15) días hábiles",
+            "cinco (5) días hábiles",
+            "Superintendencia de Industria y Comercio",
+        ]:
+            with self.subTest(exigido=exigido):
+                self.assertIn(exigido, html)
+
+    def test_la_politica_declara_la_transferencia_internacional(self):
+        """Los datos viven en Railway (EE. UU.). La Ley 1581 restringe la
+        transferencia internacional salvo autorizacion expresa: callarla
+        dejaria el aviso incompleto."""
+        html = self.client.get("/privacidad").content.decode()
+        self.assertIn("transferencia internacional", html)
+        for proveedor, _ in legal.ENCARGADOS:
+            with self.subTest(proveedor=proveedor):
+                self.assertIn(proveedor, html)
+
+    def test_los_datos_de_contacto_no_estan_escritos_en_la_plantilla(self):
+        """Cuando se active la línea de ETB, cambiar el teléfono debe ser una
+        variable de entorno y no editar un documento legal."""
+        plantilla = (settings.BASE_DIR / "templates" / "web" /
+                     "privacidad.html").read_text(encoding="utf-8")
+        self.assertNotIn(legal.RESPONSABLE["telefono"], plantilla)
+        self.assertNotIn(legal.RESPONSABLE["correo"], plantilla)
+
+    # ── Aviso por establecimiento ────────────────────────────────────
+    def test_el_responsable_del_aviso_es_el_establecimiento(self):
+        """La barberia capta al cliente y decide para que usa sus datos.
+        Poner a GlowBot como Responsable haria que el aviso mintiera sobre
+        quien debe atender una reclamacion."""
+        import re
+        html = re.sub(r"\s+", " ",
+                      self.client.get("/p/el-turco/privacidad").content.decode())
+        # Se comprueba la FILA del responsable, no que el nombre aparezca en
+        # algun lugar: el nombre del negocio esta tambien en el titulo y en el
+        # encabezado, asi que una comprobacion laxa pasaria aunque el
+        # Responsable dijera "GlowBot".
+        self.assertIn("<th>Responsable</th><td>Barbería El Turco</td>", html)
+        self.assertIn("<th>Domicilio</th><td>Saravena, Arauca</td>", html)
+        self.assertIn("<th>Teléfono</th><td>3001110000</td>", html)
+        # Y GlowBot debe figurar como Encargado, nunca como Responsable.
+        self.assertIn("GlowBot actúa como <b>Encargado del Tratamiento</b>", html)
+
+    def test_el_aviso_advierte_de_la_inasistencia_y_el_bloqueo(self):
+        """No lo exige la letra de la ley, pero si su proposito: el titular
+        tiene derecho a saber que se registra sobre el ANTES de entregar sus
+        datos, no despues."""
+        import re
+        html = re.sub(r"\s+", " ",
+                      self.client.get("/p/el-turco/privacidad").content.decode())
+        self.assertIn("Si no se presenta a una cita, queda registrado", html)
+        self.assertIn("puede bloquear su número", html)
+
+    def test_el_aviso_se_sirve_aunque_la_suscripcion_este_suspendida(self):
+        """El derecho del titular a saber quien trata sus datos no depende de
+        que el negocio este al dia con su pago."""
+        Suscripcion.objects.create(
+            establecimiento=self.est, estado=Suscripcion.Estado.SUSPENDIDA,
+            fecha_inicio_prueba=timezone.localdate(),
+            fecha_fin_prueba=timezone.localdate(),
+            fecha_vencimiento_actual=timezone.localdate(),
+        )
+        self.assertEqual(
+            self.client.get("/p/el-turco/privacidad").status_code, 200)
+
+    def test_un_slug_inexistente_da_404(self):
+        self.assertEqual(
+            self.client.get("/p/no-existe/privacidad").status_code, 404)
+
+    def test_el_aviso_no_se_indexa(self):
+        """La politica si debe salir en buscadores; el aviso de un negocio
+        concreto no tiene por que."""
+        html = self.client.get("/p/el-turco/privacidad").content.decode()
+        self.assertIn('name="robots" content="noindex"', html)
+
+    # ── Enlaces desde donde se recolectan datos ──────────────────────
+    def test_la_zona_publica_enlaza_el_aviso_antes_de_pedir_datos(self):
+        html = self.client.get("/p/el-turco").content.decode()
+        self.assertIn("/privacidad'", html)
+
+    def test_la_portada_y_el_registro_enlazan_la_politica(self):
+        for ruta in ["/", "/registro"]:
+            with self.subTest(ruta=ruta):
+                self.assertIn('href="/privacidad"',
+                              self.client.get(ruta).content.decode())
+
+
+class ConsentimientoRegistroTest(TestCase):
+    """El alta exige las dos autorizaciones y el domicilio del negocio."""
+
+    DATOS = {
+        "email": "nuevo@b.com", "password": "clave12345",
+        "nombre_negocio": "Barbería Nueva", "tipo": "barberia",
+        "telefono": "3001112222", "municipio": "Saravena, Arauca",
+        "acepta_politica": True, "acepta_encargo": True,
+    }
+
+    def _registrar(self, **cambios):
+        datos = dict(self.DATOS)
+        datos.update(cambios)
+        return APIClient().post("/api/v1/auth/registro", datos, format="json")
+
+    def test_registro_completo_funciona(self):
+        self.assertEqual(self._registrar().status_code, 201)
+        self.assertEqual(
+            Establecimiento.objects.get(nombre="Barbería Nueva").municipio,
+            "Saravena, Arauca")
+
+    def test_sin_municipio_no_hay_registro(self):
+        """Sin domicilio, el aviso del cliente final saldria incompleto."""
+        r = self._registrar(municipio="")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Establecimiento.objects.count(), 0)
+
+    def test_sin_aceptar_la_politica_no_hay_registro(self):
+        r = self._registrar(acepta_politica=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Usuario.objects.count(), 0)
+
+    def test_sin_autorizar_el_encargo_no_hay_registro(self):
+        """Sin esa autorizacion, el tratamiento que GlowBot hace de los datos
+        de los clientes del negocio no tiene respaldo."""
+        r = self._registrar(acepta_encargo=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Usuario.objects.count(), 0)
+
+    def test_son_dos_autorizaciones_separadas(self):
+        """Agruparlas en una sola casilla impediria revocar una sin la otra."""
+        campos = RegistroSerializer().get_fields()
+        self.assertIn("acepta_politica", campos)
+        self.assertIn("acepta_encargo", campos)
+
+
+class TrazabilidadConsentimientoTest(BaseSprint4Test):
+    """La ley exige que la autorizacion sea DEMOSTRABLE.
+
+    Un booleano no demuestra nada: no dice cuando se dio ni que texto acepto
+    la persona. Si el aviso cambia, sin la version no hay forma de saber a que
+    documento se refiere un consentimiento anterior.
+    """
+
+    def test_al_agendar_se_guarda_cuando_y_que_version(self):
+        from negocios.models import ClienteFinal
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson Vergara",
+            telefono="3192846956", acepta_datos=True,
+            fecha_consentimiento=timezone.now(),
+            version_aviso=legal.VERSION_AVISO,
+        )
+        self.assertIsNotNone(cliente.fecha_consentimiento)
+        self.assertEqual(cliente.version_aviso, legal.VERSION_AVISO)
+
+    def test_los_campos_admiten_vacio_para_los_registros_previos(self):
+        """Los clientes creados antes de esta version no tienen fecha; el
+        esquema no puede exigirla retroactivamente."""
+        from negocios.models import ClienteFinal
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Antiguo Cliente",
+            telefono="3001119999", acepta_datos=True)
+        self.assertIsNone(cliente.fecha_consentimiento)
+        self.assertEqual(cliente.version_aviso, "")
 
 
 class PortadaTest(TestCase):

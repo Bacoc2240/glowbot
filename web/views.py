@@ -12,7 +12,12 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.generic import TemplateView
 
+from django.shortcuts import get_object_or_404
+
 from facturacion.services import DIAS_PRUEBA, planes_publicos
+from negocios.models import Establecimiento
+
+from . import legal
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,44 @@ class OfertaMixin:
         contexto = super().get_context_data(**kwargs)
         contexto["planes"] = planes_publicos()
         contexto["dias_prueba"] = DIAS_PRUEBA
+        return contexto
+
+
+class PrivacidadView(TemplateView):
+    """Politica de Tratamiento de GlowBot (RF-26).
+
+    Aqui GlowBot SI es el Responsable: cubre los datos de los duenos de
+    establecimiento. Los datos de los clientes finales se tratan en el aviso
+    por establecimiento, donde el Responsable es la barberia.
+    """
+    template_name = "web/privacidad.html"
+
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        contexto["responsable"] = legal.RESPONSABLE
+        contexto["encargados"] = legal.ENCARGADOS
+        contexto["version"] = legal.VERSION_AVISO
+        return contexto
+
+
+class AvisoEstablecimientoView(TemplateView):
+    """Aviso de privacidad de un establecimiento (RF-27).
+
+    Publico y sin sesion: lo lee el cliente final ANTES de entregar sus
+    datos, que es cuando la ley exige informarlo. Se sirve aunque la
+    suscripcion este suspendida — el derecho del titular a saber quien
+    trata sus datos no depende de que el negocio este al dia.
+    """
+    template_name = "web/aviso_privacidad.html"
+
+    def get_context_data(self, **kwargs):
+        contexto = super().get_context_data(**kwargs)
+        establecimiento = get_object_or_404(
+            Establecimiento, slug=kwargs["slug"])
+        contexto["est"] = establecimiento
+        contexto["responsable"] = legal.datos_responsable_publico(establecimiento)
+        contexto["encargado"] = legal.RESPONSABLE
+        contexto["version"] = legal.VERSION_AVISO
         return contexto
 
 

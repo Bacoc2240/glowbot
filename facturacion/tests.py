@@ -287,6 +287,8 @@ class RegistroEndpointTests(TestCase):
                 "email": "nuevo@salon.com", "password": "clave12345",
                 "nombre_negocio": "Salon Nuevo", "tipo": "salon",
                 "telefono": "3001112222", "plan": "premium",
+                "municipio": "Saravena, Arauca",
+                "acepta_politica": True, "acepta_encargo": True,
             },
             content_type="application/json",
         )
@@ -304,6 +306,8 @@ class RegistroEndpointTests(TestCase):
                 "email": "otro@barberia.com", "password": "clave12345",
                 "nombre_negocio": "Otra Barberia", "tipo": "barberia",
                 "telefono": "3003334444",
+                "municipio": "Saravena, Arauca",
+                "acepta_politica": True, "acepta_encargo": True,
             },
             content_type="application/json",
         )
@@ -756,6 +760,8 @@ class PlanesTests(BaseFacturacion):
                         "email": f"nuevo-{plan}@salon.com", "password": "clave12345",
                         "nombre_negocio": f"Salon {plan}", "tipo": "salon",
                         "telefono": "3001112222", "plan": plan,
+                        "municipio": "Saravena, Arauca",
+                        "acepta_politica": True, "acepta_encargo": True,
                     },
                     content_type="application/json",
                 )
@@ -769,6 +775,8 @@ class PlanesTests(BaseFacturacion):
                 "email": "viejo@salon.com", "password": "clave12345",
                 "nombre_negocio": "Salon Viejo", "tipo": "salon",
                 "telefono": "3001112222", "plan": "estandar",
+                "municipio": "Saravena, Arauca",
+                "acepta_politica": True, "acepta_encargo": True,
             },
             content_type="application/json",
         )

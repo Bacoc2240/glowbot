@@ -1,0 +1,202 @@
+{% extends "web/base.html" %}
+{% comment %}
+Politica de Tratamiento de GlowBot. Aqui GlowBot es el Responsable: cubre
+los datos de los duenos de establecimiento.
+
+Los datos de contacto NO se escriben aqui: llegan del contexto, que los lee
+de web/legal.py. Cambiar el telefono debe ser una variable de entorno, no
+editar un documento legal y volver a desplegar.
+{% endcomment %}
+
+{% block titulo %}Política de tratamiento de datos — GlowBot{% endblock %}
+
+{% block meta %}
+<meta name="description" content="Cómo GlowBot trata los datos personales, conforme a la Ley 1581 de 2012.">
+<meta name="robots" content="index, follow">
+{% endblock %}
+
+{% block clase_main %}ancho{% endblock %}
+
+{% block top_derecha %}
+<a href="/" style="color:#fff; font-size:14px; text-decoration:none">Inicio</a>
+{% endblock %}
+
+{% block estilos %}
+<style>
+  .legal h1 { font-size: 26px; margin-bottom: 4px; }
+  .legal h2 { font-size: 19px; margin: 26px 0 10px; color: var(--azul-osc); }
+  .legal h3 { font-size: 16px; margin: 16px 0 6px; }
+  .legal p, .legal li { line-height: 1.6; margin-bottom: 10px; }
+  .legal ul { padding-left: 20px; }
+  .legal table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  .legal th, .legal td { text-align: left; padding: 8px 10px; font-size: 14px;
+                         border-bottom: 1px solid var(--borde); vertical-align: top; }
+  .legal th { background: #EAF2FA; }
+  .legal .destacado { background: #EAF2FA; border-color: #CFE0F2; }
+  .legal .sello { color: var(--gris); font-size: 13px; }
+</style>
+{% endblock %}
+
+{% block contenido %}
+<div class="card legal">
+
+  <h1>Política de Tratamiento de Datos Personales</h1>
+  <p class="sello">GlowBot · Versión {{ version }}</p>
+
+  <h2>1. Quién responde por sus datos</h2>
+  <p><b>Responsable del Tratamiento:</b> {{ responsable.nombre }}, quien opera la
+     plataforma {{ responsable.marca }}.</p>
+  <table>
+    <tr><th>Domicilio</th><td>{{ responsable.domicilio }}</td></tr>
+    <tr><th>Correo electrónico</th>
+        <td><a href="mailto:{{ responsable.correo }}">{{ responsable.correo }}</a></td></tr>
+    <tr><th>Teléfono</th><td>{{ responsable.telefono }}</td></tr>
+  </table>
+  <p>Esta política se expide en cumplimiento de la Ley 1581 de 2012, del Decreto
+     1074 de 2015 y de las demás normas que las modifiquen o complementen.</p>
+
+  <h2>2. Un punto que conviene entender antes de seguir</h2>
+  <p>GlowBot trata dos conjuntos de datos distintos, y la ley los trata de forma
+     distinta.</p>
+  <p><b>Datos de los establecimientos y sus administradores.</b> Cuando un negocio
+     se registra en GlowBot, entrega el nombre de su administrador, un correo
+     electrónico, un teléfono y los datos de su negocio. Respecto de estos datos,
+     <b>GlowBot es el Responsable del Tratamiento</b> y esta política los cubre
+     por completo.</p>
+  <p><b>Datos de los clientes finales.</b> Cuando una persona agenda una cita en
+     una barbería, salón o spa que usa GlowBot, entrega su nombre y su teléfono a
+     <b>ese establecimiento</b>, no a GlowBot. El establecimiento decide para qué
+     los usa, a quién atiende y a quién no. Respecto de estos datos, el
+     <b>Responsable es el establecimiento</b> y <b>GlowBot actúa únicamente como
+     Encargado</b>: los procesa por cuenta del establecimiento y siguiendo sus
+     instrucciones.</p>
+  <div class="card destacado">
+    <p style="margin:0">En la práctica: si usted agendó una cita en una barbería y
+       quiere conocer, corregir o eliminar sus datos, el destinatario natural de su
+       solicitud es <b>la barbería</b>. GlowBot atenderá también esas solicitudes
+       en su calidad de Encargado y las trasladará al establecimiento
+       correspondiente.</p>
+  </div>
+
+  <h2>3. Qué datos recogemos y para qué</h2>
+
+  <h3>3.1 De los establecimientos (GlowBot como Responsable)</h3>
+  <table>
+    <tr><th>Dato</th><th>Finalidad</th></tr>
+    <tr><td>Nombre del administrador y correo electrónico</td>
+        <td>Crear y administrar la cuenta; autenticación; recuperación de contraseña</td></tr>
+    <tr><td>Teléfono del negocio</td><td>Contacto operativo y soporte</td></tr>
+    <tr><td>Nombre, tipo, municipio y dirección del negocio</td>
+        <td>Identificar el establecimiento y mostrarlo en su página pública de reservas</td></tr>
+    <tr><td>Comprobantes de pago de la suscripción</td>
+        <td>Verificar los pagos y llevar el control de la suscripción</td></tr>
+    <tr><td>Registros técnicos de uso</td>
+        <td>Seguridad, diagnóstico de fallas y control de abuso</td></tr>
+  </table>
+  <p>No recogemos datos sensibles de los administradores. No usamos sus datos para
+     publicidad de terceros ni los vendemos.</p>
+
+  <h3>3.2 De los clientes finales (GlowBot como Encargado)</h3>
+  <table>
+    <tr><th>Dato</th><th>Finalidad</th></tr>
+    <tr><td>Nombre y teléfono</td><td>Identificar al cliente y gestionar su cita</td></tr>
+    <tr><td>Fecha, hora, servicio y profesional</td><td>Prestar el servicio de agendamiento</td></tr>
+    <tr><td>Registro de inasistencia</td>
+        <td>Permitir al establecimiento llevar control de citas incumplidas</td></tr>
+    <tr><td>Bloqueo de un número y su motivo</td>
+        <td>Permitir al establecimiento restringir la reserva en línea</td></tr>
+    <tr><td>Conversación con el asistente</td>
+        <td>Procesar la solicitud de cita y auditar el funcionamiento del sistema</td></tr>
+  </table>
+  <p>El establecimiento define estas finalidades. GlowBot no usa estos datos para
+     fines propios distintos de operar la plataforma y garantizar su seguridad.</p>
+
+  <h2>4. Sus derechos</h2>
+  <p>De acuerdo con el artículo 8 de la Ley 1581 de 2012, usted tiene derecho a:</p>
+  <ul>
+    <li><b>Conocer, actualizar y rectificar</b> sus datos personales.</li>
+    <li><b>Solicitar prueba de la autorización</b> que otorgó, salvo cuando la ley
+        exceptúe ese requisito.</li>
+    <li><b>Ser informado</b>, previa solicitud, sobre el uso que se ha dado a sus datos.</li>
+    <li><b>Presentar quejas</b> ante la Superintendencia de Industria y Comercio
+        por infracciones a la ley.</li>
+    <li><b>Revocar la autorización o solicitar la supresión</b> de sus datos cuando
+        el tratamiento no respete los principios, derechos y garantías legales.</li>
+    <li><b>Acceder de forma gratuita</b> a sus datos personales que hayan sido
+        objeto de tratamiento.</li>
+  </ul>
+  <p>Puede ejercerlos usted mismo, o a través de su representante o causahabiente,
+     acreditando esa condición.</p>
+
+  <h2>5. Cómo ejercer sus derechos</h2>
+  <p>Escriba a <a href="mailto:{{ responsable.correo }}">{{ responsable.correo }}</a>
+     indicando su nombre, un dato de contacto, la descripción de lo que solicita y,
+     si aplica, el establecimiento con el que agendó.</p>
+  <p><b>Consultas.</b> Se atienden en un término máximo de <b>diez (10) días
+     hábiles</b> contados desde la fecha de recibo. Si no fuera posible atenderla en
+     ese plazo, le informaremos los motivos y la fecha en que se atenderá, que en
+     ningún caso superará los <b>cinco (5) días hábiles</b> siguientes al vencimiento
+     del primer término.</p>
+  <p><b>Reclamos.</b> Si considera que sus datos deben corregirse, actualizarse o
+     suprimirse, o que hemos incumplido algún deber legal, puede presentar un
+     reclamo. Se atenderá en un término máximo de <b>quince (15) días hábiles</b>
+     contados desde el día siguiente a su recibo. Si el reclamo estuviera
+     incompleto, le pediremos que lo complete dentro de los cinco (5) días
+     siguientes a su recepción. Si no fuera posible atenderlo en el plazo, le
+     informaremos los motivos y la nueva fecha.</p>
+  <p>Antes de acudir a la Superintendencia de Industria y Comercio, la ley exige
+     haber agotado el trámite de consulta o reclamo ante nosotros.</p>
+
+  <h2>6. Dónde están sus datos</h2>
+  <p>GlowBot funciona sobre servicios de terceros que operan <b>fuera de
+     Colombia</b>, principalmente en Estados Unidos:</p>
+  <table>
+    <tr><th>Proveedor</th><th>Qué procesa</th></tr>
+    {% for nombre, funcion in encargados %}
+    <tr><td>{{ nombre }}</td><td>{{ funcion }}</td></tr>
+    {% endfor %}
+  </table>
+  <p>Esto implica una <b>transferencia internacional de datos personales</b>. Al
+     aceptar esta política usted autoriza expresamente dicha transferencia, en los
+     términos del artículo 26 de la Ley 1581 de 2012. Estos proveedores actúan como
+     encargados y solo tratan los datos para prestar el servicio contratado.</p>
+
+  <h2>7. Seguridad</h2>
+  <p>Aplicamos medidas técnicas y administrativas razonables para proteger la
+     información:</p>
+  <ul>
+    <li>Cifrado en tránsito (HTTPS) en todo el sitio.</li>
+    <li>Contraseñas almacenadas mediante funciones de derivación de clave, nunca
+        en texto legible.</li>
+    <li>Aislamiento de datos entre establecimientos: ningún negocio puede acceder
+        a la información de otro.</li>
+    <li>Acceso restringido a la base de datos, sin exposición pública.</li>
+    <li>Copias de seguridad periódicas, verificadas y almacenadas de forma
+        independiente.</li>
+  </ul>
+  <p>Ninguna medida elimina por completo el riesgo. Si llegara a producirse un
+     incidente que afecte sus datos, se lo informaremos y daremos aviso a la
+     autoridad cuando la ley lo exija.</p>
+
+  <h2>8. Por cuánto tiempo conservamos los datos</h2>
+  <p>Los datos se conservan mientras la cuenta esté activa y durante el tiempo
+     adicional necesario para atender obligaciones legales, contables o de defensa
+     jurídica. Cumplidas esas finalidades, se suprimen o se anonimizan.</p>
+  <p>Las bases de datos de GlowBot tienen vigencia indefinida mientras la
+     plataforma opere.</p>
+
+  <h2>9. Menores de edad</h2>
+  <p>GlowBot no está dirigido a menores de edad ni solicita deliberadamente sus
+     datos. Cuando un menor acuda a un establecimiento, corresponde a este obtener
+     la autorización de sus padres o representantes legales, conforme al artículo 7
+     de la Ley 1581 de 2012.</p>
+
+  <h2>10. Cambios</h2>
+  <p>Podemos modificar esta política. Los cambios sustanciales se comunicarán a
+     través de la plataforma antes de su entrada en vigencia. La versión publicada
+     en <a href="/privacidad">glowbot.com.co/privacidad</a> es siempre la vigente, e
+     indica su número de versión.</p>
+
+  <p class="sello" style="margin-top:24px">Versión {{ version }}</p>
+</div>
+{% endblock %}

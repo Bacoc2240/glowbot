@@ -24,6 +24,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from agenda.fechas import DIAS, MESES, fecha_larga     # noqa: F401
+from web.legal import VERSION_AVISO
 from agenda.models import Cita, Notificacion
 from agenda.services import (
     AgendaService, SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
@@ -110,7 +111,10 @@ REGLAS OBLIGATORIAS:
    emite la intención consultar_disponibilidad y espera la respuesta del sistema.
 4. Antes de confirmar una cita debes tener: servicio, fecha, hora, profesional,
    nombre del cliente y número de teléfono. Pide lo que falte, un dato a la vez.
-5. Pide aceptar el aviso de privacidad (Ley 1581 de 2012) antes de los datos personales.
+5. Antes de pedir nombre y telefono, pide aceptar el aviso de privacidad. No cites
+   la ley por su numero: di que el establecimiento guardara su nombre y telefono
+   para gestionar la cita y que puede leer el detalle en el enlace del aviso. Una
+   persona no puede consentir algo que no entiende.
 6. Responde siempre en español, con tono cálido y breve (máximo 3 oraciones).
 7. No converses de temas ajenos al agendamiento; redirige con cortesía.
 8. Cuando debas ejecutar una acción, responde ÚNICAMENTE con el JSON de la
@@ -237,13 +241,15 @@ REGLAS OBLIGATORIAS:
                     nombre=ClienteFinal.normalizar_nombre(datos_cli["nombre"]),
                     defaults={"acepta_datos": True},
                 )
-                # El consentimiento se reafirma en cada reserva. Antes vivia
-                # en `defaults`, asi que un cliente registrado sin aceptar
-                # seguia figurando como que no acepto, aunque acabara de
-                # hacerlo (RN-07, Ley 1581).
-                if not cliente.acepta_datos:
-                    cliente.acepta_datos = True
-                    cliente.save(update_fields=["acepta_datos"])
+                # El consentimiento se reafirma en cada reserva, con la fecha
+                # y la version del aviso vigente. La ley exige que la
+                # autorizacion sea DEMOSTRABLE: un booleano no dice cuando se
+                # dio ni que texto acepto la persona (RN-07, Ley 1581).
+                cliente.acepta_datos = True
+                cliente.fecha_consentimiento = timezone.now()
+                cliente.version_aviso = VERSION_AVISO
+                cliente.save(update_fields=[
+                    "acepta_datos", "fecha_consentimiento", "version_aviso"])
                 dia = date.fromisoformat(intencion["fecha"])
                 hora = datetime.strptime(intencion["hora_inicio"], "%H:%M").time()
                 cita = AgendaService.reservar(

@@ -71,6 +71,17 @@ class Establecimiento(models.Model):
     nombre = models.CharField(max_length=100)
     slug = models.SlugField(max_length=60, unique=True, blank=True)
     tipo = models.CharField(max_length=30, choices=Tipo.choices)
+    municipio = models.CharField(
+        max_length=80, default="",
+        help_text=(
+            "Municipio y departamento del negocio. Es el domicilio que exige "
+            "la Ley 1581 para el aviso de privacidad del cliente final."
+        ),
+    )
+    # La direccion exacta sigue siendo opcional: en derecho colombiano el
+    # domicilio es el municipio, no la calle y el numero. Exigirle a un
+    # barbero que atiende en su casa publicar su direccion seria pedirle mas
+    # de lo que la norma requiere.
     direccion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20)
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.BASICO)
@@ -320,6 +331,12 @@ class ClienteFinal(models.Model):
     acepta_datos = models.BooleanField(
         help_text="Constancia de aceptación del aviso de privacidad (Ley 1581/2012).",
     )
+    # La ley exige que la autorizacion sea DEMOSTRABLE por el responsable.
+    # Un booleano no demuestra nada: no dice cuando se dio ni que texto
+    # acepto la persona. Si el aviso cambia, sin la version no hay forma de
+    # saber a que documento se refiere un consentimiento anterior.
+    fecha_consentimiento = models.DateTimeField(null=True, blank=True)
+    version_aviso = models.CharField(max_length=20, blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 
     objects = TenantManager()
