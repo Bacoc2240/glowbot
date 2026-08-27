@@ -5,9 +5,9 @@ from django.contrib import admin
 from django.contrib.auth import views as auth_views
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 
-from cuentas.api import RegistroView
+from cuentas.api import RegistroView, TokenConRolView
 from negocios.api_ajustes import AjustesAgendaView
 from negocios.api_clientes import ClientesView
 from negocios.api import (
@@ -43,7 +43,7 @@ router.register("citas", CitaViewSet, basename="cita")
 api_v1 = [
     # Autenticación (§3)
     path("auth/registro", RegistroView.as_view(), name="registro"),
-    path("auth/login", TokenObtainPairView.as_view(), name="login"),
+    path("auth/login", TokenConRolView.as_view(), name="login"),
     path("auth/refresh", TokenRefreshView.as_view(), name="refresh"),
     # Disponibilidad y notificaciones
     path("disponibilidad", DisponibilidadView.as_view(), name="disponibilidad"),

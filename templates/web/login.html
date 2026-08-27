@@ -32,7 +32,9 @@ function login() {
       const d = await r.json();
       localStorage.setItem("glowbot_access", d.access);
       localStorage.setItem("glowbot_refresh", d.refresh);
-      window.location = "/panel";
+      // A cada rol su pantalla: el superadmin no tiene establecimiento y
+      // /panel le pinta una agenda vacia de un negocio que no existe.
+      window.location = inicioSegunRol();
     },
   };
 }

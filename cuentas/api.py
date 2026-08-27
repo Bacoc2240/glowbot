@@ -10,11 +10,54 @@ from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from facturacion.services import RegistroService, SuscripcionService
 from negocios.models import Establecimiento
 from .models import Usuario
+
+
+def token_para(usuario) -> RefreshToken:
+    """Emite el par de tokens con el rol incluido como claim.
+
+    UNA sola función para el login y para el registro. Si cada uno armara su
+    propio token, uno de los dos acabaría sin el claim y el cliente lo leería
+    como ausente, que es indistinguible de "es un dueño": el superadmin
+    registrado por la otra vía caería en la agenda vacía otra vez.
+
+    El rol NO es información sensible: lo conoce quien acaba de autenticarse.
+    Viaja en el token para no gastar una petición extra en cada inicio de
+    sesión solo para saber a qué pantalla llevar a la persona.
+
+    Importante: esto sirve para DECIDIR LA VISTA, no para autorizar. La
+    autorización la sigue imponiendo el servidor con `EsSuperAdmin`, que lee
+    el rol de la base y no del token. Un token manipulado cambiaría a dónde
+    te lleva el navegador, no lo que la API te deja hacer.
+    """
+    token = RefreshToken.for_user(usuario)
+    token["rol"] = usuario.rol
+    return token
+
+
+class TokenConRolSerializer(TokenObtainPairSerializer):
+    """Login que devuelve el rol dentro del token."""
+
+    @classmethod
+    def get_token(cls, usuario):
+        token = super().get_token(usuario)
+        token["rol"] = usuario.rol
+        return token
+
+
+class TokenConRolView(TokenObtainPairView):
+    """POST /auth/login — igual que el de Simple JWT, con el rol en el claim.
+
+    Se nombra así y no LoginView porque `web.views.LoginView` es la PÁGINA de
+    inicio de sesión y config/urls.py importa las dos.
+    """
+    serializer_class = TokenConRolSerializer
 
 
 class RegistroSerializer(serializers.Serializer):
@@ -77,7 +120,7 @@ class RegistroView(APIView):
         serializer = RegistroSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         usuario, establecimiento, suscripcion = serializer.save()
-        tokens = RefreshToken.for_user(usuario)
+        tokens = token_para(usuario)
         return Response(
             {
                 "access": str(tokens.access_token),

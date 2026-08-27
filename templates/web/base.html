@@ -97,6 +97,41 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
       window.location.replace("/panel/login");
     }
 
+    // ── Rol y pantalla de inicio ──
+    // El rol viaja como claim del token para no gastar una peticion extra en
+    // cada inicio de sesion solo para saber a donde llevar a la persona.
+    //
+    // Esto decide LA VISTA, no los permisos. La autorizacion la impone el
+    // servidor, que lee el rol de la base y no del token: manipular el token
+    // cambiaria a donde te lleva el navegador, no lo que la API te deja
+    // hacer.
+    function rol() {
+      const t = token();
+      if (!t) return null;
+      try {
+        // El payload va en base64url y puede llegar sin relleno.
+        let carga = t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+        while (carga.length % 4) carga += "=";
+        return JSON.parse(atob(carga)).rol || null;
+      } catch (e) {
+        // Un token viejo emitido antes de este cambio no trae el claim. Se
+        // trata como dueño, que es el caso mayoritario y el destino inocuo.
+        return null;
+      }
+    }
+    function inicioSegunRol() {
+      return rol() === "superadmin" ? "/panel/pagos" : "/panel";
+    }
+    // El superadmin no tiene establecimiento: /panel le pinta la agenda de un
+    // negocio que no existe. Se le lleva a su pantalla sin avisar, porque no
+    // hay nada util que pueda hacer alli.
+    function redirigirSuperadmin() {
+      if (window.location.pathname === "/panel" && rol() === "superadmin") {
+        document.body.style.display = "none";  // evita el parpadeo
+        window.location.replace("/panel/pagos");
+      }
+    }
+
     // ── Guardia de sesion en el cliente ──
     // La API ya rechaza con 401 cualquier peticion sin token, asi que los
     // DATOS estan protegidos en el servidor. Lo que esta guardia protege es
@@ -117,6 +152,7 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
     }
     verificarSesion();                                  // al cargar
     window.addEventListener("pageshow", verificarSesion); // al volver con "atras"
+    redirigirSuperadmin();                              // despues de la guardia
   </script>
 </body>
 </html>

@@ -831,3 +831,88 @@ class PaginacionColaPagosTests(TestCase):
         html = self.client.get("/panel/pagos").content.decode()
         self.assertIn("d.next", html)
         self.assertIn("&page=", html)
+
+
+class RolEnElTokenTests(TestCase):
+    """El token lleva el rol para decidir a que pantalla va cada quien.
+
+    Es lo que evita que el superadmin caiga en /panel, que le pinta la agenda
+    de un establecimiento que no tiene. Ojo: esto decide LA VISTA, no los
+    permisos; la autorizacion la sigue imponiendo EsSuperAdmin leyendo el rol
+    de la base.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="duenio@barberia.com", password="clave12345")
+        self.super = Usuario.objects.create_superuser(
+            email="jefe@glowbot.com.co", password="clave12345")
+
+    def _claims(self, email):
+        import base64
+        import json
+        r = self.api.post("/api/v1/auth/login",
+                          {"email": email, "password": "clave12345"},
+                          format="json")
+        self.assertEqual(r.status_code, 200)
+        carga = r.json()["access"].split(".")[1]
+        carga += "=" * (-len(carga) % 4)
+        return json.loads(base64.urlsafe_b64decode(carga))
+
+    def test_el_token_del_superadmin_declara_su_rol(self):
+        self.assertEqual(self._claims("jefe@glowbot.com.co")["rol"], "superadmin")
+
+    def test_el_token_del_dueno_declara_su_rol(self):
+        self.assertEqual(self._claims("duenio@barberia.com")["rol"], "admin")
+
+    def test_el_registro_emite_el_token_con_rol(self):
+        """El registro y el login deben usar la MISMA emision. Si uno de los
+        dos no pusiera el claim, el cliente lo leeria como ausente, que es
+        indistinguible de 'es un dueno'."""
+        import base64
+        import json
+        from rest_framework.test import APIClient
+        r = APIClient().post("/api/v1/auth/registro", {
+            "email": "nueva@barberia.com", "password": "clave12345",
+            "nombre_negocio": "Barbería Nueva", "tipo": "barberia",
+            "telefono": "3001112233", "plan": "basico",
+            "municipio": "Saravena, Arauca",
+            # Las dos autorizaciones son obligatorias y separadas: una es
+            # sobre los datos del dueño, la otra sobre los de sus clientes.
+            "acepta_politica": True, "acepta_encargo": True,
+        }, format="json")
+        self.assertEqual(r.status_code, 201)
+        carga = r.json()["access"].split(".")[1]
+        carga += "=" * (-len(carga) % 4)
+        self.assertEqual(json.loads(base64.urlsafe_b64decode(carga))["rol"], "admin")
+
+    def test_el_login_manda_a_cada_rol_a_su_pantalla(self):
+        html = self.client.get("/panel/login").content.decode()
+        self.assertIn("inicioSegunRol()", html)
+        self.assertNotIn('window.location = "/panel";', html)
+
+    def test_el_panel_redirige_en_silencio_al_superadmin(self):
+        """Comprueba que la llamada existe y NO esta comentada.
+
+        Limite conocido: esto es JavaScript y una prueba de Django no lo
+        ejecuta, asi que solo puede verificar que el codigo esta ahi, no que
+        se comporte bien. Se descartan las lineas comentadas porque sin eso
+        la prueba pasaba con la llamada anulada con `//`: el texto seguia
+        apareciendo en el HTML. Lo detecto el arnes de mutacion.
+        """
+        html = self.client.get("/panel").content.decode()
+        vivas = "\n".join(
+            linea for linea in html.splitlines()
+            if not linea.strip().startswith("//"))
+        self.assertIn("redirigirSuperadmin();", vivas)
+        self.assertIn('window.location.replace("/panel/pagos")', vivas)
+
+    def test_el_rol_no_sustituye_a_la_autorizacion_del_servidor(self):
+        """Un token manipulado cambia a donde va el navegador, no lo que la
+        API deja hacer: el permiso lee el rol de la base."""
+        from rest_framework.test import APIClient
+        cli = APIClient()
+        cli.force_authenticate(user=self.duenio)
+        self.assertEqual(cli.get("/api/v1/admin/pagos").status_code, 403)
