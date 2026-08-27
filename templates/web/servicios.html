@@ -29,9 +29,43 @@
   <div class="card">
     <h2>Mi equipo</h2>
     <template x-for="p in profesionales" :key="p.id">
-      <div class="fila" style="border-bottom:1px solid var(--borde);padding:8px 0">
-        <div><b x-text="p.nombre"></b>
-          <div class="muted" x-text="p.telefono_whatsapp || 'Sin WhatsApp registrado'"></div></div>
+      <div style="border-bottom:1px solid var(--borde);padding:10px 0">
+        <div class="fila">
+          <div><b x-text="p.nombre"></b>
+            <div class="muted" x-text="p.telefono_whatsapp || 'Sin WhatsApp registrado'"></div></div>
+          <a href="#" style="flex:0 0 auto;font-size:13px"
+             @click.prevent="editando = (editando === p.id ? null : p.id)"
+             x-text="editando === p.id ? 'Cerrar' : 'Servicios'"></a>
+        </div>
+
+        <!-- Un profesional sin servicios no aparece en la agenda: el
+             asistente solo ofrece combinaciones que existan en la tabla
+             puente. Es un estado valido, pero el dueno tiene que VERLO. -->
+        <p class="error" x-show="!p.servicios || p.servicios.length === 0">
+          Sin servicios asignados: no aparecerá en la agenda ni el asistente
+          podrá reservarle citas.
+        </p>
+        <p class="muted" x-show="p.servicios && p.servicios.length > 0"
+           x-text="nombresDe(p.servicios)"></p>
+
+        <div x-show="editando === p.id" style="margin-top:8px">
+          <p class="muted" x-show="servicios.length === 0">
+            Primero crea al menos un servicio arriba.
+          </p>
+          <template x-for="s in servicios" :key="s.id">
+            <label style="display:flex;gap:8px;align-items:center;color:var(--texto);
+                          margin:0;padding:6px 0;cursor:pointer">
+              <input type="checkbox" style="width:auto;flex:0 0 auto"
+                     :checked="p.servicios.includes(s.id)"
+                     @change="alternar(p, s.id)">
+              <span x-text="s.nombre"></span>
+            </label>
+          </template>
+          <p class="error" x-show="errorAsig[p.id]" x-text="errorAsig[p.id]"></p>
+          <button style="margin-top:8px" @click="guardarServicios(p)"
+                  :disabled="guardando">Guardar servicios</button>
+          <p class="ok" x-show="guardado === p.id">Guardado.</p>
+        </div>
       </div>
     </template>
     <label>Nombre del profesional</label>
@@ -51,6 +85,43 @@ function config() {
     nuevo: { nombre: "", duracion_min: 30, precio: 15000 },
     nuevoProf: { nombre: "", telefono_whatsapp: "" },
     errorS: "", errorP: "",
+    editando: null, guardando: false, guardado: null, errorAsig: {},
+
+    nombresDe(ids) {
+      return this.servicios
+        .filter(s => ids.includes(s.id))
+        .map(s => s.nombre)
+        .join(" · ");
+    },
+    // Se marca en memoria y se guarda al pulsar el boton, en vez de una
+    // peticion por casilla: en el mostrador, con la conexion de Saravena,
+    // media docena de peticiones sueltas puede dejar la asignacion a
+    // medias sin que el dueno lo note.
+    alternar(p, id) {
+      const i = p.servicios.indexOf(id);
+      if (i === -1) p.servicios.push(id); else p.servicios.splice(i, 1);
+    },
+    async guardarServicios(p) {
+      this.guardando = true; this.guardado = null; this.errorAsig = {};
+      try {
+        const r = await api(`/profesionales/${p.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ servicios: p.servicios }),
+        });
+        if (!r) return;
+        if (!r.ok) {
+          this.errorAsig[p.id] = "No se pudieron guardar los servicios.";
+          return;
+        }
+        this.guardado = p.id;
+        await this.cargar();
+      } catch (e) {
+        this.errorAsig[p.id] = "No se pudo contactar el servidor.";
+        console.error("Asignación de servicios:", e);
+      } finally {
+        this.guardando = false;
+      }
+    },
     async cargar() {
       let r = await api("/servicios");
       if (r && r.ok) { const d = await r.json(); this.servicios = d.results || d; }

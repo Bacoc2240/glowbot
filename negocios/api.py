@@ -50,14 +50,79 @@ class ServicioViewSet(_EstablecimientoMixin, viewsets.ModelViewSet):
 
 
 class ProfesionalSerializer(serializers.ModelSerializer):
+    """RF-05. Incluye qué servicios presta cada profesional.
+
+    `servicios` se declara a mano y no se deja al ModelSerializer por dos
+    razones, y las dos importan:
+
+    1. **Era de solo lectura sin que nadie lo notara.** Como la relación M:N
+       pasa por el modelo intermedio ProfesionalServicio, DRF marca el campo
+       `read_only` por su cuenta. El campo aparecía en `fields`, la API
+       respondía 200 a un PATCH... y no asignaba nada. Un fallo silencioso:
+       sin la tabla puente poblada, el asistente no puede ofrecer NINGUNA
+       combinación profesional-servicio, y el negocio se queda sin agenda.
+
+    2. **La cola por defecto cruzaría inquilinos.** DRF construiría la
+       validación con `Servicio.objects.all()`, que son los servicios de
+       TODOS los establecimientos: se podría asignar a un profesional propio
+       un servicio ajeno. El TenantManager no filtra solo, ofrece
+       `del_establecimiento()` y espera que alguien lo llame. Aquí se acota
+       en la cola del propio campo, que es donde DRF la aplica siempre, y no
+       en una validación suelta que hay que acordarse de invocar.
+    """
+
+    servicios = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=Servicio.objects.none(),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # La cola se resuelve por petición: depende de quién pregunta.
+        establecimiento = self.context.get("establecimiento")
+        if establecimiento is not None:
+            self.fields["servicios"].child_relation.queryset = (
+                Servicio.objects.del_establecimiento(establecimiento)
+            )
+
     class Meta:
         model = Profesional
         fields = ["id", "nombre", "telefono_whatsapp", "activo", "servicios"]
+
+    def create(self, validated_data):
+        servicios = validated_data.pop("servicios", None)
+        profesional = super().create(validated_data)
+        if servicios is not None:
+            profesional.servicios.set(servicios)
+        return profesional
+
+    def update(self, instance, validated_data):
+        """Desasignar NO toca las citas ya agendadas.
+
+        El servicio deja de ofrecerse hacia adelante, pero las citas que ya
+        existen se respetan: cancelarle la cita a un cliente porque el dueño
+        reorganizó su catálogo sería peor que la incoherencia. Es el mismo
+        criterio del borrado de servicios, que desactiva en vez de borrar
+        cuando hay citas.
+        """
+        servicios = validated_data.pop("servicios", None)
+        profesional = super().update(instance, validated_data)
+        if servicios is not None:
+            profesional.servicios.set(servicios)
+        return profesional
 
 
 class ProfesionalViewSet(_EstablecimientoMixin, viewsets.ModelViewSet):
     queryset = Profesional.objects.all()
     serializer_class = ProfesionalSerializer
+
+    def get_serializer_context(self):
+        """El serializador necesita el establecimiento para acotar la cola de
+        servicios asignables. Sin esto la cola queda vacía y NADA se puede
+        asignar, que es un fallo ruidoso y por tanto seguro: el peligroso
+        sería el contrario."""
+        contexto = super().get_serializer_context()
+        contexto["establecimiento"] = self.get_establecimiento()
+        return contexto
 
     def perform_create(self, serializer):
         """RF-05: valida el límite de profesionales según el plan."""

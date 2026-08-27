@@ -152,3 +152,129 @@ class RegistroDeConsentimientoTest(TestCase):
         self._registrar(origen=self.Origen.AUTOSERVICIO, nombre="wilson  vergara")
         self.assertEqual(
             ClienteFinal.objects.filter(establecimiento=self.est).count(), 1)
+
+
+class AsignacionServiciosTests(TestCase):
+    """Qué servicios presta cada profesional (RF-05, tabla puente §2.5).
+
+    El asistente SOLO ofrece combinaciones profesional-servicio que existan
+    en ProfesionalServicio. Con esa tabla vacia, un salon de belleza con
+    varias personas y varios servicios tiene un asistente que no puede
+    ofrecer nada. Por eso esto bloquea el piloto y no es un adorno.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        from negocios.models import Profesional, Servicio
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="duenio@salon.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Salón Bella",
+            tipo=Establecimiento.Tipo.SALON, telefono="3001112222",
+            slug="salon-bella")
+        self.unias = Servicio.objects.create(
+            establecimiento=self.est, nombre="Uñas", duracion_min=45, precio=25000)
+        self.cejas = Servicio.objects.create(
+            establecimiento=self.est, nombre="Cejas", duracion_min=20, precio=15000)
+        self.maquillaje = Servicio.objects.create(
+            establecimiento=self.est, nombre="Maquillaje", duracion_min=60,
+            precio=40000)
+        self.ana = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana")
+        self.api.force_authenticate(user=self.duenio)
+
+    def test_una_persona_puede_prestar_varios_servicios(self):
+        """El caso real: la misma chica hace uñas, cejas y maquillaje."""
+        r = self.api.patch(
+            f"/api/v1/profesionales/{self.ana.pk}",
+            {"servicios": [self.unias.pk, self.cejas.pk, self.maquillaje.pk]},
+            format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            set(self.ana.servicios.values_list("nombre", flat=True)),
+            {"Uñas", "Cejas", "Maquillaje"})
+
+    def test_la_asignacion_se_devuelve_en_la_respuesta(self):
+        """Regresion del fallo SILENCIOSO: el campo era read_only porque la
+        relacion pasa por un modelo intermedio, asi que la API respondia 200
+        y no asignaba nada. Sin esta comprobacion, el defecto vuelve sin que
+        nadie se entere."""
+        r = self.api.patch(
+            f"/api/v1/profesionales/{self.ana.pk}",
+            {"servicios": [self.unias.pk]}, format="json")
+        self.assertEqual(r.json()["servicios"], [self.unias.pk])
+
+    def test_no_se_puede_asignar_un_servicio_de_otro_establecimiento(self):
+        """La cola por defecto de DRF seria Servicio.objects.all(), es decir
+        los servicios de TODOS los inquilinos. El TenantManager no filtra
+        solo: ofrece del_establecimiento() y espera que alguien lo llame."""
+        from negocios.models import Servicio
+        otro_duenio = Usuario.objects.create_user(
+            email="otro@barberia.com", password="clave12345")
+        otro_est = Establecimiento.objects.create(
+            propietario=otro_duenio, nombre="Barbería Ajena",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3009998888",
+            slug="ajena")
+        ajeno = Servicio.objects.create(
+            establecimiento=otro_est, nombre="Corte Ajeno",
+            duracion_min=30, precio=15000)
+
+        r = self.api.patch(
+            f"/api/v1/profesionales/{self.ana.pk}",
+            {"servicios": [ajeno.pk]}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.ana.servicios.count(), 0)
+
+    def test_desasignar_no_toca_las_citas_ya_agendadas(self):
+        """Cancelarle la cita a un cliente porque el dueño reorganizo su
+        catalogo seria peor que la incoherencia. El servicio deja de
+        ofrecerse hacia adelante; lo agendado se respeta. Mismo criterio que
+        el borrado de servicios, que desactiva en vez de borrar."""
+        from datetime import date, time
+        from agenda.models import Cita
+        from negocios.models import ClienteFinal
+        self.ana.servicios.set([self.unias, self.cejas])
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Wilson", telefono="3192846956",
+            acepta_datos=True)
+        cita = Cita.objects.create(
+            establecimiento=self.est, profesional=self.ana, servicio=self.unias,
+            cliente=cliente, fecha=date(2026, 9, 25),
+            hora_inicio=time(10, 0), hora_fin=time(10, 45),
+            estado=Cita.Estado.CONFIRMADA)
+
+        r = self.api.patch(
+            f"/api/v1/profesionales/{self.ana.pk}",
+            {"servicios": [self.cejas.pk]}, format="json")
+        self.assertEqual(r.status_code, 200)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+        self.assertEqual(cita.servicio, self.unias)
+
+    def test_un_profesional_puede_quedarse_sin_servicios(self):
+        """Es un estado valido —recien creado, o alguien que no atiende al
+        publico— y no se bloquea. Lo que hace la interfaz es AVISARLO, porque
+        un profesional sin servicios no aparece en la agenda."""
+        self.ana.servicios.set([self.unias])
+        r = self.api.patch(f"/api/v1/profesionales/{self.ana.pk}",
+                           {"servicios": []}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.ana.servicios.count(), 0)
+
+    def test_crear_un_profesional_con_sus_servicios_de_una_vez(self):
+        r = self.api.post("/api/v1/profesionales",
+                          {"nombre": "Luisa",
+                           "servicios": [self.cejas.pk, self.maquillaje.pk]},
+                          format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(sorted(r.json()["servicios"]),
+                         sorted([self.cejas.pk, self.maquillaje.pk]))
+
+    def test_no_mandar_servicios_no_borra_los_existentes(self):
+        """Editar solo el telefono no puede vaciar la asignacion."""
+        self.ana.servicios.set([self.unias, self.cejas])
+        r = self.api.patch(f"/api/v1/profesionales/{self.ana.pk}",
+                           {"telefono_whatsapp": "3007412599"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.ana.servicios.count(), 2)

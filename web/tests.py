@@ -916,3 +916,34 @@ class RolEnElTokenTests(TestCase):
         cli = APIClient()
         cli.force_authenticate(user=self.duenio)
         self.assertEqual(cli.get("/api/v1/admin/pagos").status_code, 403)
+
+
+class InterfazAsignacionServiciosTests(TestCase):
+    """La pantalla donde el dueno dice que servicios presta cada persona.
+
+    Limite conocido, igual que con la redireccion por rol: esto es
+    JavaScript y una prueba de Django no lo ejecuta. Solo puede verificar
+    que el codigo esta y no esta comentado.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel/servicios").content.decode()
+        return "\n".join(linea for linea in html.splitlines()
+                         if not linea.strip().startswith("//"))
+
+    def test_la_pantalla_permite_asignar_servicios(self):
+        """Se comprueba el ENGANCHE del boton, no que el nombre aparezca.
+
+        Buscar solo "guardarServicios(p)" pasaba con el boton desconectado,
+        porque la definicion de la funcion sigue en el JavaScript y la cadena
+        seguia estando. Lo detecto el arnes de mutacion."""
+        vivas = self._vivas()
+        self.assertIn('@click="guardarServicios(p)"', vivas)
+        self.assertIn('@change="alternar(p, s.id)"', vivas)
+        self.assertIn('method: "PATCH"', vivas)
+
+    def test_avisa_cuando_un_profesional_no_tiene_servicios(self):
+        """Un profesional sin servicios no aparece en la agenda: el asistente
+        solo ofrece combinaciones que existan en la tabla puente. Es valido,
+        pero silencioso, y el dueño tiene que verlo."""
+        self.assertIn("Sin servicios asignados", self._vivas())
