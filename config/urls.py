@@ -30,7 +30,7 @@ from facturacion.views import (
 # Sin el alias, el segundo import sombrea al primero (colision de nombres).
 from web.views import (
     AvisoEstablecimientoView, chat_publico, HorariosView, LoginView,
-    PanelView, PortadaView, PrivacidadView,
+    PagosView, PanelView, PortadaView, PrivacidadView,
     RecuperarView, RegistroView as RegistroPaginaView, salud, ServiciosView,
     SuscripcionView,
 )
@@ -119,6 +119,7 @@ urlpatterns = [
     path("panel/servicios", ServiciosView.as_view(), name="web-servicios"),
     path("panel/horarios", HorariosView.as_view(), name="web-horarios"),
     path("panel/suscripcion", SuscripcionView.as_view(), name="web-suscripcion"),
+    path("panel/pagos", PagosView.as_view(), name="web-pagos"),
     path("panel", PanelView.as_view(), name="web-panel"),
     # Enlace público que se comparte por WhatsApp/Instagram
     path("p/<slug:slug>", chat_publico, name="web-chat"),

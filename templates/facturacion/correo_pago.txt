@@ -1,0 +1,21 @@
+{% autoescape off %}Hay un comprobante esperando verificación.
+
+Establecimiento: {{ establecimiento }}
+Período:         {{ periodo }}
+Monto:           ${{ monto|floatformat:0 }}
+Medio:           {{ metodo }}
+{% if aplicado %}
+El servicio YA quedó extendido hasta el {{ vence }} por activación
+optimista. Si al revisar el comprobante lo rechazas, esa extensión se
+revierte al estado exacto que quedó guardado en el pago.
+{% else %}
+ATENCIÓN: la activación optimista NO se aplicó, así que el servicio sigue
+venciendo el {{ vence }}. Puede ser un reintento tras un rechazo o una
+segunda extensión sin resolver. Revísalo pronto.
+{% endif %}
+Verifícalo aquí:
+{{ url }}
+
+Este aviso no incluye la imagen del comprobante a propósito: es un documento
+de pago y su enlace directo no exige sesión. Se ve desde el panel.
+{% endautoescape %}

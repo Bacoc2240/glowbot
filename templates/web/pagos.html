@@ -1,0 +1,241 @@
+{% extends "web/base.html" %}
+{% comment %}
+Cola de verificación de pagos — solo superadmin.
+
+No incluye la barra de navegación inferior a propósito. Esa barra lleva a
+Agenda, Servicios y Horarios, que son pantallas de un dueño de
+establecimiento; el superadmin no tiene establecimiento y todas le
+reventarían. Un menú que lleva a páginas rotas es peor que no tener menú.
+
+La autorización real la impone la API (`EsSuperAdmin`): esta página no
+decide nada, solo pinta lo que el servidor le deja ver. Si el servidor
+responde 403 se muestra el aviso y no se pinta ninguna cola.
+{% endcomment %}
+{% block titulo %}Verificar pagos — GlowBot{% endblock %}
+{% block top_derecha %}<a href="#" onclick="salir()" style="color:#fff;font-size:13px">Salir</a>{% endblock %}
+
+{% block estilos %}
+<style>
+  .comprobante { width: 100%; border-radius: 8px; border: 1px solid var(--borde);
+                 display: block; margin-top: 8px; }
+  .filtros { display: flex; gap: 8px; margin-bottom: 12px; }
+  .filtros button { font-size: 13px; padding: 8px 4px; }
+  .aviso { background: #FDF3F2; border: 1px solid var(--rojo); color: var(--rojo);
+           border-radius: 8px; padding: 10px; font-size: 13px; margin-top: 8px; }
+  textarea { width: 100%; padding: 10px; border: 1px solid var(--borde);
+             border-radius: 8px; font-size: 15px; font-family: inherit; }
+</style>
+{% endblock %}
+
+{% block contenido %}
+<div x-data="colaPagos()" x-init="cargar()">
+
+  <div class="card" x-show="sinPermiso">
+    <h2>Sin permiso</h2>
+    <p class="muted">Esta pantalla es solo para el superadministrador de la
+       plataforma. Si crees que es un error, revisa con qué cuenta iniciaste
+       sesión.</p>
+  </div>
+
+  <template x-if="!sinPermiso">
+    <div>
+      <div class="filtros">
+        <button :class="filtro === 'pendiente_verificacion' ? '' : 'btn-borde'"
+                @click="cambiar('pendiente_verificacion')">Pendientes</button>
+        <button :class="filtro === 'confirmado' ? '' : 'btn-borde'"
+                @click="cambiar('confirmado')">Confirmados</button>
+        <button :class="filtro === 'rechazado' ? '' : 'btn-borde'"
+                @click="cambiar('rechazado')">Rechazados</button>
+      </div>
+
+      <div class="card" x-show="cargando">
+        <p class="muted">Cargando…</p>
+      </div>
+
+      <div class="card" x-show="!cargando && pagos.length === 0">
+        <p class="muted" x-text="filtro === 'pendiente_verificacion'
+             ? 'No hay comprobantes esperando verificación.'
+             : 'No hay pagos en este estado.'"></p>
+      </div>
+
+      <template x-for="p in pagos" :key="p.id">
+        <div class="card">
+          <div class="fila">
+            <div>
+              <div class="muted">Establecimiento</div>
+              <b x-text="p.establecimiento"></b>
+            </div>
+            <div>
+              <div class="muted">Período</div>
+              <b x-text="p.periodo"></b>
+            </div>
+          </div>
+          <div class="fila" style="margin-top:10px">
+            <div>
+              <div class="muted">Monto</div>
+              <b x-text="'$' + Number(p.monto).toLocaleString('es-CO')"></b>
+            </div>
+            <div>
+              <div class="muted">Medio</div>
+              <b x-text="etiquetaMetodo(p.metodo)"></b>
+            </div>
+          </div>
+
+          <!-- Lo primero que hay que saber: si el servicio ya está extendido
+               o si el establecimiento puede estar a punto de suspenderse. -->
+          <div style="margin-top:10px">
+            <span class="chip" x-show="p.aplicado">Servicio ya extendido</span>
+            <span class="chip" x-show="!p.aplicado"
+                  style="background:#FDF3F2;color:var(--rojo)">
+              Sin extender
+            </span>
+          </div>
+
+          <div x-show="p.motivo_rechazo" style="margin-top:10px">
+            <div class="muted">Motivo del rechazo</div>
+            <div x-text="p.motivo_rechazo"></div>
+          </div>
+
+          <!-- La imagen se abre aparte para verla completa: en el teléfono el
+               comprobante llega reducido y los dígitos no se leen. -->
+          <a :href="p.comprobante" target="_blank" rel="noopener">
+            <img class="comprobante" :src="p.comprobante" alt="Comprobante de pago">
+          </a>
+          <p class="muted" style="margin-top:4px">Toca la imagen para ampliarla.</p>
+
+          <template x-if="p.estado === 'pendiente_verificacion'">
+            <div style="margin-top:12px">
+
+              <template x-if="rechazando !== p.id">
+                <div class="fila">
+                  <button @click="confirmar(p)" :disabled="ocupado">Confirmar</button>
+                  <button class="btn-borde" @click="rechazando = p.id; motivo = ''">
+                    Rechazar
+                  </button>
+                </div>
+              </template>
+
+              <template x-if="rechazando === p.id">
+                <div>
+                  <div class="aviso">
+                    <b>Rechazar revierte la extensión.</b>
+                    <span x-show="p.aplicado">
+                      El vencimiento de <b x-text="p.establecimiento"></b> volverá
+                      exactamente a la fecha que tenía antes de este comprobante, y
+                      el establecimiento podría quedar suspendido de inmediato.
+                    </span>
+                    <span x-show="!p.aplicado">
+                      Este pago no extendió nada, así que el vencimiento no cambia.
+                    </span>
+                    Además, tras un rechazo el siguiente comprobante ya no activa el
+                    servicio de forma automática.
+                  </div>
+                  <label for="motivo">Motivo (lo verá el dueño)</label>
+                  <textarea id="motivo" x-model="motivo" rows="2"
+                            placeholder="Ej.: la imagen no permite leer el valor."></textarea>
+                  <div class="fila" style="margin-top:10px">
+                    <button class="btn-borde" @click="rechazando = null">Cancelar</button>
+                    <button class="btn-peligro" @click="rechazar(p)"
+                            :disabled="ocupado || !motivo.trim()">
+                      Confirmar rechazo
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+            </div>
+          </template>
+
+          <div class="error" x-show="errores[p.id]" x-text="errores[p.id]"></div>
+        </div>
+      </template>
+
+      <div class="ok" x-show="mensaje" x-text="mensaje"></div>
+    </div>
+  </template>
+</div>
+
+<script>
+function colaPagos() {
+  const METODOS = {
+    breb: "Bre-B", nequi: "Nequi", daviplata: "Daviplata",
+  };
+  return {
+    pagos: [], filtro: "pendiente_verificacion",
+    cargando: true, ocupado: false, sinPermiso: false,
+    rechazando: null, motivo: "", mensaje: "", errores: {},
+
+    etiquetaMetodo(m) { return METODOS[m] || m; },
+
+    async cargar() {
+      this.cargando = true;
+      // La API pagina de a 20 (PAGE_SIZE en settings). Leer solo la primera
+      // pagina seria un fallo SILENCIOSO y caro: con mas de veinte
+      // comprobantes pendientes, los del final no aparecerian y el
+      // establecimiento acabaria suspendido por un pago que nunca se vio.
+      // El tope de 10 paginas evita un bucle infinito si la API cambiara.
+      const acumulados = [];
+      let pagina = 1;
+      while (pagina <= 10) {
+        const r = await api("/admin/pagos?estado=" + this.filtro + "&page=" + pagina);
+        // api() ya redirige al login si es 401. El 403 es distinto: hay sesión
+        // válida pero no es la del superadmin, y mandarlo al login sería
+        // engañoso porque volver a entrar no cambiaría nada.
+        if (r && r.status === 403) { this.sinPermiso = true; this.cargando = false; return; }
+        if (!r || !r.ok) break;
+        const d = await r.json();
+        acumulados.push(...(d.results || []));
+        if (!d.next) break;
+        pagina += 1;
+      }
+      this.pagos = acumulados;
+      this.cargando = false;
+    },
+
+    async cambiar(estado) {
+      this.filtro = estado; this.rechazando = null; this.mensaje = "";
+      await this.cargar();
+    },
+
+    async accion(pago, ruta, cuerpo) {
+      this.ocupado = true; this.mensaje = ""; this.errores = {};
+      try {
+        const r = await api("/admin/pagos/" + pago.id + ruta, {
+          method: "POST",
+          body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+        });
+        if (!r) return;
+        const d = await r.json().catch(() => null);
+        if (!r.ok) {
+          // El detalle lo redacta el servidor: solo él sabe por qué no
+          // procedía (por ejemplo, un pago ya confirmado del mismo período).
+          this.errores[pago.id] = (d && d.detail) || "No se pudo completar la acción.";
+          return;
+        }
+        this.rechazando = null;
+        await this.cargar();
+        return true;
+      } catch (e) {
+        this.errores[pago.id] = "No se pudo contactar el servidor. Intenta de nuevo.";
+        console.error("Acción sobre el pago:", e);
+      } finally {
+        this.ocupado = false;
+      }
+    },
+
+    async confirmar(pago) {
+      if (await this.accion(pago, "/confirmar", null)) {
+        this.mensaje = "Pago confirmado.";
+      }
+    },
+
+    async rechazar(pago) {
+      if (!this.motivo.trim()) return;
+      if (await this.accion(pago, "/rechazar", { motivo: this.motivo.trim() })) {
+        this.mensaje = "Pago rechazado y extensión revertida.";
+      }
+    },
+  };
+}
+</script>
+{% endblock %}

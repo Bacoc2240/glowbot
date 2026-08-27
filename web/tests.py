@@ -772,3 +772,62 @@ class ResendTest(TestCase):
         ):
             r = self.client.post("/panel/recuperar", {"email": "duenio@barberia.com"})
         self.assertEqual(r.status_code, 302)
+
+
+class PaginaPagosTests(TestCase):
+    """La pagina /panel/pagos, que reemplaza a /admin/ para verificar pagos."""
+
+    def test_la_ruta_existe(self):
+        self.assertEqual(self.client.get("/panel/pagos").status_code, 200)
+
+    def test_la_pagina_no_trae_ningun_dato_de_pagos(self):
+        """Se sirve el HTML a cualquiera porque no contiene nada: los datos
+        los pide el navegador a la API, que exige ser superadmin. Si algun dia
+        se pasara la cola por contexto, esta prueba avisaria."""
+        html = self.client.get("/panel/pagos").content.decode()
+        self.assertNotIn("pendiente_verificacion\"><", html)
+        self.assertIn("/admin/pagos", html)   # se pide por API
+
+    def test_la_pagina_advierte_que_rechazar_revierte(self):
+        """El rechazo deshace la extension optimista y puede suspender al
+        establecimiento en el acto. Es destructivo y tiene que decirlo antes,
+        no despues."""
+        html = self.client.get("/panel/pagos").content.decode()
+        self.assertIn("Rechazar revierte la extensión", html)
+
+    def test_la_pagina_no_monta_la_barra_de_navegacion_del_dueno(self):
+        """Esa barra lleva a Agenda, Servicios y Horarios, que son pantallas
+        de un dueño de establecimiento. El superadmin no tiene
+        establecimiento y todas le reventarian."""
+        html = self.client.get("/panel/pagos").content.decode()
+        self.assertNotIn('href="/panel/servicios"', html)
+        self.assertNotIn('href="/panel/horarios"', html)
+
+    def test_el_enlace_del_correo_apunta_a_esta_pagina(self):
+        """El aviso de comprobante enlaza a una ruta fija. Si la pagina se
+        mueve y el correo no, el enlace queda muerto justo cuando hace
+        falta."""
+        from django.test import Client
+        from facturacion.avisos import RUTA_COLA_PAGOS
+        self.assertEqual(Client().get(RUTA_COLA_PAGOS).status_code, 200)
+
+
+class PaginacionColaPagosTests(TestCase):
+    """La pagina recorre TODAS las paginas de la cola, no solo la primera.
+
+    Regresion de un defecto real: la primera version hacia
+    `this.pagos = await r.json()` sobre una respuesta paginada de DRF, que es
+    un objeto {count, next, previous, results} y no una lista. Con PAGE_SIZE
+    en 20, un vigesimo primer comprobante pendiente habria sido invisible, y
+    el fallo se manifiesta como un establecimiento suspendido por un pago que
+    nunca se vio.
+    """
+
+    def test_la_pagina_lee_results_y_no_la_respuesta_cruda(self):
+        html = self.client.get("/panel/pagos").content.decode()
+        self.assertIn("d.results", html)
+
+    def test_la_pagina_sigue_el_enlace_a_la_siguiente(self):
+        html = self.client.get("/panel/pagos").content.decode()
+        self.assertIn("d.next", html)
+        self.assertIn("&page=", html)

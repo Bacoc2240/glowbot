@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from negocios.models import Establecimiento
 
+from .avisos import avisar_comprobante_subido
 from .models import Pago, Suscripcion
 
 DIAS_PRUEBA = 14
@@ -212,6 +213,13 @@ class PagoService:
             )
             if PagoService.puede_activar_de_inmediato(s):
                 PagoService._aplicar_extension(s, pago)
+            # El aviso sale SOLO si la transacción se confirma, y nunca
+            # dentro de ella. Dentro tendría dos problemas: una llamada de
+            # red mantendría abierto el `select_for_update` sobre la
+            # suscripción mientras Resend responde, y un aviso enviado antes
+            # del commit podría anunciar un pago que luego no existe.
+            transaction.on_commit(
+                lambda: avisar_comprobante_subido(pago))
         return pago
 
     # ── Frenos de la activación optimista ─────────────────────────────

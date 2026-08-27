@@ -781,3 +781,109 @@ class PlanesTests(BaseFacturacion):
             content_type="application/json",
         )
         self.assertEqual(r.status_code, 400)
+
+
+class AvisoComprobanteTests(BaseFacturacion):
+    """Subir un comprobante avisa al superadmin por correo.
+
+    Sin esto, un panel de verificacion solo sirve si alguien se acuerda de
+    mirarlo. El dueno sube su comprobante un sabado y el superadmin se entera
+    el lunes, con los primeros vencimientos del piloto encima.
+
+    Cuidado con `captureOnCommitCallbacks`: en TestCase todo corre dentro de
+    una transaccion que se deshace al final, asi que los callbacks de
+    on_commit NO se ejecutan solos. Una prueba que compruebe `len(mail.outbox)`
+    sin capturarlos pasaria con el aviso desconectado.
+    """
+
+    def _subir(self, ejecutar=True):
+        from django.core import mail
+        mail.outbox = []
+        with self.captureOnCommitCallbacks(execute=ejecutar) as callbacks:
+            pago = PagoService.registrar(
+                self.sub, Pago.Metodo.BREB, _imagen_falsa())
+        return pago, callbacks
+
+    def test_subir_un_comprobante_avisa_al_superadmin(self):
+        from django.core import mail
+        self._subir()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["bacoc@glowbot.com.co"])
+
+    def test_el_asunto_identifica_negocio_y_periodo_sin_abrirlo(self):
+        """Se lee en la notificacion del telefono. Si hay que abrir el correo
+        para saber de quien es, el aviso obliga a un paso de mas."""
+        from django.core import mail
+        pago, _ = self._subir()
+        asunto = mail.outbox[0].subject
+        self.assertIn("Eduardo's Barbería", asunto)
+        self.assertIn(pago.periodo, asunto)
+
+    def test_el_cuerpo_dice_si_el_servicio_ya_quedo_extendido(self):
+        """Es lo que cambia la urgencia: si la activacion optimista corrio, el
+        establecimiento esta cubierto; si no, puede estar por suspenderse."""
+        from django.core import mail
+        pago, _ = self._subir()
+        self.assertTrue(pago.aplicado)
+        self.assertIn("YA quedó extendido", mail.outbox[0].body)
+
+    def test_avisa_cuando_la_activacion_optimista_no_corrio(self):
+        from django.core import mail
+        self._subir()               # primera extension, queda sin resolver
+        pago, _ = self._subir()     # la segunda no se encadena (freno RN-10)
+        self.assertFalse(pago.aplicado)
+        self.assertIn("NO se aplicó", mail.outbox[0].body)
+
+    def test_el_aviso_no_filtra_el_enlace_del_comprobante(self):
+        """La URL de Cloudinary no exige sesion: es un documento de pago de un
+        tercero. El correo lleva al panel, que si la exige."""
+        from django.core import mail
+        pago, _ = self._subir()
+        cuerpo = mail.outbox[0].body
+        self.assertNotIn(pago.comprobante.url, cuerpo)
+        self.assertIn("/panel/pagos", cuerpo)
+
+    def test_el_aviso_no_sale_antes_de_confirmarse_la_transaccion(self):
+        """Un aviso enviado dentro de la transaccion podria anunciar un pago
+        que despues no existe. Se comprueba que quede ENCOLADO, no enviado."""
+        from django.core import mail
+        _, callbacks = self._subir(ejecutar=False)
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_si_el_correo_falla_el_pago_queda_registrado_igual(self):
+        """El aviso no es parte de la operacion. Resend caido no puede
+        impedir que se registre un pago que el cliente ya hizo."""
+        from unittest.mock import patch
+        antes = Pago.objects.count()
+        with patch("facturacion.avisos.send_mail",
+                   side_effect=OSError("Resend no disponible")):
+            with self.captureOnCommitCallbacks(execute=True):
+                pago = PagoService.registrar(
+                    self.sub, Pago.Metodo.BREB, _imagen_falsa())
+        self.assertEqual(Pago.objects.count(), antes + 1)
+        self.assertTrue(pago.aplicado)
+
+    def test_sin_superadmin_no_revienta_y_queda_constancia(self):
+        """Que no reviente es la mitad. La otra mitad es enterarse: un
+        comprobante que no avisa a nadie es justo el fallo que este modulo
+        existe para evitar, y si ocurre en silencio nadie lo descubre.
+
+        `send_mail` con la lista de destinatarios vacia no lanza excepcion,
+        asi que comprobar solo que el buzon quedo vacio pasaria igual con la
+        salida temprana desconectada. Lo detecto el arnes de mutacion."""
+        from django.core import mail
+        Usuario.objects.filter(rol=Usuario.Rol.SUPERADMIN).delete()
+        with self.assertLogs("facturacion.avisos", level="WARNING") as reg:
+            pago, _ = self._subir()
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIsNotNone(pago.pk)
+        self.assertIn("nadie va a enterarse", "\n".join(reg.output))
+
+    def test_un_superadmin_inactivo_no_recibe_avisos(self):
+        from django.core import mail
+        Usuario.objects.create_superuser(
+            email="antiguo@glowbot.com.co", password="x", is_active=False)
+        self._subir()
+        destinatarios = mail.outbox[0].to
+        self.assertNotIn("antiguo@glowbot.com.co", destinatarios)

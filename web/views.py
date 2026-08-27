@@ -109,6 +109,20 @@ class HorariosView(TemplateView):
     template_name = "web/horarios.html"
 
 
+class PagosView(TemplateView):
+    """Cola de verificación de pagos del superadmin (RF-21).
+
+    Sin ella la verificación se hace desde /admin/, que es incómodo y —lo
+    importante— fue justo la vía que se bloqueó por saltarse el servicio.
+    Los primeros vencimientos del piloto caen alrededor del 5 de octubre.
+
+    Como el resto del panel, es una plantilla sin lógica: la autorización la
+    impone la API con `EsSuperAdmin`. Servir el HTML a cualquiera no expone
+    nada, porque no trae ni un dato dentro.
+    """
+    template_name = "web/pagos.html"
+
+
 class SuscripcionView(TemplateView):
     """Estado de la suscripcion y carga de comprobantes (RF-20, RF-21)."""
     template_name = "web/suscripcion.html"
