@@ -887,3 +887,97 @@ class AvisoComprobanteTests(BaseFacturacion):
         self._subir()
         destinatarios = mail.outbox[0].to
         self.assertNotIn("antiguo@glowbot.com.co", destinatarios)
+
+
+class ColaPagosHTTPTests(BaseFacturacion):
+    """Los endpoints del superadmin, ejercitados por HTTP.
+
+    Hasta ahora solo se probaba PagoService directamente, asi que el permiso
+    EsSuperAdmin —lo unico que separa la cola de verificacion del resto del
+    mundo— nunca se habia ejecutado en una prueba. El servicio puede estar
+    perfecto y la puerta abierta.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+        self.pago = PagoService.registrar(
+            self.sub, Pago.Metodo.BREB, _imagen_falsa())
+
+    def _como(self, usuario):
+        self.api.force_authenticate(user=usuario)
+        return self.api
+
+    def test_el_dueno_de_un_establecimiento_no_ve_la_cola(self):
+        """No basta con que la pantalla no aparezca en su menu: si conoce la
+        URL, la API tiene que negarsela."""
+        r = self._como(self.est.propietario).get("/api/v1/admin/pagos")
+        self.assertEqual(r.status_code, 403)
+
+    def test_un_anonimo_no_ve_la_cola(self):
+        r = self.api.get("/api/v1/admin/pagos")
+        self.assertIn(r.status_code, (401, 403))
+
+    def test_el_superadmin_ve_los_pendientes(self):
+        r = self._como(self.super).get("/api/v1/admin/pagos")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([p["id"] for p in r.json()["results"]], [self.pago.pk])
+
+    def test_la_cola_cruza_establecimientos_a_proposito(self):
+        """El aislamiento multi-tenant protege a los inquilinos entre si, pero
+        el superadmin verifica los pagos de TODOS: si esta cola filtrara por
+        establecimiento, no serviria para nada."""
+        _, _, otra = RegistroService.registrar(
+            email="otra@barberia.com", password="clave1234",
+            nombre_negocio="Otra Barbería", tipo=Establecimiento.Tipo.BARBERIA,
+            telefono="3009999999", plan=Establecimiento.Plan.BASICO,
+        )
+        otro_pago = PagoService.registrar(
+            otra, Pago.Metodo.NEQUI, _imagen_falsa())
+        r = self._como(self.super).get("/api/v1/admin/pagos")
+        ids = {p["id"] for p in r.json()["results"]}
+        self.assertEqual(ids, {self.pago.pk, otro_pago.pk})
+
+    def test_el_dueno_no_puede_confirmarse_su_propio_pago(self):
+        """El agujero mas caro posible: autoconfirmarse el pago."""
+        r = self._como(self.est.propietario).post(
+            f"/api/v1/admin/pagos/{self.pago.pk}/confirmar")
+        self.assertEqual(r.status_code, 403)
+        self.pago.refresh_from_db()
+        self.assertEqual(self.pago.estado, Pago.Estado.PENDIENTE)
+
+    def test_el_superadmin_confirma_y_queda_registrado_quien_fue(self):
+        r = self._como(self.super).post(
+            f"/api/v1/admin/pagos/{self.pago.pk}/confirmar")
+        self.assertEqual(r.status_code, 200)
+        self.pago.refresh_from_db()
+        self.assertEqual(self.pago.estado, Pago.Estado.CONFIRMADO)
+        self.assertEqual(self.pago.confirmado_por, self.super)
+
+    def test_rechazar_exige_motivo(self):
+        """El motivo lo lee el dueño: un rechazo sin explicación genera una
+        llamada de soporte que el propio texto podía haber evitado."""
+        r = self._como(self.super).post(
+            f"/api/v1/admin/pagos/{self.pago.pk}/rechazar", {}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.pago.refresh_from_db()
+        self.assertEqual(self.pago.estado, Pago.Estado.PENDIENTE)
+
+    def test_rechazar_revierte_la_extension(self):
+        """La compensación exacta ya está probada en el servicio; aquí se
+        comprueba que el endpoint pasa por él y no escribe por su cuenta."""
+        vencimiento_previo = self.pago.vencimiento_previo
+        self.assertTrue(self.pago.aplicado)
+        r = self._como(self.super).post(
+            f"/api/v1/admin/pagos/{self.pago.pk}/rechazar",
+            {"motivo": "La imagen no permite leer el valor."}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.fecha_vencimiento_actual, vencimiento_previo)
+
+    def test_la_cola_filtra_por_estado(self):
+        PagoService.confirmar(self.pago, self.super)
+        cli = self._como(self.super)
+        self.assertEqual(cli.get("/api/v1/admin/pagos").json()["results"], [])
+        confirmados = cli.get("/api/v1/admin/pagos?estado=confirmado").json()["results"]
+        self.assertEqual([p["id"] for p in confirmados], [self.pago.pk])
