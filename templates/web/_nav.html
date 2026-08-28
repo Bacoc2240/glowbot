@@ -2,7 +2,7 @@
 Barra de navegación inferior — Sprint 4.1.
 Se incluye indicando cuál ítem va activo:
     {% include "web/_nav.html" with activo="agenda" %}
-Valores: agenda | servicios | horarios | cuenta
+Valores: agenda | clientes | servicios | horarios | cuenta
 
 Antes estaba duplicada en cada plantilla; al agregar el cuarto ítem se
 extrajo aquí para tener una sola fuente de verdad.
@@ -17,6 +17,15 @@ y no agregan peso de red, coherente con el criterio del Sprint 4).
       <path d="M16 2v4M8 2v4M3 10h18"/>
     </svg>
     <span>Agenda</span>
+  </a>
+  <a href="/panel/clientes" {% if activo == "clientes" %}class="activo"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+    </svg>
+    <span>Clientes</span>
   </a>
   <a href="/panel/servicios" {% if activo == "servicios" %}class="activo"{% endif %}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

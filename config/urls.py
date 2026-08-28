@@ -9,7 +9,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from cuentas.api import RegistroView, TokenConRolView
 from negocios.api_ajustes import AjustesAgendaView
-from negocios.api_clientes import ClientesView
+from negocios.api_clientes import ClientesView, ListaClientesView
 from negocios.api import (
     BloqueosView, EliminarBloqueoView, EliminarExcepcionView, ExcepcionesView,
     HorariosProfesionalView, MiEstablecimientoView, ProfesionalViewSet,
@@ -30,7 +30,7 @@ from facturacion.views import (
 # Sin el alias, el segundo import sombrea al primero (colision de nombres).
 from web.views import (
     AvisoEstablecimientoView, chat_publico, HorariosView, LoginView,
-    PagosView, PanelView, PortadaView, PrivacidadView,
+    PagosView, PanelClientesView, PanelView, PortadaView, PrivacidadView,
     RecuperarView, RegistroView as RegistroPaginaView, salud, ServiciosView,
     SuscripcionView,
 )
@@ -71,6 +71,7 @@ api_v1 = [
     path("mi-establecimiento/ajustes", AjustesAgendaView.as_view(),
          name="ajustes-agenda"),
     path("clientes/bloqueos", ClientesView.as_view(), name="clientes-bloqueos"),
+    path("clientes", ListaClientesView.as_view(), name="clientes"),
     path("recordatorios", RecordatoriosView.as_view(), name="recordatorios"),
     path("recordatorios/<int:notificacion_id>", MarcarRecordatorioView.as_view(),
          name="marcar-recordatorio"),
@@ -120,6 +121,7 @@ urlpatterns = [
     path("panel/horarios", HorariosView.as_view(), name="web-horarios"),
     path("panel/suscripcion", SuscripcionView.as_view(), name="web-suscripcion"),
     path("panel/pagos", PagosView.as_view(), name="web-pagos"),
+    path("panel/clientes", PanelClientesView.as_view(), name="web-clientes"),
     path("panel", PanelView.as_view(), name="web-panel"),
     # Enlace público que se comparte por WhatsApp/Instagram
     path("p/<slug:slug>", chat_publico, name="web-chat"),

@@ -100,6 +100,31 @@ class ClienteService:
             estado=Cita.Estado.NO_ASISTIO,
         ).count()
 
+    @staticmethod
+    def inasistencias_por_telefono(establecimiento) -> dict:
+        """Cuenta las faltas POR TELEFONO, no por registro de cliente.
+
+        Si contara por registro, bastaria con dar otro nombre con el mismo
+        celular para volver a cero. Es la misma razon por la que el bloqueo
+        es por telefono.
+        """
+        faltas = {}
+        citas = (Cita.objects
+                 .filter(establecimiento=establecimiento,
+                         estado=Cita.Estado.NO_ASISTIO)
+                 .select_related("cliente"))
+        for cita in citas:
+            faltas[cita.cliente.telefono] = faltas.get(cita.cliente.telefono, 0) + 1
+        return faltas
+
+    @staticmethod
+    def telefonos_bloqueados(establecimiento) -> set:
+        return set(
+            TelefonoBloqueado.objects
+            .filter(establecimiento=establecimiento)
+            .values_list("telefono", flat=True)
+        )
+
     @classmethod
     def resumen(cls, establecimiento):
         """Los telefonos que el dueno querria mirar: bloqueados y faltones.

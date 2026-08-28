@@ -1,0 +1,175 @@
+{% extends "web/base.html" %}
+{% comment %}
+Lugar canónico de los clientes finales.
+
+Antes esto vivía como una tarjeta dentro de Horarios, que no es su sitio: allí
+se configuran jornadas, no personas. Además, hasta ahora el único punto de
+alta era el asistente, así que un cliente que llegaba al local sin haber
+agendado por internet no existía para el sistema y no se le podía reservar.
+{% endcomment %}
+{% block titulo %}Clientes — GlowBot{% endblock %}
+
+{% block estilos %}
+<style>
+  .aviso-legal { background: var(--fondo-suave, #F7F7F5); border: 1px solid var(--borde);
+                 border-radius: 8px; padding: 10px; font-size: 13px; margin: 10px 0; }
+  .fila-cliente { display: flex; justify-content: space-between; align-items: center;
+                  gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--borde); }
+  .etiqueta { font-size: 12px; padding: 2px 6px; border-radius: 4px;
+              background: var(--borde); }
+</style>
+{% endblock %}
+
+{% block contenido %}
+<div x-data="pantallaClientes()" x-init="cargar()">
+
+  <div class="card">
+    <h2>Registrar un cliente</h2>
+    <p class="muted">Para quien llega al local sin haber agendado por internet.
+       Quien agenda desde tu enlace público se registra solo.</p>
+
+    <label>Nombre</label>
+    <input x-model="nuevo.nombre" placeholder="Ej: Andrea Santos">
+    <label>Teléfono</label>
+    <input x-model="nuevo.telefono" inputmode="numeric" placeholder="3001234567">
+
+    <!-- El aviso se MUESTRA, no se enlaza. Una autorización que no fue
+         informada no es válida por muy marcada que esté la casilla, y un
+         enlace en el mostrador no lo lee nadie. -->
+    <div class="aviso-legal">
+      <b>Léele esto antes de marcar la casilla:</b>
+      «<span x-text="negocio"></span> va a guardar tu nombre y tu teléfono
+      únicamente para gestionar tus citas y recordártelas. Puedes pedir que los
+      consultemos, corrijamos o eliminemos cuando quieras.»
+      <div style="margin-top:6px">
+        <a :href="'/p/' + slug + '/privacidad'" target="_blank">Ver el aviso completo</a>
+      </div>
+    </div>
+
+    <label style="display:flex;gap:8px;align-items:flex-start;color:var(--texto);cursor:pointer">
+      <input type="checkbox" style="width:auto;flex:0 0 auto;margin-top:3px"
+             x-model="nuevo.confirma_aviso">
+      <span>Confirmo que le informé lo anterior y que autorizó.</span>
+    </label>
+
+    <p class="error" x-show="error" x-text="error"></p>
+    <p class="ok" x-show="creado" x-text="creado"></p>
+    <button @click="crear" :disabled="ocupado">Registrar cliente</button>
+  </div>
+
+  <div class="card">
+    <h2>Clientes</h2>
+    <input x-model="q" @input.debounce.400ms="cargar()"
+           placeholder="Buscar por nombre o teléfono">
+
+    <p class="muted" x-show="!cargando && total === 0">
+      Todavía no hay clientes registrados.
+    </p>
+    <!-- Truncar en silencio una lista de personas es como no verlas: el dueño
+         concluiría que ese cliente no existe y lo daría de alta otra vez. -->
+    <p class="muted" x-show="total > mostrados">
+      Mostrando <span x-text="mostrados"></span> de <span x-text="total"></span>.
+      Usa el buscador para encontrar a alguien que no esté en la lista.
+    </p>
+
+    <template x-for="c in clientes" :key="c.id">
+      <div class="fila-cliente">
+        <div style="min-width:0">
+          <b x-text="c.nombre"></b>
+          <span x-show="c.bloqueado" style="color:var(--rojo);font-size:13px">
+            · bloqueado</span>
+          <div class="muted" x-text="c.telefono + etiquetaFaltas(c)"></div>
+          <div class="muted" style="font-size:12px" x-text="etiquetaConsentimiento(c)"></div>
+        </div>
+        <button class="btn btn-borde" style="width:auto;padding:6px 12px;font-size:13px"
+                @click="alternarBloqueo(c)"
+                x-text="c.bloqueado ? 'Desbloquear' : 'Bloquear'"></button>
+      </div>
+    </template>
+    <p class="muted" x-show="cargando">Cargando…</p>
+  </div>
+
+  <div class="espacio-nav"></div>
+</div>
+
+<script>
+function pantallaClientes() {
+  return {
+    clientes: [], total: 0, mostrados: 0, q: "",
+    negocio: "tu establecimiento", slug: "",
+    nuevo: { nombre: "", telefono: "", confirma_aviso: false },
+    cargando: true, ocupado: false, error: "", creado: "",
+
+    async cargar() {
+      this.cargando = true;
+      const r = await api("/clientes?q=" + encodeURIComponent(this.q));
+      if (r && r.ok) {
+        const d = await r.json();
+        this.clientes = d.clientes;
+        this.total = d.total;
+        this.mostrados = d.mostrados;
+      }
+      const e = await api("/mi-establecimiento");
+      if (e && e.ok) {
+        const d = await e.json();
+        this.negocio = d.nombre || this.negocio;
+        this.slug = d.slug || "";
+      }
+      this.cargando = false;
+    },
+
+    etiquetaFaltas(c) {
+      return c.inasistencias ? ` · ${c.inasistencias} inasistencia(s)` : "";
+    },
+    // El origen se muestra porque decide por dónde sale el recordatorio: el
+    // verbal va por wa.me desde el número del propio establecimiento.
+    etiquetaConsentimiento(c) {
+      if (c.origen === "autoservicio") return "Aceptó en la zona pública";
+      return "Autorización verbal registrada por el establecimiento";
+    },
+
+    async crear() {
+      this.error = ""; this.creado = "";
+      if (!this.nuevo.nombre.trim() || !this.nuevo.telefono.trim()) {
+        this.error = "Escribe el nombre y el teléfono."; return;
+      }
+      if (!this.nuevo.confirma_aviso) {
+        this.error = "Debes confirmar que le informaste y que autorizó."; return;
+      }
+      this.ocupado = true;
+      try {
+        const r = await api("/clientes", {
+          method: "POST", body: JSON.stringify(this.nuevo),
+        });
+        if (!r) return;
+        const d = await r.json().catch(() => null);
+        if (!r.ok) {
+          this.error = (d && d.error) || "No se pudo registrar el cliente.";
+          return;
+        }
+        this.creado = `${d.nombre} quedó registrado.`;
+        this.nuevo = { nombre: "", telefono: "", confirma_aviso: false };
+        await this.cargar();
+      } catch (e) {
+        this.error = "No se pudo contactar el servidor.";
+        console.error("Alta de cliente:", e);
+      } finally {
+        this.ocupado = false;
+      }
+    },
+
+    async alternarBloqueo(c) {
+      // El bloqueo impide el AUTOSERVICIO, no la reserva que haga el dueño.
+      await api("/clientes/bloqueos", {
+        method: c.bloqueado ? "DELETE" : "POST",
+        body: JSON.stringify({ telefono: c.telefono }),
+      });
+      await this.cargar();
+    },
+  };
+}
+</script>
+{% endblock %}
+{% block nav %}
+{% include "web/_nav.html" with activo="clientes" %}
+{% endblock %}

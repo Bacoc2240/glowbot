@@ -361,3 +361,135 @@ class MaterializarAsignacionesTest(TestCase):
         self.assertNotIn(
             "Corte Ajeno",
             self.sin_asignar.servicios.values_list("nombre", flat=True))
+
+
+class ListaClientesTests(TestCase):
+    """Alta manual y listado de clientes (pantalla canonica).
+
+    Hasta ahora el UNICO punto de alta era el asistente, asi que un cliente
+    que llegaba al local sin haber agendado por internet no existia para el
+    sistema y el dueno no podia reservarle nada.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="duenio@barberia.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Barbería El Turco",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            slug="el-turco")
+        self.api.force_authenticate(user=self.duenio)
+
+    def _alta(self, **extra):
+        datos = {"nombre": "Andrea Santos", "telefono": "3003214578",
+                 "confirma_aviso": True}
+        datos.update(extra)
+        return self.api.post("/api/v1/clientes", datos, format="json")
+
+    def test_el_alta_manual_queda_como_verbal_y_con_autor(self):
+        """El dueno no autoriza en nombre del titular: da fe de una
+        autorizacion oral que el titular si otorgo. Por eso queda su nombre."""
+        from negocios.models import ClienteFinal
+        r = self._alta()
+        self.assertEqual(r.status_code, 201)
+        cliente = ClienteFinal.objects.get(pk=r.json()["id"])
+        self.assertEqual(cliente.origen_consentimiento,
+                         ClienteFinal.OrigenConsentimiento.VERBAL_PRESENCIAL)
+        self.assertEqual(cliente.consentimiento_registrado_por, self.duenio)
+        self.assertTrue(cliente.acepta_datos)
+        self.assertTrue(cliente.version_aviso)
+
+    def test_sin_confirmar_el_aviso_no_hay_alta(self):
+        """El articulo 7 del Decreto 1377 dice que el silencio no equivale a
+        una conducta inequivoca. La casilla no viene marcada, y el servidor
+        no se fia de la pantalla."""
+        from negocios.models import ClienteFinal
+        r = self._alta(confirma_aviso=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(ClienteFinal.objects.count(), 0)
+
+    def test_un_valor_cualquiera_no_cuenta_como_confirmacion(self):
+        """Se exige True, no algo 'verdadero'. Una cadena vacia enviada por
+        error no puede valer como autorizacion."""
+        from negocios.models import ClienteFinal
+        self.assertEqual(self._alta(confirma_aviso="si").status_code, 400)
+        self.assertEqual(ClienteFinal.objects.count(), 0)
+
+    def test_faltan_datos(self):
+        self.assertEqual(self._alta(nombre="").status_code, 400)
+        self.assertEqual(self._alta(telefono="").status_code, 400)
+
+    def test_el_listado_solo_muestra_los_del_propio_establecimiento(self):
+        from negocios.models import ClienteFinal
+        self._alta()
+        otro_duenio = Usuario.objects.create_user(
+            email="otro@b.com", password="clave12345")
+        otro_est = Establecimiento.objects.create(
+            propietario=otro_duenio, nombre="Ajena",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3009", slug="ajena")
+        ClienteFinal.objects.create(
+            establecimiento=otro_est, nombre="Cliente Ajeno",
+            telefono="3110000000", acepta_datos=True)
+
+        r = self.api.get("/api/v1/clientes")
+        nombres = [c["nombre"] for c in r.json()["clientes"]]
+        self.assertEqual(nombres, ["Andrea Santos"])
+
+    def test_el_buscador_filtra_por_nombre_y_por_telefono(self):
+        self._alta()
+        self._alta(nombre="Beatriz Ruiz", telefono="3009998888")
+        por_nombre = self.api.get("/api/v1/clientes?q=beatriz").json()
+        self.assertEqual([c["nombre"] for c in por_nombre["clientes"]],
+                         ["Beatriz Ruiz"])
+        por_tel = self.api.get("/api/v1/clientes?q=3214").json()
+        self.assertEqual([c["nombre"] for c in por_tel["clientes"]],
+                         ["Andrea Santos"])
+
+    def test_el_listado_declara_cuando_esta_truncado(self):
+        """Truncar en silencio una lista de personas es como no verlas: el
+        dueno concluiria que ese cliente no existe y lo daria de alta otra
+        vez, duplicandolo."""
+        from negocios.api_clientes import TOPE_LISTADO
+        from negocios.models import ClienteFinal
+        ClienteFinal.objects.bulk_create([
+            ClienteFinal(establecimiento=self.est, nombre=f"Cliente {i}",
+                         telefono=f"30000{i:05d}", acepta_datos=True)
+            for i in range(TOPE_LISTADO + 5)
+        ])
+        d = self.api.get("/api/v1/clientes").json()
+        self.assertEqual(d["total"], TOPE_LISTADO + 5)
+        self.assertEqual(d["mostrados"], TOPE_LISTADO)
+
+    def test_el_listado_expone_el_origen_del_consentimiento(self):
+        """Decide por donde sale el recordatorio: el verbal va por wa.me
+        desde el numero del propio establecimiento."""
+        self._alta()
+        c = self.api.get("/api/v1/clientes").json()["clientes"][0]
+        self.assertEqual(c["origen"], "verbal_presencial")
+        self.assertIsNotNone(c["fecha_consentimiento"])
+
+    def test_las_inasistencias_se_cuentan_por_telefono(self):
+        """Si contaran por registro, bastaria con dar otro nombre con el
+        mismo celular para volver a cero."""
+        from datetime import date, time
+        from agenda.models import Cita
+        from negocios.models import ClienteFinal, Profesional, Servicio
+        prof = Profesional.objects.create(establecimiento=self.est, nombre="Ana")
+        serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self._alta()
+        # Mismo telefono, otro nombre: es otro registro, misma persona detras.
+        gemelo = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="A. Santos",
+            telefono="3003214578", acepta_datos=True)
+        Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=gemelo, fecha=date(2026, 8, 20),
+            hora_inicio=time(10, 0), hora_fin=time(10, 30),
+            estado=Cita.Estado.NO_ASISTIO)
+
+        clientes = {c["nombre"]: c for c in
+                    self.api.get("/api/v1/clientes").json()["clientes"]}
+        self.assertEqual(clientes["Andrea Santos"]["inasistencias"], 1)

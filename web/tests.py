@@ -972,3 +972,45 @@ class FranjaConsentimientoTests(TestCase):
     def test_la_franja_enlaza_al_aviso(self):
         html = self.client.get("/p/gina-style").content.decode()
         self.assertIn("/privacidad", html)
+
+
+class PantallaClientesTests(TestCase):
+    """La pantalla canonica de clientes."""
+
+    def _vivas(self, ruta):
+        html = self.client.get(ruta).content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    def test_la_ruta_existe(self):
+        self.assertEqual(self.client.get("/panel/clientes").status_code, 200)
+
+    def test_muestra_el_aviso_en_vez_de_solo_enlazarlo(self):
+        """Una autorizacion que no fue informada no es valida por muy marcada
+        que este la casilla, y un enlace en el mostrador no lo lee nadie."""
+        vivas = self._vivas("/panel/clientes")
+        self.assertIn("Léele esto antes de marcar la casilla", vivas)
+        self.assertIn("guardar tu nombre y tu teléfono", vivas)
+
+    def test_la_casilla_no_viene_premarcada(self):
+        """El silencio no equivale a una conducta inequivoca (art. 7,
+        Decreto 1377). Una casilla marcada por defecto es exactamente eso."""
+        vivas = self._vivas("/panel/clientes")
+        self.assertIn("confirma_aviso: false", vivas)
+        self.assertNotIn("confirma_aviso: true", vivas)
+
+    def test_avisa_cuando_la_lista_esta_truncada(self):
+        vivas = self._vivas("/panel/clientes")
+        self.assertIn("total > mostrados", vivas)
+
+    def test_clientes_esta_en_el_menu(self):
+        vivas = self._vivas("/panel/clientes")
+        self.assertIn('href="/panel/clientes"', vivas)
+
+    def test_horarios_ya_no_gestiona_clientes(self):
+        """Esa tarjeta vivia de arrimada en Horarios, donde se configuran
+        jornadas y no personas. Dejar el codigo huerfano invita a que alguien
+        lo reviva en el sitio equivocado."""
+        vivas = self._vivas("/panel/horarios")
+        self.assertNotIn("Clientes con inasistencias", vivas)
+        self.assertNotIn("cargarClientes", vivas)

@@ -109,6 +109,16 @@ class HorariosView(TemplateView):
     template_name = "web/horarios.html"
 
 
+class PanelClientesView(TemplateView):
+    """Lugar canónico de los clientes finales.
+
+    Se llama PanelClientesView y no ClientesView porque ese nombre ya lo usa
+    el ENDPOINT de bloqueos en negocios.api_clientes, y config/urls.py
+    importa los dos: sin distinguirlos, el segundo import sombrea al primero.
+    """
+    template_name = "web/clientes.html"
+
+
 class PagosView(TemplateView):
     """Cola de verificación de pagos del superadmin (RF-21).
 
