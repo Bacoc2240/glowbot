@@ -37,10 +37,10 @@ class BaseAgendaTest(TestCase):
             establecimiento=self.est, nombre="Carlos",
         )
         self.corte = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000,
+            establecimiento=self.est, nombre="Corte", duracion_min=30,
         )
         self.combo = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte + barba", duracion_min=50, precio=22000,
+            establecimiento=self.est, nombre="Corte + barba", duracion_min=50,
         )
         # Lunes a viernes, 9:00–12:00 (180 min)
         self.lunes = date(2026, 6, 15)  # un lunes
@@ -209,7 +209,7 @@ class RecordatoriosTest(TestCase):
             telefono_whatsapp="3007412599",
         )
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Barba", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
         self.cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson", telefono="3192846956",
             acepta_datos=True,
@@ -378,7 +378,7 @@ class AntelacionConfigurableTest(TestCase):
         prof = Profesional.objects.create(
             establecimiento=est, nombre="Ana", telefono_whatsapp="3007412599")
         serv = Servicio.objects.create(
-            establecimiento=est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=est, nombre="Corte", duracion_min=30)
         return Cita.objects.create(
             establecimiento=est, profesional=prof, servicio=serv,
             cliente=self.clientes[etiqueta], fecha=cuando.date(),
@@ -451,7 +451,7 @@ class TextoDelRecordatorioTest(TestCase):
         self.prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
         self.cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson", telefono="3192846956",
             acepta_datos=True,
@@ -634,7 +634,7 @@ class TopeCitasAbiertasTest(TestCase):
         self.prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
         self.cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson Vergara",
             telefono="3192846956", acepta_datos=True)
@@ -731,7 +731,7 @@ class InasistenciaTest(TestCase):
         self.prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
         self.cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson Vergara",
             telefono="3192846956", acepta_datos=True)
@@ -827,7 +827,7 @@ class BloqueoTelefonoTest(TestCase):
         self.prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
         self.cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson Vergara",
             telefono="3192846956", acepta_datos=True)
@@ -880,7 +880,7 @@ class BloqueoTelefonoTest(TestCase):
         prof2 = Profesional.objects.create(
             establecimiento=vecina, nombre="Luis", telefono_whatsapp="3007412599")
         serv2 = Servicio.objects.create(
-            establecimiento=vecina, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=vecina, nombre="Corte", duracion_min=30)
         cli2 = ClienteFinal.objects.create(
             establecimiento=vecina, nombre="Wilson Vergara",
             telefono="3192846956", acepta_datos=True)
@@ -951,9 +951,9 @@ class ModoAgendaTest(TestCase):
         )
         self.p = Profesional.objects.create(establecimiento=self.est, nombre="Eduardo")
         self.corte = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=40, precio=18000)
+            establecimiento=self.est, nombre="Corte", duracion_min=40)
         self.barba = Servicio.objects.create(
-            establecimiento=self.est, nombre="Barba", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
         self.dia = date(2026, 8, 20)
         HorarioBase.objects.create(
             profesional=self.p, dia_semana=self.dia.weekday(),
@@ -1040,7 +1040,7 @@ class CanalDelRecordatorioTest(TestCase):
         self.prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         self.serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
 
     def _notif(self, origen, autor=None):
         from negocios.models import ClienteFinal
@@ -1106,7 +1106,7 @@ class EstructuraDelTextoTest(TestCase):
         prof = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana", telefono_whatsapp="3007412599")
         serv = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000)
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
         cliente = ClienteFinal.objects.create(
             establecimiento=self.est, nombre="Wilson", telefono="3192846956",
             acepta_datos=True,

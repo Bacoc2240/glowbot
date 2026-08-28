@@ -174,12 +174,11 @@ class AsignacionServiciosTests(TestCase):
             tipo=Establecimiento.Tipo.SALON, telefono="3001112222",
             slug="salon-bella")
         self.unias = Servicio.objects.create(
-            establecimiento=self.est, nombre="Uñas", duracion_min=45, precio=25000)
+            establecimiento=self.est, nombre="Uñas", duracion_min=45)
         self.cejas = Servicio.objects.create(
-            establecimiento=self.est, nombre="Cejas", duracion_min=20, precio=15000)
+            establecimiento=self.est, nombre="Cejas", duracion_min=20)
         self.maquillaje = Servicio.objects.create(
-            establecimiento=self.est, nombre="Maquillaje", duracion_min=60,
-            precio=40000)
+            establecimiento=self.est, nombre="Maquillaje", duracion_min=60)
         self.ana = Profesional.objects.create(
             establecimiento=self.est, nombre="Ana")
         self.api.force_authenticate(user=self.duenio)
@@ -218,7 +217,7 @@ class AsignacionServiciosTests(TestCase):
             slug="ajena")
         ajeno = Servicio.objects.create(
             establecimiento=otro_est, nombre="Corte Ajeno",
-            duracion_min=30, precio=15000)
+            duracion_min=30)
 
         r = self.api.patch(
             f"/api/v1/profesionales/{self.ana.pk}",
@@ -278,3 +277,87 @@ class AsignacionServiciosTests(TestCase):
                            {"telefono_whatsapp": "3007412599"}, format="json")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.ana.servicios.count(), 2)
+
+
+class MaterializarAsignacionesTest(TestCase):
+    """La logica de la migracion 0010, ejercitada de verdad.
+
+    Hasta hoy un profesional sin asignaciones se le presentaba al asistente
+    como que prestaba TODOS los servicios. Al retirar ese atajo, cualquier
+    establecimiento ya en produccion se habria quedado con un asistente
+    incapaz de agendar sin haber tocado nada. La migracion convierte ese
+    comportamiento implicito en filas reales, que el dueno ya puede corregir
+    desde el panel.
+    """
+
+    def setUp(self):
+        from negocios.models import Profesional, Servicio
+        self.duenio = Usuario.objects.create_user(
+            email="mig@salon.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Salón Migración",
+            tipo=Establecimiento.Tipo.SALON, telefono="3001112222",
+            slug="salon-migracion")
+        self.unias = Servicio.objects.create(
+            establecimiento=self.est, nombre="Uñas", duracion_min=45)
+        self.cejas = Servicio.objects.create(
+            establecimiento=self.est, nombre="Cejas", duracion_min=20)
+        self.viejo = Servicio.objects.create(
+            establecimiento=self.est, nombre="Descontinuado",
+            duracion_min=30, activo=False)
+        self.sin_asignar = Profesional.objects.create(
+            establecimiento=self.est, nombre="Paola")
+        self.ya_configurada = Profesional.objects.create(
+            establecimiento=self.est, nombre="Yesica")
+        self.ya_configurada.servicios.set([self.cejas])
+
+    def _migrar(self):
+        import importlib
+        from django.apps import apps
+        modulo = importlib.import_module(
+            "negocios.migrations.0010_materializar_asignaciones")
+        modulo.materializar_asignaciones(apps, None)
+
+    def test_a_quien_no_tenia_nada_se_le_asigna_todo_lo_activo(self):
+        self._migrar()
+        self.assertEqual(
+            set(self.sin_asignar.servicios.values_list("nombre", flat=True)),
+            {"Uñas", "Cejas"})
+
+    def test_no_se_asignan_servicios_inactivos(self):
+        """Un servicio desactivado no se ofrece; materializarlo resucitaria
+        algo que el dueno ya habia retirado del catalogo."""
+        self._migrar()
+        self.assertNotIn(
+            "Descontinuado",
+            self.sin_asignar.servicios.values_list("nombre", flat=True))
+
+    def test_a_quien_ya_estaba_configurado_no_se_le_toca(self):
+        """Esa es una decision deliberada del dueno y la migracion no tiene
+        por que opinar."""
+        self._migrar()
+        self.assertEqual(
+            list(self.ya_configurada.servicios.values_list("nombre", flat=True)),
+            ["Cejas"])
+
+    def test_correrla_dos_veces_no_duplica(self):
+        """Las migraciones se reejecutan al restaurar respaldos y al montar
+        entornos nuevos. Duplicar violaria la unicidad de la tabla puente."""
+        self._migrar()
+        self._migrar()
+        self.assertEqual(self.sin_asignar.servicios.count(), 2)
+
+    def test_no_cruza_establecimientos(self):
+        from negocios.models import Profesional, Servicio
+        otro_duenio = Usuario.objects.create_user(
+            email="otro@mig.com", password="clave12345")
+        otro = Establecimiento.objects.create(
+            propietario=otro_duenio, nombre="Ajena",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3009998888",
+            slug="ajena-mig")
+        Servicio.objects.create(
+            establecimiento=otro, nombre="Corte Ajeno", duracion_min=30)
+        self._migrar()
+        self.assertNotIn(
+            "Corte Ajeno",
+            self.sin_asignar.servicios.values_list("nombre", flat=True))

@@ -73,7 +73,7 @@ class InfoPublicaView(APIView):
             "telefono": est.telefono,
             "servicios": [
                 {"id": s.id, "nombre": s.nombre,
-                 "duracion_min": s.duracion_min, "precio": int(s.precio)}
+                 "duracion_min": s.duracion_min}
                 for s in servicios
             ],
             "profesionales": [{"id": p.id, "nombre": p.nombre} for p in profesionales],

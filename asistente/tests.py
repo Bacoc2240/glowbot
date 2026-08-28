@@ -42,8 +42,12 @@ class BaseIATest(TestCase):
             telefono_whatsapp="3009998877",
         )
         self.corte = Servicio.objects.create(
-            establecimiento=self.est, nombre="Corte", duracion_min=30, precio=15000,
+            establecimiento=self.est, nombre="Corte", duracion_min=30,
         )
+        # Asignacion explicita: desde que existe la pantalla del panel, un
+        # profesional sin servicios NO se le ofrece al modelo. Antes bastaba
+        # con no asignar nada y el prompt decia "presta todos los servicios".
+        self.carlos.servicios.set([self.corte])
         # Lunes 9:00–12:00
         self.lunes = date(2026, 6, 15)
         HorarioBase.objects.create(
@@ -62,7 +66,7 @@ class PromptSistemaTest(BaseIATest):
         """Capa 1: el contexto del prompt sale de la BD (RN-04)."""
         prompt = IAService.construir_prompt_sistema(self.est)
         self.assertIn("Barbería El Patrón", prompt)
-        self.assertIn("Corte — 30 min — $15,000 COP", prompt)
+        self.assertIn("Corte — 30 min", prompt)
         self.assertIn("Carlos", prompt)
         self.assertIn("Nunca inventes información", prompt)
 
@@ -283,7 +287,7 @@ class ConversacionTest(BaseIATest):
     def test_profesional_no_presta_el_servicio(self):
         """Regla M:N: si hay asignaciones, solo combinaciones válidas."""
         manicure = Servicio.objects.create(
-            establecimiento=self.est, nombre="Manicure", duracion_min=45, precio=25000,
+            establecimiento=self.est, nombre="Manicure", duracion_min=45,
         )
         sofia = Profesional.objects.create(establecimiento=self.est, nombre="Sofía")
         ProfesionalServicio.objects.create(profesional=sofia, servicio=manicure)
@@ -550,3 +554,76 @@ class CalendarioEnElPromptTest(TestCase):
     def test_funciona_en_cambio_de_mes(self):
         prompt = self._prompt(date(2026, 8, 25))
         self.assertIn("2026-09-01 = martes 1 de septiembre de 2026", prompt)
+
+
+class PromptSinPreciosTests(BaseIATest):
+    """GlowBot agenda; los precios son del establecimiento.
+
+    La plataforma dejo de manejarlos: un catalogo donde solo ALGUNOS
+    servicios tienen precio es el terreno donde un modelo improvisa, y un
+    numero inventado es una expectativa que alguien reclama en el local.
+    """
+
+    def test_el_catalogo_no_menciona_precios(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("Corte", prompt)
+        self.assertIn("30 min", prompt)
+        self.assertNotIn("COP", prompt)
+        self.assertNotIn("$", prompt)
+
+    def test_el_catalogo_publico_no_devuelve_precios(self):
+        """El JSON que consume la zona publica tampoco los lleva. Sin esta
+        comprobacion, el precio podia volver por el endpoint aunque el
+        prompt estuviera limpio, y la pantalla del cliente lo mostraria."""
+        from rest_framework.test import APIClient
+        self.est.slug = "el-patron"
+        self.est.save(update_fields=["slug"])
+        r = APIClient().get("/api/v1/p/el-patron")
+        self.assertEqual(r.status_code, 200)
+        servicio = r.json()["servicios"][0]
+        self.assertEqual(servicio["nombre"], "Corte")
+        self.assertNotIn("precio", servicio)
+
+    def test_el_prompt_prohibe_inventar_o_estimar_precios(self):
+        """La regla 1 ('solo lo que aparezca arriba') no basta: hace falta
+        una prohibicion explicita, porque el modelo puede razonar que no
+        esta inventando sino 'ayudando'."""
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("NUNCA", prompt)
+        self.assertIn("estimes", prompt)
+        self.assertIn("lo confirma el establecimiento", prompt)
+
+
+class ProfesionalSinServiciosTests(BaseIATest):
+    """Un profesional sin servicios asignados NO se le ofrece al modelo.
+
+    Antes el prompt decia "presta todos los servicios" cuando la tabla
+    puente estaba vacia. Era un atajo razonable mientras la asignacion no se
+    podia hacer desde el panel, pero desde que existe la pantalla ese atajo
+    MIENTE: quien quede sin marcar aparece prestandolo todo, y el cliente
+    termina agendando con alguien que no hace ese servicio.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.sin_asignar = Profesional.objects.create(
+            establecimiento=self.est, nombre="Yesica")
+        self.carlos.servicios.set([self.corte])
+
+    def test_el_profesional_con_servicios_si_aparece(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("Carlos", prompt)
+        self.assertIn(f"presta los servicios [{self.corte.pk}]", prompt)
+
+    def test_el_profesional_sin_servicios_no_aparece(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertNotIn("Yesica", prompt)
+
+    def test_ninguno_asignado_deja_el_bloque_vacio_y_no_miente(self):
+        """Es un fallo ruidoso a proposito: el asistente dice que no puede
+        agendar, y el dueno ve el aviso rojo en el panel. Lo contrario
+        fallaba en silencio, ofreciendo a cualquiera para cualquier cosa."""
+        self.carlos.servicios.clear()
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("(sin profesionales)", prompt)
+        self.assertNotIn("presta todos los servicios", prompt)

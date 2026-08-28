@@ -10,7 +10,7 @@
       <div class="fila" style="border-bottom:1px solid var(--borde);padding:8px 0">
         <div>
           <b x-text="s.nombre"></b>
-          <div class="muted" x-text="s.duracion_min + ' min · $' + Number(s.precio).toLocaleString('es-CO')"></div>
+          <div class="muted" x-text="s.duracion_min + ' min'"></div>
         </div>
         <button class="btn-peligro" style="max-width:90px;padding:7px;font-size:12px"
                 @click="borrarServicio(s.id)">Eliminar</button>
@@ -20,7 +20,6 @@
     <input x-model="nuevo.nombre" placeholder="Ej: Corte clásico">
     <div class="fila">
       <div><label>Duración (min)</label><input type="number" x-model.number="nuevo.duracion_min"></div>
-      <div><label>Precio (COP)</label><input type="number" x-model.number="nuevo.precio"></div>
     </div>
     <p class="error" x-text="errorS" x-show="errorS"></p><br>
     <button @click="crearServicio">Agregar servicio</button>
@@ -82,7 +81,7 @@
 function config() {
   return {
     servicios: [], profesionales: [],
-    nuevo: { nombre: "", duracion_min: 30, precio: 15000 },
+    nuevo: { nombre: "", duracion_min: 30 },
     nuevoProf: { nombre: "", telefono_whatsapp: "" },
     errorS: "", errorP: "",
     editando: null, guardando: false, guardado: null, errorAsig: {},
@@ -131,8 +130,8 @@ function config() {
     async crearServicio() {
       this.errorS = "";
       const r = await api("/servicios", { method: "POST", body: JSON.stringify(this.nuevo) });
-      if (!r.ok) { this.errorS = "Verifica los datos (duración y precio > 0)."; return; }
-      this.nuevo = { nombre: "", duracion_min: 30, precio: 15000 };
+      if (!r.ok) { this.errorS = "Verifica los datos (la duración debe ser mayor a 0)."; return; }
+      this.nuevo = { nombre: "", duracion_min: 30 };
       await this.cargar();
     },
     async borrarServicio(id) {

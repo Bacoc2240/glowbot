@@ -71,16 +71,26 @@ class IAService:
             establecimiento=establecimiento, activo=True,
         )
         lineas_servicios = "\n".join(
-            f"- id {s.id}: {s.nombre} — {s.duracion_min} min — ${s.precio:,.0f} COP"
+            f"- id {s.id}: {s.nombre} — {s.duracion_min} min"
             for s in servicios
         ) or "- (sin servicios configurados)"
 
         lineas_prof = []
         for p in profesionales:
             asignados = list(p.servicios.values_list("id", flat=True))
-            detalle = f"presta los servicios {asignados}" if asignados \
-                else "presta todos los servicios"
-            lineas_prof.append(f"- id {p.id}: {p.nombre} — {detalle}")
+            # Sin servicios asignados, el profesional NO se le presenta al
+            # modelo. Antes decia "presta todos los servicios", que era un
+            # atajo razonable cuando la asignacion no se podia hacer desde
+            # el panel —era eso o un asistente inutil—. Desde que existe la
+            # pantalla, ese atajo miente: un salon que asigna bien puede
+            # tener a alguien apareciendo en TODO por haber quedado sin
+            # marcar, y el cliente termina agendando con quien no presta ese
+            # servicio. Omitirlo es ruidoso (el dueno ve el aviso rojo en el
+            # panel) y por tanto seguro; lo contrario fallaba en silencio.
+            if not asignados:
+                continue
+            lineas_prof.append(
+                f"- id {p.id}: {p.nombre} — presta los servicios {asignados}")
         lineas_profesionales = "\n".join(lineas_prof) or "- (sin profesionales)"
 
         ahora = timezone.localtime()
@@ -103,7 +113,7 @@ CALENDARIO (unica fuente valida para dias de la semana):
 {calendario}
 
 REGLAS OBLIGATORIAS:
-1. Solo ofrece servicios, precios, profesionales y horarios que aparezcan arriba
+1. Solo ofrece servicios, profesionales y horarios que aparezcan arriba
    o que el sistema te haya entregado en un mensaje [SISTEMA]. Si no está en la
    lista, NO existe. Nunca inventes información.
 2. Si el cliente pide algo fuera de la lista, dilo con amabilidad y ofrece lo disponible.
@@ -133,7 +143,13 @@ REGLAS OBLIGATORIAS:
 10. Si el cliente envía SOLO un número de teléfono (10 dígitos) sin pedir
    otra cosa, entiendelo como que quiere ver su cita: emite consultar_cita
    con ese número. Es la via mas rapida para quien vuelve y solo quiere
-   recordar cuando la tiene."""
+   recordar cuando la tiene.
+11. NO tienes informacion de precios y esta plataforma no los maneja. NUNCA
+   menciones, estimes, aproximes ni negocies un precio, ni siquiera "desde",
+   "alrededor de" o "suele costar". Si el cliente pregunta cuanto cuesta,
+   responde que el precio lo confirma el establecimiento y sigue con la
+   reserva. Un numero inventado es una expectativa que alguien va a reclamar
+   en el local."""
 
 
     # ──────────────────────────────────────────────────────────────

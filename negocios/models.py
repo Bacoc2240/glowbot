@@ -167,11 +167,6 @@ class Servicio(models.Model):
         validators=[MinValueValidator(1)],
         help_text="Duración en minutos; define el tamaño del slot (RN-03).",
     )
-    precio = models.DecimalField(
-        max_digits=10, decimal_places=0,
-        validators=[MinValueValidator(0)],
-        help_text="Precio en pesos colombianos.",
-    )
     activo = models.BooleanField(default=True)
     profesionales = models.ManyToManyField(
         Profesional, through="ProfesionalServicio", related_name="servicios",

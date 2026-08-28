@@ -28,7 +28,12 @@ class _EstablecimientoMixin:
 class ServicioSerializer(serializers.ModelSerializer):
     class Meta:
         model = Servicio
-        fields = ["id", "nombre", "duracion_min", "precio", "activo"]
+        # Sin precio a proposito. GlowBot agenda; los precios son del
+        # establecimiento y los informa el, no la plataforma. Ademas, un
+        # catalogo donde SOLO ALGUNOS servicios tienen precio es el terreno
+        # donde un modelo de lenguaje improvisa: la regla uniforme "aqui no
+        # hay precios" se cumple mejor que "unos si y otros no".
+        fields = ["id", "nombre", "duracion_min", "activo"]
 
     def validate_duracion_min(self, value):
         if value <= 0:

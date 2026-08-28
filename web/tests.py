@@ -45,7 +45,7 @@ class BaseSprint4Test(TestCase):
         )
         self.corte = Servicio.objects.create(
             establecimiento=self.est, nombre="Corte",
-            duracion_min=30, precio=15000,
+            duracion_min=30,
         )
         self.lunes = date(2026, 6, 15)
 
@@ -947,3 +947,28 @@ class InterfazAsignacionServiciosTests(TestCase):
         solo ofrece combinaciones que existan en la tabla puente. Es valido,
         pero silencioso, y el dueño tiene que verlo."""
         self.assertIn("Sin servicios asignados", self._vivas())
+
+
+class FranjaConsentimientoTests(TestCase):
+    """La franja del chat ANUNCIA el consentimiento; no lo da por hecho.
+
+    Decia "Al agendar aceptas...", y tres mensajes despues el asistente
+    pedia la aceptacion expresa. Dos actos de consentimiento con fundamentos
+    distintos en la misma sesion. La constancia que guarda el sistema es la
+    EXPRESA, asi que la franja debe anunciar eso y no adelantarlo.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="franja@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Gina Style", tipo=Establecimiento.Tipo.SALON,
+            telefono="3001112222", slug="gina-style")
+
+    def test_la_franja_anuncia_y_no_presupone(self):
+        html = self.client.get("/p/gina-style").content.decode()
+        self.assertIn("te pediremos aceptar", html)
+        self.assertNotIn("Al agendar aceptas", html)
+
+    def test_la_franja_enlaza_al_aviso(self):
+        html = self.client.get("/p/gina-style").content.decode()
+        self.assertIn("/privacidad", html)
