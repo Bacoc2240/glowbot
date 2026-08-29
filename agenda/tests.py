@@ -738,7 +738,28 @@ class InasistenciaTest(TestCase):
         self.api = APIClient()
         self.api.force_authenticate(user=self.u)
 
-    def _cita(self, cuando, cliente=None):
+    # El reloj se CONGELA a mediodia en vez de usar la hora real.
+    #
+    # El molde fabricaba la cita con `fecha` y `hora` por separado a partir de
+    # `timezone.localtime()`. Cuando la hora de fin cruzaba la medianoche daba
+    # la vuelta al reloj y quedaba ANTES que la de inicio dentro de la misma
+    # fecha, violando ck_cita_fin_mayor_inicio: la suite fallaba segun la hora
+    # a la que se ejecutara. Con `+3 horas` la ventana era entre las 20:30 y
+    # las 21:00, justo cuando alguien prueba de noche.
+    #
+    # La restriccion hacia bien su trabajo; la cita imposible la fabricaba la
+    # prueba. Mediodia deja doce horas de margen a cada lado, asi que ningun
+    # desplazamiento razonable cruza un dia.
+    AHORA = timezone.make_aware(datetime(2026, 9, 22, 12, 0),
+                                timezone.get_default_timezone())
+
+    def _congelar(self):
+        """Fija el ahora que ve el endpoint al marcar la inasistencia."""
+        return patch("agenda.api.timezone.localtime", return_value=self.AHORA)
+
+    def _cita(self, desfase, cliente=None):
+        """`desfase` es un timedelta respecto del ahora congelado."""
+        cuando = self.AHORA + desfase
         return Cita.objects.create(
             establecimiento=self.est, profesional=self.prof, servicio=self.serv,
             cliente=cliente or self.cliente, fecha=cuando.date(),
@@ -747,8 +768,9 @@ class InasistenciaTest(TestCase):
             estado=Cita.Estado.CONFIRMADA)
 
     def test_marca_una_cita_que_ya_empezo(self):
-        cita = self._cita(timezone.localtime() - timedelta(minutes=10))
-        r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        cita = self._cita(-timedelta(minutes=10))
+        with self._congelar():
+            r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
         self.assertEqual(r.status_code, 200)
         cita.refresh_from_db()
         self.assertEqual(cita.estado, Cita.Estado.NO_ASISTIO)
@@ -756,27 +778,31 @@ class InasistenciaTest(TestCase):
     def test_no_marca_una_cita_futura(self):
         """Marcar como ausente a quien todavia no tenia que llegar es un
         error de dedo, no una intencion."""
-        cita = self._cita(timezone.localtime() + timedelta(hours=3))
-        r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        cita = self._cita(timedelta(hours=3))
+        with self._congelar():
+            r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
         self.assertEqual(r.status_code, 409)
         cita.refresh_from_db()
         self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
 
     def test_no_marca_una_cita_cancelada(self):
-        cita = self._cita(timezone.localtime() - timedelta(hours=1))
+        cita = self._cita(-timedelta(hours=1))
         cita.estado = Cita.Estado.CANCELADA_CLIENTE
         cita.save()
-        self.assertEqual(
-            self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio").status_code, 409)
+        with self._congelar():
+            r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        self.assertEqual(r.status_code, 409)
 
     def test_devuelve_el_acumulado_para_que_el_dueno_decida(self):
         """El panel necesita el numero para ofrecer el bloqueo. El sistema
         informa; la persona juzga."""
         for h in (3, 2):
-            c = self._cita(timezone.localtime() - timedelta(hours=h))
-            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
-        ultima = self._cita(timezone.localtime() - timedelta(minutes=10))
-        d = self.api.patch(f"/api/v1/citas/{ultima.id}/no-asistio").json()
+            c = self._cita(-timedelta(hours=h))
+            with self._congelar():
+                self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+        ultima = self._cita(-timedelta(minutes=10))
+        with self._congelar():
+            d = self.api.patch(f"/api/v1/citas/{ultima.id}/no-asistio").json()
         self.assertEqual(d["inasistencias"], 3)
         self.assertEqual(d["telefono"], "3192846956")
         self.assertFalse(d["bloqueado"])
@@ -785,8 +811,9 @@ class InasistenciaTest(TestCase):
         """Ningun numero de inasistencias veta a nadie automaticamente."""
         from negocios.models import TelefonoBloqueado
         for h in (5, 4, 3, 2, 1):
-            c = self._cita(timezone.localtime() - timedelta(hours=h))
-            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+            c = self._cita(-timedelta(hours=h))
+            with self._congelar():
+                self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
         self.assertEqual(TelefonoBloqueado.objects.count(), 0)
 
     def test_las_inasistencias_se_cuentan_por_telefono(self):
@@ -798,8 +825,9 @@ class InasistenciaTest(TestCase):
             establecimiento=self.est, nombre="Santiago Castro",
             telefono="3192846956", acepta_datos=True)
         for cli in (self.cliente, otro):
-            c = self._cita(timezone.localtime() - timedelta(hours=2), cliente=cli)
-            self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
+            c = self._cita(-timedelta(hours=2), cliente=cli)
+            with self._congelar():
+                self.api.patch(f"/api/v1/citas/{c.id}/no-asistio")
         self.assertEqual(
             ClienteService.contar_inasistencias(self.est, "3192846956"), 2)
 
@@ -808,7 +836,7 @@ class InasistenciaTest(TestCase):
         Establecimiento.objects.create(
             propietario=otro, nombre="Ajena", tipo=Establecimiento.Tipo.SPA,
             telefono="300", slug="ajena")
-        cita = self._cita(timezone.localtime() - timedelta(minutes=10))
+        cita = self._cita(-timedelta(minutes=10))
         api2 = APIClient(); api2.force_authenticate(user=otro)
         with self.assertRaises(Cita.DoesNotExist):
             api2.patch(f"/api/v1/citas/{cita.id}/no-asistio")
@@ -1154,3 +1182,45 @@ class EstructuraDelTextoTest(TestCase):
     def test_conserva_el_enlace_para_cancelar(self):
         texto = RecordatorioService.texto(self.notif, hoy=date(2026, 8, 24))
         self.assertIn("/p/turco", texto)
+
+
+class RelojDeterministaTest(TestCase):
+    """La suite no puede depender de la hora a la que se ejecute.
+
+    Regresion de un defecto real: el molde de InasistenciaTest construia la
+    cita desde `timezone.localtime()` y guardaba fecha y hora por separado.
+    Si la hora de fin cruzaba la medianoche, quedaba ANTES que la de inicio
+    dentro de la misma fecha y reventaba ck_cita_fin_mayor_inicio. La suite
+    fallaba entre las 20:30 y las 21:00, y un evaluador que clonara el
+    repositorio de noche habria visto un error que no existia.
+    """
+
+    def test_ninguna_cita_de_prueba_puede_terminar_antes_de_empezar(self):
+        """La restriccion de la base, ejercitada a proposito: es la que
+        cazaba el defecto, y debe seguir ahi."""
+        from django.db import IntegrityError, transaction
+        from negocios.models import ClienteFinal
+        u = Usuario.objects.create_user(email="reloj@b.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="Barbería Reloj",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300", slug="reloj")
+        prof = Profesional.objects.create(establecimiento=est, nombre="Ana")
+        serv = Servicio.objects.create(
+            establecimiento=est, nombre="Corte", duracion_min=30)
+        cli = ClienteFinal.objects.create(
+            establecimiento=est, nombre="Wilson", telefono="3192846956",
+            acepta_datos=True)
+        with self.assertRaises(IntegrityError) as capturado:
+            with transaction.atomic():
+                Cita.objects.create(
+                    establecimiento=est, profesional=prof, servicio=serv,
+                    cliente=cli, fecha=date(2026, 9, 22),
+                    hora_inicio=time(23, 45), hora_fin=time(0, 15),
+                    estado=Cita.Estado.CONFIRMADA)
+        self.assertIn("ck_cita_fin_mayor_inicio", str(capturado.exception))
+
+    def test_el_molde_de_inasistencias_usa_una_hora_fija(self):
+        """Si alguien vuelve a colgar el molde del reloj del sistema, esto
+        avisa. El ahora congelado es lo que hace la prueba reproducible."""
+        self.assertEqual(InasistenciaTest.AHORA.hour, 12)
+        self.assertEqual(InasistenciaTest.AHORA.year, 2026)

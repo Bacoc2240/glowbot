@@ -1014,3 +1014,47 @@ class PantallaClientesTests(TestCase):
         vivas = self._vivas("/panel/horarios")
         self.assertNotIn("Clientes con inasistencias", vivas)
         self.assertNotIn("cargarClientes", vivas)
+
+
+class ZonaPublicaInexistenteTests(TestCase):
+    """Un enlace que no existe no puede quedarse en «Cargando…».
+
+    El JavaScript SI manejaba el 404 y empujaba un mensaje al chat, pero la
+    cabecera pintaba `negocio.nombre || 'Cargando…'` y se quedaba prometiendo
+    una carga que ya habia terminado, encima de un mensaje que decia lo
+    contrario.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="pub@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Barbería El Turco",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            slug="el-turco")
+
+    def test_un_slug_inexistente_devuelve_404(self):
+        """Se resuelve en el SERVIDOR. Antes se servia la pagina a cualquier
+        slug con estado 200, que ademas mentia a buscadores y monitores."""
+        self.assertEqual(self.client.get("/p/no-existe").status_code, 404)
+
+    def test_un_slug_valido_sigue_sirviendo_la_pagina(self):
+        self.assertEqual(self.client.get("/p/el-turco").status_code, 200)
+
+    def test_un_establecimiento_desactivado_tambien_da_404(self):
+        self.est.activo = False
+        self.est.save(update_fields=["activo"])
+        self.assertEqual(self.client.get("/p/el-turco").status_code, 404)
+
+    def test_la_cabecera_deja_de_prometer_una_carga_terminada(self):
+        html = self.client.get("/p/el-turco").content.decode()
+        self.assertIn("fallo ? 'No disponible' : 'Cargando…'", html)
+
+    def test_la_pagina_distingue_el_negocio_suspendido_del_inexistente(self):
+        """Un 403 es un negocio REAL con la suscripcion vencida. Decirle a su
+        cliente que «no existe» es informacion falsa sobre un negocio que si
+        existe, y el dueño se entera por un cliente molesto."""
+        vivas = "\n".join(
+            l for l in self.client.get("/p/el-turco").content.decode().splitlines()
+            if not l.strip().startswith("//"))
+        self.assertIn("r.status === 403", vivas)
+        self.assertIn("no está recibiendo reservas", vivas)

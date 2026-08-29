@@ -41,12 +41,12 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
 </head>
 <body x-data="chat('{{ slug }}')" x-init="iniciar()">
   <header>
-    <b x-text="negocio.nombre || 'Cargando…'"></b>
+    <b x-text="negocio.nombre || (fallo ? 'No disponible' : 'Cargando…')"></b>
     <div class="sub">Asistente GlowBot · agenda tu cita aquí</div>
   </header>
 
   <div id="hilo" x-ref="hilo">
-    <div class="aviso">
+    <div class="aviso" x-show="!fallo">
       Para agendar te pediremos aceptar que <b x-text="negocio.nombre"></b>
       trate tu nombre y teléfono para gestionar tu cita.
       <a :href="'/p/' + slug + '/privacidad'" target="_blank">Cómo tratamos tus datos</a>
@@ -65,13 +65,34 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
 <script>
 function chat(slug) {
   return {
-    slug, negocio: {}, mensajes: [], texto: "", cargando: false,
+    slug, negocio: {}, mensajes: [], texto: "", cargando: false, fallo: false,
     sessionId: localStorage.getItem("glowbot_sesion_" + slug) || null,
 
     async iniciar() {
-      const r = await fetch(`/api/v1/p/${this.slug}`);
+      let r;
+      try {
+        r = await fetch(`/api/v1/p/${this.slug}`);
+      } catch (e) {
+        this.fallo = true;
+        this.mensajes.push({ rol: "bot", texto:
+          "No pudimos conectarnos. Revisa tu conexión e intenta de nuevo." });
+        return;
+      }
       if (!r.ok) {
-        this.mensajes.push({ rol: "bot", texto: "No encontramos este establecimiento." });
+        this.fallo = true;
+        // Un 403 es un negocio REAL con la suscripción vencida, y la API ya
+        // redacta un mensaje neutro que no revela su estado de pago. Decirle
+        // a su cliente que el establecimiento «no existe» sería información
+        // falsa sobre un negocio que sí existe, y el dueño se enteraría por
+        // un cliente molesto.
+        let texto = "No encontramos este establecimiento. Revisa el enlace "
+                  + "con el negocio.";
+        if (r.status === 403) {
+          const d = await r.json().catch(() => null);
+          texto = (d && d.error) || "Este negocio no está recibiendo reservas "
+                + "en línea por el momento.";
+        }
+        this.mensajes.push({ rol: "bot", texto });
         return;
       }
       this.negocio = await r.json();

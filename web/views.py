@@ -8,7 +8,7 @@ import logging
 
 from django.contrib.auth import views as auth_views
 from django.db import OperationalError, connections
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.shortcuts import render
 from django.views.generic import TemplateView
 
@@ -139,7 +139,22 @@ class SuscripcionView(TemplateView):
 
 
 def chat_publico(request, slug):
-    """Página del cliente final: chat con el asistente IA (RF-09, RF-10)."""
+    """Página del cliente final: chat con el asistente IA (RF-09, RF-10).
+
+    El slug se resuelve AQUI y no solo en el navegador. Antes se servia la
+    pagina a cualquier slug y era el JavaScript quien descubria, ya cargado
+    todo, que el establecimiento no existia: la cabecera se quedaba en
+    «Cargando…» para siempre encima de un mensaje que decia lo contrario.
+
+    Resolverlo en el servidor tambien corrige la semantica: /p/loquesea
+    devolvia 200 a buscadores y monitores, y ahora devuelve 404.
+
+    Ojo: se comprueba la EXISTENCIA, no la vigencia del pago. Un negocio
+    suspendido existe, y su pagina debe explicarlo con el mensaje neutro que
+    ya redacta la API, no fingir que no existe.
+    """
+    if not Establecimiento.objects.filter(slug=slug, activo=True).exists():
+        raise Http404("No existe un establecimiento con ese enlace.")
     return render(request, "web/chat.html", {"slug": slug})
 
 
