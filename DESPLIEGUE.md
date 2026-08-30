@@ -125,23 +125,69 @@ CLOUDINARY_API_KEY     <api key>
 CLOUDINARY_API_SECRET  <api secret>
 ```
 
-## 9. Correo (recuperación de contraseña)
+## 9. Correo (Resend por API HTTP, no SMTP)
 
-Con Gmail: activa la verificación en dos pasos y crea una **contraseña de
-aplicación** de 16 dígitos.
+**Railway bloquea el puerto 587 fuera del plan Pro.** Cualquier configuración
+de SMTP —Gmail incluido— se queda colgada hasta agotar el tiempo de espera.
+No es un problema de credenciales y no se arregla cambiando de proveedor de
+correo: el puerto de salida está cerrado. La única vía en el plan Hobby es un
+proveedor que acepte el envío por API HTTP.
+
+Se usa **Resend** a través de `django-anymail`:
 
 ```
-EMAIL_BACKEND       django.core.mail.backends.smtp.EmailBackend
-EMAIL_HOST          smtp.gmail.com
-EMAIL_PORT          587
-EMAIL_USE_TLS       True
-EMAIL_HOST_USER     tu-correo@gmail.com
-EMAIL_HOST_PASSWORD <contraseña de aplicación>
+EMAIL_BACKEND       anymail.backends.resend.EmailBackend
+RESEND_API_KEY      re_...
 DEFAULT_FROM_EMAIL  GlowBot <no-responder@glowbot.com.co>
 ```
 
 Sin estas variables el sistema no falla: sigue imprimiendo en consola, pero
-los usuarios no reciben el correo de recuperación.
+nadie recibe el correo de recuperación ni el aviso de comprobante.
+
+### Autenticación del dominio
+
+En Resend → Domains, añade `glowbot.com.co` y copia los registros que te dé
+a Cloudflare. Hacen falta los tres:
+
+| Tipo | Para qué sirve |
+| ---- | -------------- |
+| TXT (SPF) | Declara qué servidores pueden enviar en nombre del dominio |
+| TXT (DKIM) | Firma cada mensaje para que el receptor verifique que no se alteró |
+| TXT (`_dmarc`) | Dice al receptor qué hacer si SPF o DKIM fallan |
+
+**Los registros de Resend van con el proxy desactivado.** Son TXT, así que
+Cloudflare no ofrece proxy para ellos, pero conviene saberlo por si algún día
+se añade un CNAME de seguimiento: un registro de correo detrás del proxy deja
+de resolver a lo que el receptor espera.
+
+Verifica que SPF y DKIM salen en PASS antes de dar el correo por bueno; el
+propio panel de Resend lo muestra.
+
+### DMARC
+
+`_dmarc` es un TXT y **empieza siempre en `p=none`**:
+
+```
+Nombre:    _dmarc
+Contenido: v=DMARC1; p=none; rua=mailto:privacidad@glowbot.com.co; fo=1
+```
+
+`p=none` no rechaza nada: solo pide informes. Se empieza así a propósito.
+Poner `p=reject` de entrada rompe en silencio cualquier flujo de envío que
+uno haya olvidado, y en este proyecto hay varios (recuperación de contraseña,
+aviso de comprobante al superadmin, recordatorios). El correo rebotado no
+avisa al remitente de que la culpa es de DMARC: simplemente no llega.
+
+El endurecimiento va por etapas, y cada una espera a tener tráfico real:
+
+1. `p=none` — recoger informes unas semanas, hasta ver todos los flujos.
+2. `p=quarantine` — lo que falle va a spam, todavía recuperable.
+3. `p=reject` — lo que falle se rechaza. Solo cuando los informes lleven
+   tiempo limpios.
+
+Los informes llegan a `privacidad@glowbot.com.co` como XML comprimido. `fo=1`
+pide informe también cuando una de las dos verificaciones falla, no solo
+cuando fallan las dos.
 
 ## 10. Verificar en la URL de Railway ANTES del dominio propio
 
@@ -213,16 +259,57 @@ Cloudflare del camino de validación de Let's Encrypt.
 Si agotas el límite quedas bloqueado 7 días. Cambia una cosa, espera,
 verifica.
 
-## 14. Tarea programada de suspensión (RF-20)
+## 14. Los cron son servicios aparte, no tareas del servicio web
 
-**+ New → Cron Job**, apuntando al mismo repositorio:
+Hay **cuatro servicios** en el proyecto de Railway, no uno:
 
-```
-Schedule:  0 11 * * *
-Command:   python manage.py verificar_suscripciones
-```
+| Servicio | Qué hace | Cuándo |
+| -------- | -------- | ------ |
+| `web` | gunicorn | siempre |
+| `Postgres` | base de datos | siempre |
+| `cron` | `verificar_suscripciones` | `0 11 * * *` |
+| `cron-recordatorios` | `generar_recordatorios` | `0 * * * *` |
 
-Railway usa **UTC**: `0 11 * * *` son las 6:00 a.m. en Colombia.
+Cada uno se crea con **+ New → GitHub Repo**, apuntando al mismo repositorio,
+y se le asigna su propio archivo de configuración en **Settings → Config-as-code**:
+
+| Servicio | Archivo |
+| -------- | ------- |
+| `web` | `railway.json` |
+| `cron` | `railway.cron.json` |
+| `cron-recordatorios` | `railway.recordatorios.json` |
+
+Se hace así y no con el planificador integrado del servicio web porque un
+cron dentro del proceso de gunicorn se ejecutaría una vez por réplica y
+moriría con ella. Como servicio propio, el comando y su horario viven en el
+repositorio: se revisan en el diff y se recuperan clonando, en lugar de estar
+solo en un formulario de la interfaz que nadie puede auditar.
+
+Railway usa **UTC**. `0 11 * * *` son las 6:00 a.m. en Colombia.
+
+### ⚠ Las variables por referencia exigen redesplegar al consumidor
+
+Una variable escrita como `${{Postgres.DATABASE_URL}}` **se resuelve en el
+momento del despliegue, no en cada arranque**. Si cambias el valor en el
+servicio de origen, los servicios que lo referencian siguen con el valor
+viejo hasta que se los redespliegue uno por uno.
+
+Es la causa típica de «cambié la variable y no pasó nada», y es peor en los
+cron: un servicio web que falla se ve enseguida, pero un cron con la clave
+vieja falla en silencio a las 6 de la mañana y nadie se entera hasta que un
+establecimiento reclama.
+
+Cada uno de los cuatro servicios necesita sus propias variables. Los dos cron
+necesitan al menos `DATABASE_URL`, `SECRET_KEY` y `SITIO_URL`; el de
+recordatorios además las de correo.
+
+### ⚠ `SITIO_URL` gobierna lo que ven los clientes finales
+
+Desde el paquete del código QR, `SITIO_URL` decide la dirección que se
+muestra en el panel, la que se copia, la que codifica el código QR impreso y
+la que reciben los clientes en los recordatorios. Debe ser
+`https://glowbot.com.co`, **sin barra final**. Un valor equivocado aquí no da
+ningún error: simplemente manda a todo el mundo al sitio que no es.
 
 ## 15. Verificación final
 
@@ -253,11 +340,22 @@ resultado queda en la imagen.
 **`/salud` verifica proceso y base de datos.** Un proceso vivo con la base
 caída no está sano; Railway debe reiniciarlo en vez de enviarle tráfico.
 
-## Pendientes tras el despliegue
+## Infraestructura ya resuelta
 
-1. **Respaldos** del PostgreSQL en Railway, o `pg_dump` periódico.
-2. **Tope de gasto** en la cuenta de Anthropic: en producción cada
-   conversación consume tokens reales.
-3. **Aviso de privacidad visible** en la zona pública (Ley 1581 de 2012).
-4. **Vigilar el consumo** la primera semana: los 5 USD del plan Hobby son
-   crédito de uso compartido entre la aplicación y la base de datos.
+1. **Respaldo diario automático.** Tarea de Windows a las 8 p.m.: `pg_dump`
+   por túnel cifrado de la CLI de Railway, verificación con
+   `pg_restore --list`, copia a OneDrive y rotación de 14 días. Guiones en
+   `C:\Users\ASUS\Respaldos\glowbot\`. Ensayo de restauración hecho.
+2. **Topes de gasto:** Railway 10 USD, Anthropic 10 USD con aviso a los 3.
+3. **Monitoreo:** dos monitores en UptimeRobot sobre `/salud`, uno HTTP(s) y
+   otro de palabra clave que alerta si aparece `base_de_datos_no_disponible`.
+4. **Aviso de privacidad** publicado en la zona pública (Ley 1581 de 2012).
+5. **Correo autenticado:** SPF y DKIM en PASS; DMARC en `p=none`.
+
+## Pendientes
+
+1. **Endurecer DMARC** a `p=quarantine` y después a `p=reject`, cuando los
+   informes lleven semanas limpios con tráfico real de todos los flujos.
+2. **Subir `SECURE_HSTS_SECONDS` a 31536000** ahora que el dominio lleva
+   tiempo estable.
+3. **WhatsApp Cloud API** para el envío automático de recordatorios (fase 2).
