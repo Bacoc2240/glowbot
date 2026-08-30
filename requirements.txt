@@ -17,3 +17,11 @@ dj-database-url
 # ── Correo transaccional (Resend via API HTTP) ──
 django-anymail
 
+# ── Codigo QR del enlace publico (panel) ──
+# Version fijada a proposito: es la unica dependencia que se fija en este
+# paquete. Fijar las demas se hace aparte, para que si al congelar DRF o
+# cloudinary se rompe algo, se sepa que commit lo causo.
+# Genera el PNG apoyandose en Pillow, que ya es dependencia del modulo de
+# comprobantes.
+qrcode==8.2
+

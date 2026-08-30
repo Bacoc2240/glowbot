@@ -493,3 +493,210 @@ class ListaClientesTests(TestCase):
         clientes = {c["nombre"]: c for c in
                     self.api.get("/api/v1/clientes").json()["clientes"]}
         self.assertEqual(clientes["Andrea Santos"]["inasistencias"], 1)
+
+
+class CodigoQrEnlacePublicoTests(TestCase):
+    """El codigo QR del enlace publico y la fuente unica de la direccion.
+
+    Dos reglas se defienden aqui. La primera: la direccion publica se arma
+    en el servidor a partir de SITIO_URL, no en el navegador a partir del
+    dominio por el que se entro. Antes el panel la calculaba con
+    window.location.origin mientras los recordatorios y el asistente la
+    tomaban de SITIO_URL; dos fuentes que coinciden solo mientras nadie
+    entre por el dominio de Railway. Con texto en pantalla eso es una
+    molestia, con un codigo impreso es un error que se descubre cuando un
+    cliente ya no puede agendar.
+
+    La segunda: el codigo y el enlace no pueden divergir nunca, ni siquiera
+    un instante despues de cambiar la direccion.
+    """
+
+    ENLACE_LARGO = "https://glowbot.com.co/p/barberia-eduardo"
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="duenio@barberia.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Barbería Eduardo",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            slug="barberia-eduardo")
+        self.api.force_authenticate(user=self.duenio)
+
+    # ── El generador ──────────────────────────────────────────────
+
+    def _pixeles(self, png_bytes):
+        import io
+        from PIL import Image
+        return list(Image.open(io.BytesIO(png_bytes)).convert("L").getdata())
+
+    def _referencia(self, enlace):
+        """Codigo QR construido aqui, sin pasar por el modulo bajo prueba.
+
+        Es deliberadamente una reimplementacion y no una llamada a
+        png_del_enlace: el arnes de mutacion demostro que comparar la
+        salida del generador contra si misma no distingue nada. Con el
+        generador ignorando su argumento, los dos lados de la igualdad
+        devolvian el mismo PNG constante y la prueba pasaba con el codigo
+        roto.
+        """
+        import io
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_H
+        codigo = qrcode.QRCode(
+            error_correction=ERROR_CORRECT_H, box_size=24, border=4)
+        codigo.add_data(enlace)
+        codigo.make(fit=True)
+        memoria = io.BytesIO()
+        codigo.make_image(fill_color="black", back_color="white").save(
+            memoria, format="PNG")
+        return memoria.getvalue()
+
+    def test_el_codigo_representa_exactamente_el_enlace_que_se_le_pide(self):
+        """Se compara contra un codigo de referencia construido aqui con los
+        parametros documentados. Si el generador codificara otra direccion
+        --el aviso de privacidad, la portada, el enlace sin el slug-- los
+        pixeles no coincidirian. Comparar pixeles y no bytes del PNG evita
+        que la prueba se rompa si cambia la compresion de la libreria."""
+        from negocios.qr import png_del_enlace
+        self.assertEqual(
+            self._pixeles(png_del_enlace(self.ENLACE_LARGO)),
+            self._pixeles(self._referencia(self.ENLACE_LARGO)),
+            "El codigo generado no coincide con el del enlace pedido",
+        )
+
+    def test_dos_direcciones_distintas_producen_codigos_distintos(self):
+        """Suena obvio y no lo es: un generador que ignorara su argumento y
+        devolviera siempre el mismo codigo pasaria cualquier prueba que solo
+        mirase el formato del archivo."""
+        from negocios.qr import png_del_enlace
+        self.assertNotEqual(
+            png_del_enlace("https://glowbot.com.co/p/barberia-eduardo"),
+            png_del_enlace("https://glowbot.com.co/p/salon-carolina"),
+        )
+
+    def test_conserva_el_margen_blanco_que_exige_la_norma(self):
+        """El margen es la parte fragil del formato y por eso se mide.
+
+        Se comprobo empiricamente que comerse los cuatro modulos de borde
+        deja el codigo ilegible, aunque comerse tres todavia funcione. El
+        archivo debe llevar su propio marco incorporado para que siga
+        leyendose aunque se pegue sobre un fondo oscuro.
+        """
+        import io
+        from PIL import Image
+        from negocios.qr import MARGEN_MODULOS, PIXELES_POR_MODULO, png_del_enlace
+
+        imagen = Image.open(io.BytesIO(png_del_enlace(self.ENLACE_LARGO)))
+        imagen = imagen.convert("L")
+        margen = MARGEN_MODULOS * PIXELES_POR_MODULO
+        recorte = imagen.crop((0, 0, imagen.width, margen))
+        self.assertEqual(
+            recorte.getextrema(), (255, 255),
+            "La franja superior del margen no esta completamente en blanco",
+        )
+        # Y justo despues del margen ya empieza el simbolo: si no hubiera
+        # nada negro ahi, el "margen" seria en realidad toda la imagen.
+        cuerpo = imagen.crop((0, margen, imagen.width, margen + 1))
+        self.assertEqual(cuerpo.getextrema()[0], 0)
+
+    def test_el_nivel_de_correccion_alto_se_mantiene(self):
+        """El destino real de este codigo es un adhesivo en un mostrador que
+        se raya y se ensucia. Con correccion H la URL de una barberia ocupa
+        37 modulos; bajar a M la dejaria en 29 y el lado del archivo cambiaria.
+        Medir el lado es la forma barata de fijar el nivel."""
+        import io
+        from PIL import Image
+        from negocios.qr import PIXELES_POR_MODULO, MARGEN_MODULOS, png_del_enlace
+
+        imagen = Image.open(io.BytesIO(png_del_enlace(self.ENLACE_LARGO)))
+        modulos = (37 + 2 * MARGEN_MODULOS)
+        self.assertEqual(imagen.size, (modulos * PIXELES_POR_MODULO,) * 2)
+
+    # ── El endpoint ───────────────────────────────────────────────
+
+    def test_el_enlace_sale_de_la_configuracion_y_no_del_dominio_visitado(self):
+        """La prueba que justifica todo el cambio.
+
+        Se entra por el dominio de Railway y se exige que la direccion
+        devuelta siga siendo la del dominio propio. Calculada en el
+        navegador, esta peticion habria devuelto la de Railway y el dueno
+        habria impreso un codigo apuntando a un dominio que manana puede
+        no existir.
+        """
+        from django.test import override_settings
+        with override_settings(SITIO_URL="https://glowbot.com.co",
+                               ALLOWED_HOSTS=["*"]):
+            r = self.api.get("/api/v1/mi-establecimiento",
+                             HTTP_HOST="glowbot-production.up.railway.app")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["enlace_publico"],
+                         "https://glowbot.com.co/p/barberia-eduardo")
+
+    def test_una_barra_sobrante_en_la_configuracion_no_parte_el_enlace(self):
+        """SITIO_URL se escribe a mano en las variables de Railway y acabar
+        con barra es el desliz mas comun. Sin limpiarla el enlace saldria
+        con doble barra, que el navegador tolera pero afea el codigo y el
+        mensaje que recibe el cliente final."""
+        from django.test import override_settings
+        with override_settings(SITIO_URL="https://glowbot.com.co/"):
+            r = self.api.get("/api/v1/mi-establecimiento")
+        self.assertEqual(r.json()["enlace_publico"],
+                         "https://glowbot.com.co/p/barberia-eduardo")
+
+    def test_el_codigo_viaja_con_los_datos_del_negocio_listo_para_mostrar(self):
+        """Llega como data URI porque una etiqueta <img> no envia la cabecera
+        Authorization: servirlo en un endpoint aparte obligaria al panel a
+        pedirlo con fetch y a revocar el objeto en cada cambio de direccion."""
+        r = self.api.get("/api/v1/mi-establecimiento")
+        self.assertTrue(r.json()["qr"].startswith("data:image/png;base64,"))
+
+    def test_el_codigo_representa_el_mismo_enlace_que_se_muestra(self):
+        """La divergencia entre lo que el dueno lee y lo que el codigo lleva
+        dentro es invisible hasta que alguien escanea. Se comprueba que son
+        la misma direccion, no que ambos campos existan."""
+        import base64
+        datos = self.api.get("/api/v1/mi-establecimiento").json()
+        recibido = base64.b64decode(datos["qr"].split(",", 1)[1])
+        self.assertEqual(self._pixeles(recibido),
+                         self._pixeles(self._referencia(datos["enlace_publico"])))
+
+    def test_al_cambiar_la_direccion_el_codigo_deja_de_ser_el_anterior(self):
+        """Un codigo desactualizado es peor que uno ausente: el dueno lo
+        manda a imprimir sin sospechar nada y los clientes llegan a una
+        pagina que ya no existe."""
+        antes = self.api.get("/api/v1/mi-establecimiento").json()
+        r = self.api.patch("/api/v1/mi-establecimiento",
+                           {"slug": "barberia-don-eduardo"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        despues = self.api.get("/api/v1/mi-establecimiento").json()
+
+        self.assertNotEqual(antes["qr"], despues["qr"])
+        self.assertTrue(despues["enlace_publico"].endswith("/p/barberia-don-eduardo"))
+        import base64
+        self.assertEqual(
+            self._pixeles(base64.b64decode(despues["qr"].split(",", 1)[1])),
+            self._pixeles(self._referencia(despues["enlace_publico"])),
+        )
+
+    def test_cada_duenio_recibe_el_codigo_de_su_propio_negocio(self):
+        """El establecimiento se deriva del token, no de un parametro, de
+        modo que no hay forma de pedir el codigo de otro inquilino. La
+        prueba deja constancia de ese aislamiento (RF-02, Ley 1581)."""
+        from rest_framework.test import APIClient
+        otra = Usuario.objects.create_user(
+            email="otra@salon.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=otra, nombre="Salón Carolina",
+            tipo=Establecimiento.Tipo.SALON, telefono="3009998888",
+            slug="salon-carolina")
+        ajena = APIClient()
+        ajena.force_authenticate(user=otra)
+
+        mio = self.api.get("/api/v1/mi-establecimiento").json()
+        suyo = ajena.get("/api/v1/mi-establecimiento").json()
+
+        self.assertTrue(mio["enlace_publico"].endswith("/p/barberia-eduardo"))
+        self.assertTrue(suyo["enlace_publico"].endswith("/p/salon-carolina"))
+        self.assertNotEqual(mio["qr"], suyo["qr"])

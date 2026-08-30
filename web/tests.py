@@ -1058,3 +1058,56 @@ class ZonaPublicaInexistenteTests(TestCase):
             if not l.strip().startswith("//"))
         self.assertIn("r.status === 403", vivas)
         self.assertIn("no está recibiendo reservas", vivas)
+
+
+class TarjetaCodigoQrTests(TestCase):
+    """El codigo QR dentro de la tarjeta del enlace publico.
+
+    Mismo limite conocido que en las otras pruebas de pantalla: esto es
+    JavaScript y una prueba de Django no lo ejecuta. Solo puede verificar
+    que el enganche existe y no esta comentado. El recorrido en el
+    navegador cubre el resto.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel").content.decode()
+        return "\n".join(linea for linea in html.splitlines()
+                         if not linea.strip().startswith("//"))
+
+    def test_la_tarjeta_muestra_el_codigo_y_ofrece_descargarlo(self):
+        """Se comprueba el ENGANCHE, no que el nombre de la funcion aparezca:
+        buscar solo "descargarQr" pasaria con el boton desconectado, porque
+        la definicion sigue en el JavaScript y la cadena seguiria estando."""
+        vivas = self._vivas()
+        self.assertIn('@click="descargarQr()"', vivas)
+        self.assertIn(':src="est && est.qr"', vivas)
+
+    def test_el_panel_muestra_el_enlace_que_arma_el_servidor(self):
+        """La regla que motivo el cambio: si la pantalla volviera a
+        calcularlo con window.location.origin, el dueno podria ver una
+        direccion distinta de la que codifica su QR y de la que reciben
+        sus clientes en los recordatorios."""
+        vivas = self._vivas()
+        self.assertIn("this.est.enlace_publico", vivas)
+        self.assertNotIn('this.origen() + "/p/"', vivas)
+
+    def test_al_guardar_la_direccion_la_pantalla_relee_el_negocio(self):
+        """El caso que ninguna prueba del API puede cubrir.
+
+        PATCH y GET siguen respondiendo bien aunque la pantalla parchee el
+        slug en memoria y se quede con el codigo QR viejo. El defecto vive
+        entero en el navegador, y su consecuencia es la peor posible: un
+        codigo desactualizado que el dueno manda a imprimir sin sospechar
+        nada. Se busca la secuencia del guardado, no la carga inicial, que
+        tambien llama a cargarEstablecimiento().
+        """
+        vivas = " ".join(self._vivas().split())
+        self.assertIn("await this.cargarEstablecimiento(); this.okSlug = d.aviso;",
+                      vivas)
+        self.assertNotIn("this.est.slug = d.slug", vivas)
+
+    def test_la_tarjeta_advierte_que_no_se_recorte_el_borde(self):
+        """El margen blanco es la parte fragil del formato: comerse los
+        cuatro modulos deja el codigo ilegible. Es lo unico que el dueno
+        puede estropear por su cuenta al recortarlo para una historia."""
+        self.assertIn("No recortes el borde blanco", self._vivas())

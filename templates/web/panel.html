@@ -15,6 +15,27 @@
          :href="'https://wa.me/?text=' + encodeURIComponent('Agenda tu cita aquí: ' + enlace())"
          target="_blank">Compartir</a>
     </div>
+
+    <!-- Codigo QR: el mismo enlace, para el mundo fisico. El boton
+         Compartir de arriba cubre el canal digital, donde un enlace
+         tocable siempre gana; el QR sirve donde no se puede tocar nada:
+         el mostrador, la vitrina, el espejo, la tarjeta impresa. -->
+    <div x-show="est && est.qr"
+         style="display:flex; gap:12px; align-items:center;
+                border-top:1px solid var(--borde); margin-top:10px;
+                padding-top:10px">
+      <img :src="est && est.qr" alt="Codigo QR de tu enlace"
+           width="120" height="120"
+           style="width:120px; height:120px; flex:none;
+                  background:#fff; border-radius:6px">
+      <div style="flex:1; min-width:0">
+        <p class="muted" style="margin:0 0 8px">
+          Imprimelo y pegalo en tu local. Quien lo escanee llega directo a
+          tu agenda. No recortes el borde blanco: sin el, deja de leerse.
+        </p>
+        <button @click="descargarQr()" style="width:100%">Descargar QR</button>
+      </div>
+    </div>
     <p class="muted" style="margin-top:8px">
       <a href="#" @click.prevent="editando = !editando">Cambiar dirección</a>
     </p>
@@ -137,13 +158,33 @@ function panel() {
       await this.cargarRecordatorios();
     },
     origen() { return window.location.origin; },
-    enlace() { return this.est ? this.origen() + "/p/" + this.est.slug : ""; },
+    // El enlace lo arma el servidor a partir de SITIO_URL, la misma fuente
+    // que usan los recordatorios y el asistente. Calcularlo aqui con
+    // window.location.origin hacia que el panel pudiera mostrar una
+    // direccion y el sistema enviar otra a los clientes finales.
+    enlace() { return this.est ? this.est.enlace_publico : ""; },
     async cargarEstablecimiento() {
       const r = await api("/mi-establecimiento");
       if (r && r.ok) {
         this.est = await r.json();
         this.slugNuevo = this.est.slug;
       }
+    },
+    descargarQr() {
+      // Se convierte el data URI en Blob en lugar de colgar el atributo
+      // download directamente del data URI: en Safari de iOS esa via es
+      // irregular y el archivo no siempre llega a la galeria.
+      const partes = (this.est.qr || "").split(",");
+      if (partes.length !== 2) return;
+      const binario = atob(partes[1]);
+      const bytes = new Uint8Array(binario.length);
+      for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "glowbot-" + this.est.slug + ".png";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     },
     async copiar() {
       try {
@@ -177,8 +218,11 @@ function panel() {
         this.errorSlug = (d && d.slug && d.slug[0]) || "No se pudo cambiar la direccion.";
         return;
       }
-      this.est.slug = d.slug;
-      this.slugNuevo = d.slug;
+      // Se relee el establecimiento en vez de parchear el slug en memoria:
+      // el enlace y el codigo QR se calculan en el servidor y quedarian
+      // apuntando a la direccion vieja. Un QR desactualizado es peor que
+      // uno ausente, porque el dueno lo imprime sin sospechar nada.
+      await this.cargarEstablecimiento();
       this.okSlug = d.aviso;
       this.editando = false;
     },

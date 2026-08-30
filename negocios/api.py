@@ -2,12 +2,14 @@
 Especificación de API §5 y §6. Todos exigen JWT y operan SOLO sobre el
 establecimiento del usuario autenticado (aislamiento multi-tenant, RF-02).
 """
+from django.conf import settings
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Establecimiento, HorarioBase, Profesional, Servicio
+from .qr import data_uri_del_enlace
 
 
 class _EstablecimientoMixin:
@@ -337,16 +339,48 @@ class _ProfesionalDelTenant(APIView):
 
 # ── Enlace público del establecimiento (Sprint 4.1) ──
 
+def enlace_publico_de(establecimiento):
+    """Dirección pública donde los clientes finales agendan.
+
+    Se deriva de ``SITIO_URL``, la misma variable que usan los recordatorios
+    y el asistente, para que lo que el dueño ve en el panel, lo que copia,
+    lo que codifica su código QR y lo que reciben sus clientes sean
+    siempre la misma dirección.
+    """
+    return f"{settings.SITIO_URL.rstrip('/')}/p/{establecimiento.slug}"
+
+
 class MiEstablecimientoSerializer(serializers.ModelSerializer):
     """Datos del propio negocio, incluido el slug que forma el enlace
     público. El slug es el activo comercial del cliente: es lo que comparte
     por WhatsApp, así que debe poder consultarlo siempre, no solo al
-    registrarse."""
+    registrarse.
+
+    El enlace se arma aquí, en el servidor, y no en el navegador. Antes el
+    panel lo calculaba con ``window.location.origin`` mientras los
+    recordatorios y el asistente lo tomaban de ``SITIO_URL``: dos fuentes de
+    verdad para la misma dirección, que coinciden solo mientras el dueño
+    entre por el dominio propio. Con texto en pantalla eso es una molestia;
+    con un código QR impreso es un error que solo se descubre cuando un
+    cliente ya no puede agendar. Una sola fuente elimina la posibilidad de
+    que el enlace que se muestra y el que se codifica difieran."""
+
+    enlace_publico = serializers.SerializerMethodField()
+    qr = serializers.SerializerMethodField()
 
     class Meta:
         model = Establecimiento
-        fields = ["nombre", "slug", "tipo", "telefono", "direccion", "plan"]
+        fields = [
+            "nombre", "slug", "tipo", "telefono", "direccion", "plan",
+            "enlace_publico", "qr",
+        ]
         read_only_fields = ["plan"]
+
+    def get_enlace_publico(self, obj):
+        return enlace_publico_de(obj)
+
+    def get_qr(self, obj):
+        return data_uri_del_enlace(enlace_publico_de(obj))
 
 
 # Rutas propias de la aplicacion que no pueden usarse como slug: si un
