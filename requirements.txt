@@ -1,27 +1,48 @@
-Django==4.2.*
-djangorestframework
-djangorestframework-simplejwt
-psycopg2-binary
-python-dotenv
-whitenoise
-gunicorn
-drf-spectacular
-anthropic
+# Dependencias de GlowBot, con version fija.
+#
+# Por que se fijan: sin `==`, cada despliegue de Railway resuelve la ultima
+# version publicada de cada paquete. Eso significa que un despliegue que solo
+# cambia una plantilla puede traer una version nueva de DRF o del cliente de
+# Anthropic, y si algo se rompe no hay forma de distinguir si fue el cambio
+# propio o la dependencia. Fijar convierte el despliegue en reproducible: el
+# mismo commit instala siempre lo mismo.
+#
+# Aqui se fijan solo las dependencias DIRECTAS, las que el codigo importa. Las
+# transitivas (anyio, pydantic, urllib3 y demas) las resuelve pip. Si algun dia
+# hiciera falta reproducibilidad total --incluidas las transitivas--, el
+# instrumento es un archivo aparte generado con `pip freeze`, no engordar este,
+# que dejaria de decir que usa el proyecto y pasaria a decir que hay instalado.
+#
+# Para subir una version: cambiarla aqui, correr la suite completa en local y
+# commitear ese cambio solo, para poder revertirlo aislado si el despliegue
+# falla.
+
+# ── Nucleo ──
+Django==4.2.30
+djangorestframework==3.17.2
+djangorestframework-simplejwt==5.5.1
+psycopg2-binary==2.9.12
+python-dotenv==1.2.3
+whitenoise==6.12.0
+gunicorn==26.2.0
+drf-spectacular==0.30.0
+
+# ── Asistente conversacional ──
+anthropic==1.2.0
+
 # ── Sprint 4.1: suscripciones y pagos ──
-python-dateutil
-Pillow
-django-cloudinary-storage
-cloudinary
+python-dateutil==2.9.0.post0
+Pillow==12.3.0
+django-cloudinary-storage==0.3.0
+cloudinary==1.46.2
+
 # ── Despliegue ──
-dj-database-url
+dj-database-url==3.1.2
+
 # ── Correo transaccional (Resend via API HTTP) ──
-django-anymail
+django-anymail==14.0
 
 # ── Codigo QR del enlace publico (panel) ──
-# Version fijada a proposito: es la unica dependencia que se fija en este
-# paquete. Fijar las demas se hace aparte, para que si al congelar DRF o
-# cloudinary se rompe algo, se sepa que commit lo causo.
 # Genera el PNG apoyandose en Pillow, que ya es dependencia del modulo de
 # comprobantes.
 qrcode==8.2
-

@@ -1160,3 +1160,56 @@ class PantallaReservaManualTests(TestCase):
         vivas = self._vivas()
         self.assertIn('href="/panel/clientes"', vivas)
         self.assertNotIn('api("/clientes", {', vivas)
+
+
+class DependenciasFijadasTests(TestCase):
+    """Toda dependencia declarada lleva version exacta.
+
+    Sin `==`, cada despliegue de Railway resuelve la ultima version publicada
+    de cada paquete. Un despliegue que solo cambia una plantilla puede traer
+    una version nueva de DRF o del cliente de Anthropic, y si algo se rompe no
+    hay forma de distinguir si fue el cambio propio o la dependencia.
+
+    Esta prueba existe para el descuido futuro: anadir una linea suelta a
+    requirements.txt es lo mas facil del mundo, y el fallo no aparece en el
+    momento sino semanas despues, en un despliegue que no tiene nada que ver.
+    """
+
+    def _lineas(self):
+        from pathlib import Path
+        from django.conf import settings
+        ruta = Path(settings.BASE_DIR) / "requirements.txt"
+        return [linea.strip() for linea in
+                ruta.read_text(encoding="utf-8").splitlines()
+                if linea.strip() and not linea.strip().startswith("#")]
+
+    def test_ninguna_dependencia_queda_sin_version(self):
+        sueltas = [l for l in self._lineas() if "==" not in l]
+        self.assertEqual(
+            sueltas, [],
+            f"Estas dependencias flotan y el despliegue deja de ser "
+            f"reproducible: {sueltas}")
+
+    def test_no_se_fija_una_serie_en_lugar_de_una_version(self):
+        """`Django==4.2.*` parece fijado y no lo esta: cualquier parche de la
+        serie entra sin avisar. Django lo cambio en 4.2.30 sin que el archivo
+        cambiara una letra."""
+        comodines = [l for l in self._lineas() if "*" in l]
+        self.assertEqual(comodines, [], f"Fijan una serie, no una versión: {comodines}")
+
+    def test_las_dependencias_que_el_codigo_importa_estan_declaradas(self):
+        """Guarda contra el caso inverso: que algo funcione en local porque
+        pip lo instalo como dependencia transitiva de otro paquete. El dia
+        que ese otro paquete deje de necesitarlo, el despliegue rompe."""
+        declaradas = {l.split("==")[0].lower().replace("-", "_")
+                      for l in self._lineas()}
+        # Nombre de importacion -> nombre en el indice de paquetes.
+        criticas = {
+            "django": "django", "rest_framework": "djangorestframework",
+            "anthropic": "anthropic", "qrcode": "qrcode", "PIL": "pillow",
+            "cloudinary": "cloudinary", "anymail": "django_anymail",
+            "dateutil": "python_dateutil",
+        }
+        faltan = [paquete for paquete in criticas.values()
+                  if paquete not in declaradas]
+        self.assertEqual(faltan, [], f"Se usan pero no se declaran: {faltan}")
