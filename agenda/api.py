@@ -11,10 +11,12 @@ from rest_framework.views import APIView
 from django.utils import timezone
 
 from negocios.clientes import ClienteService
-from negocios.models import Profesional, Servicio, TelefonoBloqueado
+from negocios.models import (ClienteFinal, Profesional, Servicio,
+                             TelefonoBloqueado)
 from .models import Cita, Notificacion
 from .recordatorios import RecordatorioService
-from .services import AgendaService, SlotNoDisponible
+from .services import (AgendaService, SlotNoDisponible,
+                       TelefonoVetado, TopeCitasAlcanzado)
 
 
 class DisponibilidadView(APIView):
@@ -42,9 +44,46 @@ class DisponibilidadView(APIView):
 
 
 class CitaSerializer(serializers.ModelSerializer):
+    """Serializador de citas, con las relaciones acotadas al inquilino.
+
+    Las tres colas se resuelven por peticion y arrancan vacias. Con la cola
+    por defecto de DRF --``objects.all()``, es decir, de todos los
+    establecimientos-- este endpoint aceptaba el profesional y el servicio
+    de otra barberia y creaba la cita con un 201 limpio. Dos consecuencias,
+    y la segunda es peor que la primera: como la restriccion EXCLUDE opera
+    sobre el profesional, un dueno podia ocupar la agenda ajena y no solo
+    ensuciar la suya; y un ``cliente`` sin acotar significaba agendar a un
+    titular del que responde otro Responsable, que es exactamente el
+    aislamiento que exige la Ley 1581 (RF-02).
+
+    Arrancar en ``none()`` y no en ``all()`` importa: si el contexto no
+    llega, el resultado es un 400 que se ve en la primera prueba, no una
+    fuga que se descubre en produccion.
+    """
+
     profesional_nombre = serializers.CharField(source="profesional.nombre", read_only=True)
     servicio_nombre = serializers.CharField(source="servicio.nombre", read_only=True)
     cliente_nombre = serializers.CharField(source="cliente.nombre", read_only=True)
+
+    profesional = serializers.PrimaryKeyRelatedField(
+        queryset=Profesional.objects.none())
+    servicio = serializers.PrimaryKeyRelatedField(
+        queryset=Servicio.objects.none())
+    cliente = serializers.PrimaryKeyRelatedField(
+        queryset=ClienteFinal.objects.none())
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # La cola depende de quien pregunta, igual que en
+        # ProfesionalSerializer. Mismo patron a proposito: dos formas de
+        # acotar lo mismo obligan a recordar cual aplica en cada sitio.
+        establecimiento = self.context.get("establecimiento")
+        if establecimiento is not None:
+            for campo, modelo in (("profesional", Profesional),
+                                  ("servicio", Servicio),
+                                  ("cliente", ClienteFinal)):
+                self.fields[campo].queryset = (
+                    modelo.objects.del_establecimiento(establecimiento))
 
     class Meta:
         model = Cita
@@ -74,12 +113,39 @@ class CitaViewSet(viewsets.ModelViewSet):
             qs = qs.filter(profesional_id=profesional)
         return qs
 
+    def get_serializer_context(self):
+        """Inyecta el establecimiento para que el serializador acote sus colas."""
+        contexto = super().get_serializer_context()
+        contexto["establecimiento"] = self.request.user.establecimientos.first()
+        return contexto
+
     def create(self, request):
-        """Reserva manual usando el mismo AgendaService que el asistente IA."""
+        """Reserva manual desde el panel, para quien llega al local.
+
+        Usa el mismo AgendaService que el asistente, de modo que la
+        restriccion EXCLUDE y el calculo de disponibilidad son identicos
+        vengan de donde vengan las citas. Lo que cambia son los dos frenos
+        pensados para el autoservicio:
+
+        * El TOPE de citas abiertas no aplica. Existe para que nadie llene
+          la agenda desde el chat publico; el dueno atendiendo a alguien que
+          tiene delante no es ese ataque, y frenarlo solo le impediria
+          trabajar.
+
+        * El BLOQUEO por telefono no impide la reserva, pero tampoco se
+          salta en silencio. El primer intento devuelve 409 con el codigo
+          ``telefono_bloqueado``; el panel avisa y, si el dueno confirma,
+          reenvia con ``confirmado_bloqueo``. Se hace asi y no dejandolo
+          pasar directamente porque el veto lo puso el propio dueno: si el
+          sistema lo ignorase sin decir nada, reactivaria a alguien que el
+          mismo aparto sin que se entere. El sistema informa, el dueno
+          juzga --la misma linea que ya siguen las inasistencias--.
+        """
         est = request.user.establecimientos.first()
-        s = CitaSerializer(data=request.data)
+        s = self.get_serializer(data=request.data)
         s.is_valid(raise_exception=True)
         d = s.validated_data
+        confirmado = bool(request.data.get("confirmado_bloqueo"))
         try:
             cita = AgendaService.reservar(
                 establecimiento=est,
@@ -89,11 +155,26 @@ class CitaViewSet(viewsets.ModelViewSet):
                 dia=d["fecha"],
                 hora_inicio=d["hora_inicio"],
                 canal=Cita.Canal.MANUAL,
+                respetar_bloqueo=not confirmado,
+                respetar_tope=False,
             )
+        except TelefonoVetado:
+            return Response(
+                {"error": "telefono_bloqueado",
+                 "detalle": "Este número está bloqueado en tu establecimiento. "
+                            "Puedes agendarle de todos modos si confirmas."},
+                status=status.HTTP_409_CONFLICT)
         except SlotNoDisponible as e:
             return Response({"error": "slot_ocupado", "detalle": str(e)},
                             status=status.HTTP_409_CONFLICT)
-        return Response(CitaSerializer(cita).data, status=status.HTTP_201_CREATED)
+        except TopeCitasAlcanzado as e:
+            # No deberia ocurrir con respetar_tope=False. Se captura para que,
+            # si alguien cambiara ese valor, el resultado fuera un 409 legible
+            # y no un error 500.
+            return Response({"error": "tope_alcanzado", "detalle": str(e)},
+                            status=status.HTTP_409_CONFLICT)
+        return Response(self.get_serializer(cita).data,
+                        status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["patch"])
     def cancelar(self, request, pk=None):

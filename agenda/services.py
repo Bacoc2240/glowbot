@@ -187,7 +187,8 @@ class AgendaService:
     @transaction.atomic
     def reservar(cls, *, establecimiento, profesional, servicio, cliente,
                  dia: date, hora_inicio: time, canal=Cita.Canal.IA,
-                 respetar_bloqueo: bool = True) -> Cita:
+                 respetar_bloqueo: bool = True,
+                 respetar_tope: bool = True) -> Cita:
         """Crea una cita de forma atómica.
 
         Doble blindaje contra el double-booking (RN-01):
@@ -239,6 +240,16 @@ class AgendaService:
         #    imponiendo la restriccion EXCLUDE del motor. Si algun dia hiciera
         #    falta exactitud, el instrumento seria un cerrojo consultivo
         #    (pg_advisory_xact_lock) sobre el telefono.
+    #
+        #    `respetar_tope=False` es la contraparte de respetar_bloqueo para
+        #    el canal manual. El tope se diseno contra un abuso concreto: que
+        #    una persona llene la agenda desde el chat publico. El dueno
+        #    agendando a mano en su propio local no es ese ataque, y frenarlo
+        #    le impediria atender a un cliente que tiene delante. Es un
+        #    parametro explicito y no una deduccion a partir del canal: el
+        #    canal describe de donde vino la cita, no que permisos tiene
+        #    quien la crea, y confundir ambas cosas hace que anadir un canal
+        #    nuevo cambie en silencio quien puede saltarse el limite.
         tope = establecimiento.max_citas_abiertas
         abiertas = Cita.objects.filter(
             establecimiento=establecimiento,
@@ -246,7 +257,7 @@ class AgendaService:
             estado=Cita.Estado.CONFIRMADA,
             fecha__gte=timezone.localdate(),
         ).count()
-        if abiertas >= tope:
+        if respetar_tope and abiertas >= tope:
             raise TopeCitasAlcanzado(
                 f"Ya tienes {abiertas} cita(s) pendientes con este número, que "
                 f"es el máximo que permite el establecimiento. Cancela alguna "

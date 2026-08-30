@@ -1111,3 +1111,52 @@ class TarjetaCodigoQrTests(TestCase):
         cuatro modulos deja el codigo ilegible. Es lo unico que el dueno
         puede estropear por su cuenta al recortarlo para una historia."""
         self.assertIn("No recortes el borde blanco", self._vivas())
+
+
+class PantallaReservaManualTests(TestCase):
+    """El formulario de reserva manual dentro de la agenda.
+
+    Mismo limite conocido que en las otras pruebas de pantalla: esto es
+    JavaScript y una prueba de Django no lo ejecuta. Solo puede verificar
+    que el enganche existe y no esta comentado.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel").content.decode()
+        return "\n".join(linea for linea in html.splitlines()
+                         if not linea.strip().startswith("//"))
+
+    def test_la_agenda_ofrece_agendar_y_el_boton_esta_conectado(self):
+        """Se comprueba el ENGANCHE, no que el nombre de la funcion aparezca:
+        buscar solo "abrirReserva" pasaria con el boton desconectado, porque
+        la definicion sigue en el JavaScript."""
+        vivas = self._vivas()
+        self.assertIn('@click="abrirReserva()"', vivas)
+        self.assertIn('@click="reservar(false)"', vivas)
+
+    def test_las_horas_salen_de_disponibilidad_y_no_de_un_campo_libre(self):
+        """Solo se ofrecen los huecos que devuelve el algoritmo de tres
+        capas. Una hora escrita a mano chocaria contra la restriccion
+        EXCLUDE y ademas dejaria al panel y al asistente viendo agendas
+        distintas. La hora libre queda anotada para la v1.1."""
+        vivas = self._vivas()
+        self.assertIn("/disponibilidad?profesional=", vivas)
+        self.assertIn('@click="rHora = h"', vivas)
+
+    def test_el_aviso_de_bloqueo_exige_una_segunda_pulsacion(self):
+        """El dueno tiene que confirmar de forma explicita: el boton normal
+        se oculta y aparece otro distinto que reenvia con la bandera. Si
+        ambos llamaran igual, el veto se saltaria sin que nadie lo decida."""
+        vivas = self._vivas()
+        self.assertIn('@click="reservar(true)"', vivas)
+        self.assertIn('x-show="rHora && !rAvisoBloqueo"', vivas)
+        self.assertIn("Este número está bloqueado", vivas)
+
+    def test_si_el_cliente_no_existe_manda_a_registrarlo_y_no_lo_crea_aqui(self):
+        """El alta pasa siempre por la pantalla de clientes, que exige el
+        consentimiento verbal y deja constancia de quien da fe. Crear el
+        cliente desde aqui duplicaria esas reglas en un segundo sitio y
+        despues seria imposible saber cual de los dos actuo."""
+        vivas = self._vivas()
+        self.assertIn('href="/panel/clientes"', vivas)
+        self.assertNotIn('api("/clientes", {', vivas)

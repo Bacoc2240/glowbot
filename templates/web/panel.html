@@ -103,6 +103,104 @@
       <div><b style="color:var(--rojo)" x-text="canceladas"></b><div class="muted">Canceladas</div></div>
       <div><b style="color:var(--verde)" x-text="confirmadas"></b><div class="muted">Confirmadas</div></div>
     </div>
+
+    <!-- Reserva manual: para quien llega al local sin haber agendado.
+         Vive dentro de la agenda y no en una pantalla aparte porque la
+         fecha ya esta elegida aqui y la cita nueva aparece abajo en la
+         misma lista, sin que el dueno tenga que ir a comprobarlo. -->
+    <button class="btn btn-borde" style="margin-top:12px"
+            @click="abrirReserva()" x-show="!reservando">
+      Agendar una cita
+    </button>
+  </div>
+
+  <div class="card" x-show="reservando" style="display:none">
+    <div class="fila">
+      <div><h2>Agendar una cita</h2></div>
+      <button class="btn btn-borde" style="max-width:90px" @click="reservando = false">
+        Cerrar
+      </button>
+    </div>
+    <p class="muted" x-text="'Para el ' + fecha + '. Cambia la fecha arriba si no es ese día.'"></p>
+
+    <label>Cliente</label>
+    <input x-model="rBusqueda" @input.debounce.300ms="buscarClientes()"
+           placeholder="Busca por nombre o teléfono">
+
+    <template x-for="c in rClientes" :key="c.id">
+      <div style="border-bottom:1px solid var(--borde); padding:8px 0; cursor:pointer"
+           @click="elegirCliente(c)">
+        <b x-text="c.nombre"></b>
+        <span class="chip" x-show="c.bloqueado">Bloqueado</span>
+        <div class="muted" x-text="c.telefono"></div>
+      </div>
+    </template>
+
+    <p class="muted" x-show="rBusqueda && !rClientes.length && !rCliente">
+      Nadie con ese nombre o teléfono.
+      <a href="/panel/clientes">Regístralo primero</a>, así queda constancia
+      de que autorizó el uso de sus datos.
+    </p>
+
+    <div x-show="rCliente" style="background:var(--gris); padding:10px;
+                                  border-radius:8px; margin-top:8px">
+      <b x-text="rCliente && rCliente.nombre"></b>
+      <span class="muted" x-text="rCliente && (' · ' + rCliente.telefono)"></span>
+      <button class="btn btn-borde" style="margin-top:6px;padding:6px;font-size:13px"
+              @click="rCliente = null; rSlots = []">Cambiar</button>
+    </div>
+
+    <template x-if="rCliente">
+      <div>
+        <label>Servicio</label>
+        <select x-model="rServicio" @change="cargarSlots()">
+          <option value="">Elige un servicio</option>
+          <template x-for="s in servicios" :key="s.id">
+            <option :value="s.id" x-text="s.nombre + ' · ' + s.duracion_min + ' min'"></option>
+          </template>
+        </select>
+
+        <label>Profesional</label>
+        <select x-model="rProfesional" @change="cargarSlots()">
+          <option value="">Elige un profesional</option>
+          <template x-for="p in profesionales" :key="p.id">
+            <option :value="p.id" x-text="p.nombre"></option>
+          </template>
+        </select>
+
+        <p class="muted" x-show="rCargandoSlots">Buscando horas libres…</p>
+        <p class="muted" x-show="rServicio && rProfesional && !rCargandoSlots && !rSlots.length">
+          No quedan horas libres ese día con esa combinación. Prueba con otro
+          profesional o cambia la fecha.
+        </p>
+
+        <div x-show="rSlots.length" style="display:flex; flex-wrap:wrap; gap:6px;
+                                           margin-top:8px">
+          <template x-for="h in rSlots" :key="h">
+            <button class="btn btn-borde"
+                    style="width:auto; padding:8px 12px; font-size:14px"
+                    :style="rHora === h ? 'background:var(--azul);color:#fff' : ''"
+                    @click="rHora = h" x-text="h"></button>
+          </template>
+        </div>
+
+        <p class="muted" style="color:var(--rojo)" x-show="rError" x-text="rError"></p>
+
+        <div x-show="rAvisoBloqueo" style="background:#FFF4E5; padding:10px;
+                                           border-radius:8px; margin-top:10px">
+          <b>Este número está bloqueado en tu establecimiento.</b>
+          <p class="muted" style="margin:6px 0">
+            Lo bloqueaste tú, así que no puede agendar solo por internet. Si
+            aun así quieres darle esta cita, confírmalo.
+          </p>
+          <button @click="reservar(true)">Agendar de todos modos</button>
+        </div>
+
+        <button style="margin-top:10px" x-show="rHora && !rAvisoBloqueo"
+                @click="reservar(false)"
+                x-text="rGuardando ? 'Agendando…' : 'Agendar'"></button>
+      </div>
+    </template>
   </div>
 
   <template x-for="c in citas" :key="c.id">
@@ -148,6 +246,12 @@ function panel() {
     citas: [], notificaciones: [], recordatorios: [], sub: null,
     est: null, editando: false, slugNuevo: "", copiado: false,
     errorSlug: "", okSlug: "", guardando: false,
+    // Estado de la reserva manual. Se prefija con r para que no se confunda
+    // con el de la tarjeta del enlace, que comparte el mismo objeto Alpine.
+    reservando: false, rBusqueda: "", rClientes: [], rCliente: null,
+    servicios: [], profesionales: [], rServicio: "", rProfesional: "",
+    rSlots: [], rHora: "", rCargandoSlots: false, rGuardando: false,
+    rError: "", rAvisoBloqueo: false,
     get canceladas() { return this.citas.filter(c => c.estado.startsWith("cancelada")).length; },
     get confirmadas() { return this.citas.filter(c => c.estado === "confirmada").length; },
     async cargar() {
@@ -237,6 +341,77 @@ function panel() {
     async cargarSuscripcion() {
       const r = await api("/mi-suscripcion");
       if (r && r.ok) this.sub = await r.json();
+    },
+    // ── Reserva manual ────────────────────────────────────────────
+    async abrirReserva() {
+      this.reservando = true;
+      this.rBusqueda = ""; this.rClientes = []; this.rCliente = null;
+      this.rServicio = ""; this.rProfesional = ""; this.rSlots = [];
+      this.rHora = ""; this.rError = ""; this.rAvisoBloqueo = false;
+      // Se cargan aqui y no en cargar(): son dos peticiones que el 90% de
+      // las visitas al panel no necesita.
+      if (!this.servicios.length) {
+        const r = await api("/servicios");
+        if (r && r.ok) { const d = await r.json(); this.servicios = d.results || d; }
+      }
+      if (!this.profesionales.length) {
+        const r = await api("/profesionales");
+        if (r && r.ok) { const d = await r.json(); this.profesionales = d.results || d; }
+      }
+    },
+    async buscarClientes() {
+      this.rCliente = null; this.rSlots = []; this.rHora = "";
+      if (!this.rBusqueda.trim()) { this.rClientes = []; return; }
+      const r = await api("/clientes?q=" + encodeURIComponent(this.rBusqueda));
+      if (r && r.ok) this.rClientes = (await r.json()).clientes;
+    },
+    elegirCliente(c) {
+      this.rCliente = c;
+      this.rClientes = [];
+      this.rError = ""; this.rAvisoBloqueo = false;
+      if (this.rServicio && this.rProfesional) this.cargarSlots();
+    },
+    async cargarSlots() {
+      this.rHora = ""; this.rSlots = []; this.rError = "";
+      this.rAvisoBloqueo = false;
+      if (!this.rServicio || !this.rProfesional) return;
+      this.rCargandoSlots = true;
+      const r = await api(`/disponibilidad?profesional=${this.rProfesional}`
+                          + `&servicio=${this.rServicio}&fecha=${this.fecha}`);
+      this.rCargandoSlots = false;
+      if (r && r.ok) this.rSlots = (await r.json()).slots;
+    },
+    async reservar(confirmadoBloqueo) {
+      if (this.rGuardando) return;
+      this.rGuardando = true; this.rError = "";
+      const cuerpo = {
+        fecha: this.fecha, hora_inicio: this.rHora,
+        profesional: this.rProfesional, servicio: this.rServicio,
+        cliente: this.rCliente.id,
+      };
+      if (confirmadoBloqueo) cuerpo.confirmado_bloqueo = true;
+      const r = await api("/citas", {
+        method: "POST", body: JSON.stringify(cuerpo),
+      });
+      this.rGuardando = false;
+      if (r && r.ok) {
+        this.reservando = false;
+        await this.cargarCitas();
+        return;
+      }
+      const d = r ? await r.json() : {};
+      if (d.error === "telefono_bloqueado") {
+        // No se agenda a la primera: el veto lo puso el propio dueno y
+        // saltarselo en silencio reactivaria a alguien que el mismo aparto.
+        this.rAvisoBloqueo = true;
+        return;
+      }
+      this.rAvisoBloqueo = false;
+      // Si el hueco se ocupo mientras elegia, las horas de pantalla ya no
+      // valen: se recargan en vez de dejarle reintentar sobre una lista
+      // que miente.
+      this.rError = d.detalle || "No se pudo agendar. Intenta de nuevo.";
+      if (d.error === "slot_ocupado") await this.cargarSlots();
     },
     async cargarCitas() {
       const r = await api(`/citas?fecha=${this.fecha}`);

@@ -1224,3 +1224,201 @@ class RelojDeterministaTest(TestCase):
         avisa. El ahora congelado es lo que hace la prueba reproducible."""
         self.assertEqual(InasistenciaTest.AHORA.hour, 12)
         self.assertEqual(InasistenciaTest.AHORA.year, 2026)
+
+
+class ReservaManualTest(TestCase):
+    """Reserva manual desde el panel, para quien llega al local (RF-07).
+
+    El endpoint POST /citas existia desde el Sprint 2 pero ninguna pantalla
+    lo llamaba, asi que nunca se ejercito. Al conectarlo aparecieron tres
+    defectos que estas pruebas fijan: fugaba entre inquilinos, reventaba
+    con 500 ante un telefono bloqueado y reventaba otra vez al alcanzar el
+    tope de citas.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from rest_framework.test import APIClient
+        from django.utils import timezone
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+        from cuentas.models import Usuario
+
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="duenio@barberia.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Barbería Mía",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            slug="mia")
+        self.profesional = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo")
+        self.servicio = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self.cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana Ruiz",
+            telefono="3005556666", acepta_datos=True)
+
+        # Un segundo inquilino, para las pruebas de aislamiento.
+        self.otro_duenio = Usuario.objects.create_user(
+            email="otro@salon.com", password="clave12345")
+        self.otro_est = Establecimiento.objects.create(
+            propietario=self.otro_duenio, nombre="Salón Ajeno",
+            tipo=Establecimiento.Tipo.SALON, telefono="3009998888",
+            slug="ajeno")
+        self.otro_profesional = Profesional.objects.create(
+            establecimiento=self.otro_est, nombre="Ajeno")
+        self.otro_servicio = Servicio.objects.create(
+            establecimiento=self.otro_est, nombre="Corte", duracion_min=30)
+        self.otro_cliente = ClienteFinal.objects.create(
+            establecimiento=self.otro_est, nombre="Cliente Ajeno",
+            telefono="3007778888", acepta_datos=True)
+
+        self.api.force_authenticate(user=self.duenio)
+        self.manana = timezone.localdate() + timedelta(days=1)
+
+    def _reservar(self, **extra):
+        datos = {
+            "fecha": str(self.manana), "hora_inicio": "10:00",
+            "profesional": self.profesional.id, "servicio": self.servicio.id,
+            "cliente": self.cliente.id,
+        }
+        datos.update(extra)
+        return self.api.post("/api/v1/citas", datos, format="json")
+
+    # ── Aislamiento entre inquilinos ──────────────────────────────
+
+    def test_no_se_puede_agendar_con_el_profesional_de_otro_negocio(self):
+        """La cola de validacion por defecto de una relacion en DRF es
+        objects.all(), o sea de TODOS los establecimientos. Sin acotarla,
+        esta peticion devolvia 201 y creaba la cita.
+
+        No es solo suciedad en la agenda propia: como la restriccion EXCLUDE
+        opera sobre el profesional, un dueno podia ocupar el horario de otra
+        barberia e impedirle agendar ahi.
+        """
+        r = self._reservar(profesional=self.otro_profesional.id,
+                           servicio=self.otro_servicio.id)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("profesional", r.json())
+
+    def test_no_se_puede_agendar_a_un_cliente_de_otro_negocio(self):
+        """Peor que lo anterior desde la Ley 1581: el cliente final es un
+        titular del que responde OTRO Responsable. Tocarlo desde aqui es
+        exactamente el aislamiento que la ley obliga a garantizar."""
+        r = self._reservar(cliente=self.otro_cliente.id)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("cliente", r.json())
+
+    def test_no_se_puede_agendar_con_el_servicio_de_otro_negocio(self):
+        """La duracion del servicio determina la hora de fin, asi que un
+        servicio ajeno tambien decide cuanto espacio ocupa la cita."""
+        r = self._reservar(servicio=self.otro_servicio.id)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("servicio", r.json())
+
+    # ── El camino feliz ───────────────────────────────────────────
+
+    def test_la_cita_manual_queda_marcada_como_manual(self):
+        """El canal distingue lo que agendo el dueno de lo que agendo el
+        asistente. Sin eso no hay forma de medir cuanto aporta la IA."""
+        from .models import Cita
+        r = self._reservar()
+        self.assertEqual(r.status_code, 201)
+        cita = Cita.objects.get(pk=r.json()["id"])
+        self.assertEqual(cita.canal, Cita.Canal.MANUAL)
+        self.assertEqual(cita.establecimiento, self.est)
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_la_hora_de_fin_la_calcula_el_servicio_y_no_el_panel(self):
+        """El panel manda hora_inicio y nada mas. Si la hora de fin viniera
+        del cliente, bastaria con mentir en ella para encimar dos citas por
+        debajo del radar de la restriccion EXCLUDE."""
+        from .models import Cita
+        r = self._reservar(hora_inicio="10:00")
+        cita = Cita.objects.get(pk=r.json()["id"])
+        self.assertEqual(cita.hora_fin.strftime("%H:%M"), "10:30")
+
+    def test_el_canal_manual_no_esquiva_la_restriccion_de_solape(self):
+        """La reserva manual pasa por el mismo AgendaService que el
+        asistente, de modo que el invariante de no encimar citas se cumple
+        venga de donde venga la peticion."""
+        self.assertEqual(self._reservar(hora_inicio="10:00").status_code, 201)
+        segunda = self._reservar(hora_inicio="10:15")
+        self.assertEqual(segunda.status_code, 409)
+        self.assertEqual(segunda.json()["error"], "slot_ocupado")
+
+    # ── Los dos frenos del autoservicio ───────────────────────────
+
+    def test_un_telefono_bloqueado_avisa_antes_de_agendar(self):
+        """El bloqueo no impide la reserva manual --esa fue la decision: el
+        veto quita el autoservicio, no la potestad del dueno-- pero tampoco
+        se salta en silencio. Lo puso el propio dueno, y reactivar a alguien
+        sin decirselo seria decidir por el."""
+        from negocios.models import TelefonoBloqueado
+        TelefonoBloqueado.objects.create(
+            establecimiento=self.est, telefono=self.cliente.telefono)
+        r = self._reservar()
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "telefono_bloqueado")
+
+    def test_confirmando_el_aviso_el_duenio_puede_agendar_igual(self):
+        """La otra mitad de la regla anterior: informar no es impedir."""
+        from negocios.models import TelefonoBloqueado
+        from .models import Cita
+        TelefonoBloqueado.objects.create(
+            establecimiento=self.est, telefono=self.cliente.telefono)
+        r = self._reservar(confirmado_bloqueo=True)
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(Cita.objects.get(pk=r.json()["id"]).canal,
+                         Cita.Canal.MANUAL)
+
+    def test_el_tope_de_citas_no_frena_al_duenio(self):
+        """El tope existe para que nadie llene la agenda desde el chat
+        publico. El dueno atendiendo a quien tiene delante no es ese ataque,
+        y frenarlo solo le impediria trabajar."""
+        from datetime import time
+        from .models import Cita
+        for i in range(self.est.max_citas_abiertas):
+            Cita.objects.create(
+                establecimiento=self.est, profesional=self.profesional,
+                servicio=self.servicio, cliente=self.cliente,
+                fecha=self.manana, hora_inicio=time(8 + i, 0),
+                hora_fin=time(8 + i, 30), estado=Cita.Estado.CONFIRMADA,
+                canal=Cita.Canal.MANUAL)
+        r = self._reservar(hora_inicio="15:00")
+        self.assertEqual(r.status_code, 201)
+
+    def test_el_tope_sigue_frenando_al_autoservicio(self):
+        """La contraparte, para que levantar el tope en el panel no lo
+        levante tambien en el chat publico, que es donde hace falta."""
+        from datetime import time
+        from .models import Cita
+        from .services import AgendaService, TopeCitasAlcanzado
+        for i in range(self.est.max_citas_abiertas):
+            Cita.objects.create(
+                establecimiento=self.est, profesional=self.profesional,
+                servicio=self.servicio, cliente=self.cliente,
+                fecha=self.manana, hora_inicio=time(8 + i, 0),
+                hora_fin=time(8 + i, 30), estado=Cita.Estado.CONFIRMADA,
+                canal=Cita.Canal.IA)
+        from datetime import time as t
+        with self.assertRaises(TopeCitasAlcanzado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.profesional,
+                servicio=self.servicio, cliente=self.cliente,
+                dia=self.manana, hora_inicio=t(15, 0))
+
+    def test_el_bloqueo_sigue_frenando_al_autoservicio(self):
+        """Igual que arriba: la puerta que se abre para el panel no puede
+        quedar abierta para el chat publico."""
+        from datetime import time
+        from negocios.models import TelefonoBloqueado
+        from .services import AgendaService, TelefonoVetado
+        TelefonoBloqueado.objects.create(
+            establecimiento=self.est, telefono=self.cliente.telefono)
+        with self.assertRaises(TelefonoVetado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.profesional,
+                servicio=self.servicio, cliente=self.cliente,
+                dia=self.manana, hora_inicio=time(16, 0))
