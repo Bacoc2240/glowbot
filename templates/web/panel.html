@@ -176,11 +176,11 @@
 
         <div x-show="rSlots.length" style="display:flex; flex-wrap:wrap; gap:6px;
                                            margin-top:8px">
-          <template x-for="h in rSlots" :key="h">
+          <template x-for="h in rSlots" :key="h.valor">
             <button class="btn btn-borde"
                     style="width:auto; padding:8px 12px; font-size:14px"
-                    :style="rHora === h ? 'background:var(--azul);color:#fff' : ''"
-                    @click="rHora = h" x-text="h"></button>
+                    :style="rHora === h.valor ? 'background:var(--azul);color:#fff' : ''"
+                    @click="rHora = h.valor" x-text="h.texto"></button>
           </template>
         </div>
 
@@ -205,7 +205,7 @@
 
   <template x-for="c in citas" :key="c.id">
     <div class="card fila">
-      <div style="max-width:60px"><b x-text="c.hora_inicio.slice(0,5)"></b></div>
+      <div style="max-width:88px"><b x-text="c.hora_texto"></b></div>
       <div>
         <b x-text="c.servicio_nombre + ' — ' + c.cliente_nombre"></b>
         <div class="muted" x-text="c.profesional_nombre + ' · ' + c.estado"></div>

@@ -15,6 +15,7 @@ from negocios.models import (ClienteFinal, Profesional, Servicio,
                              TelefonoBloqueado)
 from .models import Cita, Notificacion
 from .recordatorios import RecordatorioService
+from .fechas import hora_texto
 from .services import (AgendaService, SlotNoDisponible,
                        TelefonoVetado, TopeCitasAlcanzado)
 
@@ -40,7 +41,15 @@ class DisponibilidadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         slots = AgendaService.calcular_slots(profesional, servicio, dia)
-        return Response({"slots": [s.strftime("%H:%M") for s in slots]})
+        # Cada hora viaja con las dos caras: el valor que el sistema compara
+        # y ordena, y la etiqueta que lee una persona. Van juntas en el mismo
+        # objeto y no en dos listas paralelas para que no puedan
+        # desalinearse, y la etiqueta la escribe el backend para que exista
+        # una sola implementacion del formato en todo el sistema.
+        return Response({"slots": [
+            {"valor": s.strftime("%H:%M"), "texto": hora_texto(s)}
+            for s in slots
+        ]})
 
 
 class CitaSerializer(serializers.ModelSerializer):
@@ -63,7 +72,7 @@ class CitaSerializer(serializers.ModelSerializer):
 
     profesional_nombre = serializers.CharField(source="profesional.nombre", read_only=True)
     servicio_nombre = serializers.CharField(source="servicio.nombre", read_only=True)
-    cliente_nombre = serializers.CharField(source="cliente.nombre", read_only=True)
+    cliente_nombre = serializers.CharField(source="cliente.nombre", read_only=True)    hora_texto = serializers.SerializerMethodField()
 
     profesional = serializers.PrimaryKeyRelatedField(
         queryset=Profesional.objects.none())
@@ -85,13 +94,19 @@ class CitaSerializer(serializers.ModelSerializer):
                 self.fields[campo].queryset = (
                     modelo.objects.del_establecimiento(establecimiento))
 
+    def get_hora_texto(self, obj):
+        """La hora tal como se le muestra a una persona. La escribe el
+        backend para que el panel, el asistente y los recordatorios usen la
+        misma implementacion del formato de doce horas."""
+        return hora_texto(obj.hora_inicio)
+
     class Meta:
         model = Cita
         fields = [
             "id", "fecha", "hora_inicio", "hora_fin", "estado", "canal",
             "profesional", "profesional_nombre",
             "servicio", "servicio_nombre",
-            "cliente", "cliente_nombre",
+            "cliente", "cliente_nombre", "hora_texto",
         ]
         read_only_fields = ["hora_fin", "estado"]
 
@@ -258,6 +273,7 @@ class NotificacionesView(APIView):
                 "estado": n.estado,
                 "fecha_cita": str(n.cita.fecha),
                 "hora": n.cita.hora_inicio.strftime("%H:%M"),
+                "hora_texto": hora_texto(n.cita.hora_inicio),
                 "servicio": n.cita.servicio.nombre,
                 "cliente": n.cita.cliente.nombre,
                 "profesional": n.cita.profesional.nombre,
@@ -303,6 +319,7 @@ class RecordatoriosView(APIView):
                 "profesional": n.cita.profesional.nombre,
                 "fecha": str(n.cita.fecha),
                 "hora": n.cita.hora_inicio.strftime("%H:%M"),
+                "hora_texto": hora_texto(n.cita.hora_inicio),
                 "estado": n.estado,
                 # None si el cliente no dejo telefono: la interfaz lo avisa
                 # en vez de mostrar un enlace roto.

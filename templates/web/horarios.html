@@ -43,16 +43,64 @@
 
   <div class="card">
     <h2>Horario semanal</h2>
-    <p class="muted">Marca los días que atiende y sus horas.</p>
+    <p class="muted">Marca los días que atiende. Si cierra a mediodía, elige
+      jornada partida y pon las dos jornadas.</p>
+
     <template x-for="(d, i) in dias" :key="i">
-      <div class="fila" style="padding:5px 0">
-        <label style="max-width:90px;margin:0"><input type="checkbox" x-model="d.activo"
-          style="width:auto"> <span x-text="d.nombre"></span></label>
-        <input type="time" x-model="d.inicio" :disabled="!d.activo">
-        <input type="time" x-model="d.fin" :disabled="!d.activo">
+      <div style="border-bottom:1px solid var(--borde); padding:10px 0">
+        <div class="fila">
+          <label style="max-width:120px;margin:0">
+            <input type="checkbox" x-model="d.activo" style="width:auto">
+            <span x-text="d.nombre"></span>
+          </label>
+          <!-- La jornada se elige por dia y no para toda la semana: es
+               corriente cerrar a mediodia entre semana y trabajar corrido
+               el sabado. Un solo interruptor global obligaria a configurar
+               mal uno de los dos casos. -->
+          <label x-show="d.activo" style="margin:0; font-size:14px">
+            <input type="checkbox" x-model="d.partida" style="width:auto">
+            Cierra a mediodía
+          </label>
+        </div>
+
+        <template x-if="d.activo">
+          <div>
+            <div class="fila" style="align-items:center; gap:6px">
+              <span class="muted" style="min-width:64px; font-size:13px"
+                    x-text="d.partida ? 'Mañana' : 'Todo el día'"></span>
+              <input type="time" x-model="d.inicio">
+              <input type="time" x-model="d.fin">
+            </div>
+            <p class="muted" style="margin:2px 0 0 70px; font-size:13px"
+               x-text="textoFranja(d.inicio, d.fin)"></p>
+
+            <template x-if="d.partida">
+              <div>
+                <div class="fila" style="align-items:center; gap:6px; margin-top:6px">
+                  <span class="muted" style="min-width:64px; font-size:13px">Tarde</span>
+                  <input type="time" x-model="d.inicio2">
+                  <input type="time" x-model="d.fin2">
+                </div>
+                <p class="muted" style="margin:2px 0 0 70px; font-size:13px"
+                   x-text="textoFranja(d.inicio2, d.fin2)"></p>
+              </div>
+            </template>
+
+            <p class="muted" style="color:var(--rojo); margin:4px 0 0 70px;
+                                    font-size:13px"
+               x-show="errorDia(d)" x-text="errorDia(d)"></p>
+          </div>
+        </template>
       </div>
     </template>
-    <p class="ok" x-show="guardado">Horario guardado ✓</p><br>
+
+    <button class="btn btn-borde" style="margin-top:10px" @click="copiarALosDemas()">
+      Aplicar el horario del lunes a los demás días
+    </button>
+
+    <p class="ok" x-show="guardado">Horario guardado ✓</p>
+    <p class="muted" style="color:var(--rojo)" x-show="errorSemana" x-text="errorSemana"></p>
+    <br>
     <button @click="guardarSemana">Guardar horario semanal</button>
   </div>
 
@@ -64,11 +112,17 @@
     <div class="fila">
       <div><label>Desde</label><input type="time" x-model="exc.hora_inicio"></div>
       <div><label>Hasta</label><input type="time" x-model="exc.hora_fin"></div>
-    </div><br>
+    </div>
+    <p class="muted" style="font-size:13px; margin:4px 0"
+       x-text="textoFranja(exc.hora_inicio, exc.hora_fin)"></p>
+    <p class="muted" style="font-size:13px; margin:4px 0">
+      Si ese día cierra a mediodía, guarda dos veces: una por la mañana y
+      otra por la tarde.
+    </p><br>
     <button @click="crearExcepcion">Guardar horario especial</button>
     <template x-for="e in excepciones" :key="e.id">
       <div class="fila" style="border-top:1px solid var(--borde);padding:7px 0;margin-top:7px">
-        <div class="muted" x-text="e.fecha + ' · ' + e.hora_inicio.slice(0,5) + '–' + e.hora_fin.slice(0,5)"></div>
+        <div class="muted" x-text="e.fecha_texto + ' · ' + e.franja_texto"></div>
         <button class="btn-peligro" style="max-width:80px;padding:6px;font-size:12px"
                 @click="borrarExcepcion(e.id)">Quitar</button>
       </div>
@@ -95,13 +149,15 @@
         <div><label>Hasta</label><input type="time" x-model="blo.hora_fin"></div>
       </div>
     </template>
+    <p class="muted" style="font-size:13px; margin:4px 0" x-show="!blo.diaCompleto"
+       x-text="textoFranja(blo.hora_inicio, blo.hora_fin)"></p>
     <label>Motivo (opcional)</label><input x-model="blo.motivo" placeholder="Descanso, diligencia…"><br>
     <button @click="crearBloqueo">Guardar bloqueo</button>
     <template x-for="b in bloqueos" :key="b.id">
       <div class="fila" style="border-top:1px solid var(--borde);padding:7px 0;margin-top:7px">
         <div class="muted"
-          x-text="(b.recurrente ? 'Cada ' + dias[b.dia_semana].nombre : b.fecha) + ' · ' +
-                  (b.hora_inicio ? b.hora_inicio.slice(0,5) + '–' + b.hora_fin.slice(0,5) : 'día completo') +
+          x-text="(b.recurrente ? 'Cada ' + dias[b.dia_semana].nombre : b.fecha_texto) + ' · ' +
+                  b.franja_texto +
                   (b.motivo ? ' · ' + b.motivo : '')"></div>
         <button class="btn-peligro" style="max-width:80px;padding:6px;font-size:12px"
                 @click="borrarBloqueo(b.id)">Quitar</button>
@@ -116,7 +172,10 @@ function horarios() {
   return {
     profesionales: [], profesionalId: null,
     dias: ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
-      .map(n => ({ nombre: n, activo: false, inicio: "09:00", fin: "18:00" })),
+      .map(n => ({ nombre: n, activo: false, partida: false,
+                   inicio: "08:00", fin: "12:00",
+                   inicio2: "14:00", fin2: "18:00" })),
+    errorSemana: "",
     excepciones: [], bloqueos: [], guardado: false,
     ajustes: { modo_agenda: "", recordatorio_horas_antes: 2, max_citas_abiertas: 3 },
     opciones: { modo_agenda: [], recordatorio_horas_antes: [] },
@@ -160,9 +219,23 @@ function horarios() {
       if (r && r.ok) {
         const franjas = await r.json();
         this.dias.forEach((d, i) => {
-          const f = franjas.find(x => x.dia_semana === i);
-          d.activo = !!f;
-          if (f) { d.inicio = f.hora_inicio.slice(0,5); d.fin = f.hora_fin.slice(0,5); }
+          // Se recogen TODAS las franjas del día, no solo la primera. Antes
+          // esto usaba find(), y como el PUT reemplaza la semana entera,
+          // abrir la pantalla y guardar borraba la segunda jornada sin
+          // decir nada.
+          const delDia = franjas
+            .filter(x => x.dia_semana === i)
+            .sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+          d.activo = delDia.length > 0;
+          d.partida = delDia.length > 1;
+          if (delDia[0]) {
+            d.inicio = delDia[0].hora_inicio.slice(0,5);
+            d.fin = delDia[0].hora_fin.slice(0,5);
+          }
+          if (delDia[1]) {
+            d.inicio2 = delDia[1].hora_inicio.slice(0,5);
+            d.fin2 = delDia[1].hora_fin.slice(0,5);
+          }
         });
       }
       r = await api(`/profesionales/${this.profesionalId}/excepciones`);
@@ -170,10 +243,56 @@ function horarios() {
       r = await api(`/profesionales/${this.profesionalId}/bloqueos`);
       if (r && r.ok) this.bloqueos = await r.json();
     },
+    textoFranja(ini, fin) {
+      // Eco de la hora en formato de doce horas. El selector nativo lo pinta
+      // el navegador segun el idioma del telefono, asi que un dueno con el
+      // reloj en 24 horas veria 24 horas; esta linea de debajo se lee igual
+      // en cualquier dispositivo.
+      if (!ini || !fin) return "";
+      return this.hora12(ini) + " a " + this.hora12(fin);
+    },
+    hora12(hhmm) {
+      const [h, m] = hhmm.split(":").map(Number);
+      if (h === 12 && m === 0) return "12:00 m.";
+      if (h === 0) return `12:${String(m).padStart(2,"0")} a. m.`;
+      if (h === 12) return `12:${String(m).padStart(2,"0")} p. m.`;
+      return `${h % 12}:${String(m).padStart(2,"0")} ${h < 12 ? "a. m." : "p. m."}`;
+    },
+    errorDia(d) {
+      if (!d.activo) return "";
+      if (d.fin <= d.inicio) return "La hora de cierre debe ser mayor que la de apertura.";
+      if (!d.partida) return "";
+      if (d.fin2 <= d.inicio2) return "En la tarde, el cierre debe ser mayor que la apertura.";
+      if (d.inicio2 < d.fin) return "La tarde no puede empezar antes de que cierre la mañana.";
+      return "";
+    },
+    copiarALosDemas() {
+      const l = this.dias[0];
+      this.dias.slice(1).forEach(d => {
+        d.activo = l.activo; d.partida = l.partida;
+        d.inicio = l.inicio; d.fin = l.fin;
+        d.inicio2 = l.inicio2; d.fin2 = l.fin2;
+      });
+    },
     async guardarSemana() {
-      const franjas = this.dias
-        .map((d, i) => d.activo ? { dia_semana: i, hora_inicio: d.inicio, hora_fin: d.fin } : null)
-        .filter(Boolean);
+      // Se valida aquí antes de enviar porque el PUT reemplaza la semana
+      // completa: una franja rechazada por el servidor abortaría el lote y
+      // el dueño no sabría cuál de los siete días tiene el problema.
+      this.errorSemana = "";
+      const conError = this.dias.find(d => this.errorDia(d));
+      if (conError) {
+        this.errorSemana = `Revisa el ${conError.nombre.toLowerCase()}: ` +
+                           this.errorDia(conError).toLowerCase();
+        return;
+      }
+      const franjas = [];
+      this.dias.forEach((d, i) => {
+        if (!d.activo) return;
+        franjas.push({ dia_semana: i, hora_inicio: d.inicio, hora_fin: d.fin });
+        if (d.partida) {
+          franjas.push({ dia_semana: i, hora_inicio: d.inicio2, hora_fin: d.fin2 });
+        }
+      });
       const r = await api(`/profesionales/${this.profesionalId}/horarios`,
         { method: "PUT", body: JSON.stringify(franjas) });
       this.guardado = r && r.ok;

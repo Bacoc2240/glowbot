@@ -1422,3 +1422,164 @@ class ReservaManualTest(TestCase):
                 establecimiento=self.est, profesional=self.profesional,
                 servicio=self.servicio, cliente=self.cliente,
                 dia=self.manana, hora_inicio=time(16, 0))
+
+
+class FormatoDeHoraTest(TestCase):
+    """El reloj de doce horas (RF-06).
+
+    El formato es SOLO de presentación: se sigue guardando y comparando en
+    TimeField de veinticuatro horas. Guardar "2:30 p. m." como cadena haría
+    imposible ordenar, restar y comparar horas, que es justo lo que hace el
+    cálculo de disponibilidad en cada petición.
+    """
+
+    def test_la_manana_y_la_tarde_se_distinguen(self):
+        from datetime import time
+        from .fechas import hora_texto
+        self.assertEqual(hora_texto(time(8, 0)), "8:00 a. m.")
+        self.assertEqual(hora_texto(time(9, 30)), "9:30 a. m.")
+        self.assertEqual(hora_texto(time(14, 30)), "2:30 p. m.")
+        self.assertEqual(hora_texto(time(19, 0)), "7:00 p. m.")
+
+    def test_el_mediodia_no_es_ni_am_ni_pm(self):
+        """Uso colombiano: las doce del día son 'm.', de meridiano. Es la
+        hora en la que la mayoría de los negocios cierra la primera jornada,
+        así que aparece en pantalla todos los días."""
+        from datetime import time
+        from .fechas import hora_texto
+        self.assertEqual(hora_texto(time(12, 0)), "12:00 m.")
+        self.assertEqual(hora_texto(time(12, 30)), "12:30 p. m.")
+        self.assertEqual(hora_texto(time(11, 59)), "11:59 a. m.")
+
+    def test_la_medianoche_no_sale_como_cero(self):
+        """En una agenda de barbería no aparece nunca, pero el caso queda
+        resuelto en vez de producir '0:00 a. m.', que no es una hora que
+        nadie escriba."""
+        from datetime import time
+        from .fechas import hora_texto
+        self.assertEqual(hora_texto(time(0, 0)), "12:00 a. m.")
+        self.assertEqual(hora_texto(time(0, 45)), "12:45 a. m.")
+
+    def test_se_usa_la_abreviatura_de_la_rae(self):
+        """Con puntos y espacio, que es lo que escribe el propio navegador
+        en los selectores nativos de hora. Mezclar '9:00 am' nuestro con
+        '09:00 a. m.' del navegador dejaría dos convenciones conviviendo en
+        la misma tarjeta."""
+        from datetime import time
+        from .fechas import hora_texto
+        self.assertIn("a. m.", hora_texto(time(9, 0)))
+        self.assertIn("p. m.", hora_texto(time(15, 0)))
+        self.assertNotIn("am", hora_texto(time(9, 0)).replace("a. m.", ""))
+
+    def test_el_formato_no_se_almacena_nunca(self):
+        """El invariante que sostiene todo lo demás. Si un día alguien
+        guardara la hora ya formateada, el cálculo de disponibilidad
+        dejaría de poder ordenarlas y compararlas."""
+        from datetime import date, time, timedelta
+        from django.utils import timezone
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+        from cuentas.models import Usuario
+        from .models import Cita
+
+        u = Usuario.objects.create_user(email="f@a.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="B", tipo=Establecimiento.Tipo.BARBERIA,
+            telefono="3001112222", slug="fmt")
+        prof = Profesional.objects.create(establecimiento=est, nombre="E")
+        serv = Servicio.objects.create(establecimiento=est, nombre="C",
+                                       duracion_min=30)
+        cli = ClienteFinal.objects.create(establecimiento=est, nombre="A",
+                                          telefono="3005556666", acepta_datos=True)
+        cita = Cita.objects.create(
+            establecimiento=est, profesional=prof, servicio=serv, cliente=cli,
+            fecha=timezone.localdate() + timedelta(days=1),
+            hora_inicio=time(14, 30), hora_fin=time(15, 0),
+            estado=Cita.Estado.CONFIRMADA, canal=Cita.Canal.MANUAL)
+        cita.refresh_from_db()
+        self.assertEqual(cita.hora_inicio, time(14, 30))
+
+
+class JornadaPartidaTest(TestCase):
+    """Doble jornada en el horario semanal (RF-06).
+
+    El trabajo de campo en Saravena mostró que la mayoría de los negocios
+    cierra a mediodía: 8–12 y 2–7. El modelo y el motor de disponibilidad ya
+    lo admitían desde el Sprint 2; lo que faltaba era que se pudiera
+    configurar y que las franjas no se perdieran al guardar.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+        from negocios.models import Establecimiento, Profesional, Servicio
+        from cuentas.models import Usuario
+
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="jp@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="B",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            slug="jp")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self.api.force_authenticate(user=self.duenio)
+        self.manana = timezone.localdate() + timedelta(days=1)
+
+    def _guardar(self, franjas):
+        return self.api.put(
+            f"/api/v1/profesionales/{self.prof.id}/horarios",
+            [{"dia_semana": self.manana.weekday(), "hora_inicio": i,
+              "hora_fin": f} for i, f in franjas], format="json")
+
+    def test_un_dia_admite_dos_jornadas(self):
+        r = self._guardar([("08:00", "12:00"), ("14:00", "19:00")])
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.json()), 2)
+
+    def test_el_hueco_del_almuerzo_no_se_ofrece(self):
+        """La comprobación que de verdad importa. Guardar dos franjas no
+        sirve de nada si el cálculo las funde en un tramo continuo: el
+        cliente agendaría a la una y el barbero no estaría."""
+        from datetime import time
+        from .services import AgendaService
+        self._guardar([("08:00", "12:00"), ("14:00", "19:00")])
+        slots = AgendaService.calcular_slots(self.prof, self.serv, self.manana)
+        self.assertIn(time(11, 30), slots)
+        self.assertIn(time(14, 0), slots)
+        self.assertNotIn(time(12, 0), slots)
+        self.assertNotIn(time(13, 0), slots)
+        self.assertNotIn(time(13, 30), slots)
+
+    def test_la_jornada_continua_sigue_funcionando(self):
+        """La mayoría cierra a mediodía, pero no todos. Quien atienda de
+        corrido no debe notar ningún cambio."""
+        from datetime import time
+        from .services import AgendaService
+        self._guardar([("09:00", "18:00")])
+        slots = AgendaService.calcular_slots(self.prof, self.serv, self.manana)
+        self.assertIn(time(13, 0), slots)
+        self.assertEqual(slots[0], time(9, 0))
+
+    def test_las_horas_libres_llegan_con_su_etiqueta_legible(self):
+        """El endpoint devuelve las dos caras de cada hora en el mismo
+        objeto --el valor que el sistema compara y el texto que lee una
+        persona-- y no en dos listas paralelas, que podrían desalinearse."""
+        self._guardar([("08:00", "12:00"), ("14:00", "19:00")])
+        d = self.api.get(
+            f"/api/v1/disponibilidad?profesional={self.prof.id}"
+            f"&servicio={self.serv.id}&fecha={self.manana}").json()
+        self.assertEqual(d["slots"][0], {"valor": "08:00", "texto": "8:00 a. m."})
+        textos = [s["texto"] for s in d["slots"]]
+        self.assertIn("2:00 p. m.", textos)
+        self.assertNotIn("1:00 p. m.", textos)
+
+    def test_el_horario_semanal_devuelve_la_franja_escrita(self):
+        r = self._guardar([("08:00", "12:00"), ("14:00", "19:00")])
+        textos = sorted(f["franja_texto"] for f in r.json())
+        self.assertEqual(textos, ["2:00 p. m. a 7:00 p. m.",
+                                  "8:00 a. m. a 12:00 m."])

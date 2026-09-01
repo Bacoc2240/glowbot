@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 
 from .models import Establecimiento, HorarioBase, Profesional, Servicio
 from .qr import data_uri_del_enlace
+from agenda.fechas import fecha_corta, franja_texto
 
 
 class _EstablecimientoMixin:
@@ -155,9 +156,21 @@ from .models import Bloqueo, ExcepcionHorario
 
 
 class HorarioBaseSerializer(serializers.ModelSerializer):
+    """Una franja del horario semanal. Un dia puede tener varias.
+
+    ``franja_texto`` viaja junto a las horas de maquina para que el panel no
+    tenga que reimplementar el formato de doce horas en JavaScript. Dos
+    implementaciones de la misma regla divergen en silencio.
+    """
+
+    franja_texto = serializers.SerializerMethodField()
+
     class Meta:
         model = HorarioBase
-        fields = ["id", "dia_semana", "hora_inicio", "hora_fin"]
+        fields = ["id", "dia_semana", "hora_inicio", "hora_fin", "franja_texto"]
+
+    def get_franja_texto(self, obj):
+        return franja_texto(obj.hora_inicio, obj.hora_fin)
 
     def validate(self, data):
         if data["hora_fin"] <= data["hora_inicio"]:
@@ -166,9 +179,22 @@ class HorarioBaseSerializer(serializers.ModelSerializer):
 
 
 class ExcepcionSerializer(serializers.ModelSerializer):
+    """Horario especial de una fecha. Admite dos jornadas por fecha desde la
+    migracion 0011, que retiro la restriccion unica (profesional, fecha)."""
+
+    franja_texto = serializers.SerializerMethodField()
+    fecha_texto = serializers.SerializerMethodField()
+
     class Meta:
         model = ExcepcionHorario
-        fields = ["id", "fecha", "hora_inicio", "hora_fin"]
+        fields = ["id", "fecha", "hora_inicio", "hora_fin",
+                  "franja_texto", "fecha_texto"]
+
+    def get_franja_texto(self, obj):
+        return franja_texto(obj.hora_inicio, obj.hora_fin)
+
+    def get_fecha_texto(self, obj):
+        return fecha_corta(obj.fecha)
 
     def validate(self, data):
         if data["hora_fin"] <= data["hora_inicio"]:
@@ -177,10 +203,22 @@ class ExcepcionSerializer(serializers.ModelSerializer):
 
 
 class BloqueoSerializer(serializers.ModelSerializer):
+    franja_texto = serializers.SerializerMethodField()
+    fecha_texto = serializers.SerializerMethodField()
+
     class Meta:
         model = Bloqueo
         fields = ["id", "recurrente", "fecha", "dia_semana",
-                  "hora_inicio", "hora_fin", "motivo"]
+                  "hora_inicio", "hora_fin", "motivo",
+                  "franja_texto", "fecha_texto"]
+
+    def get_franja_texto(self, obj):
+        if obj.hora_inicio is None or obj.hora_fin is None:
+            return "día completo"
+        return franja_texto(obj.hora_inicio, obj.hora_fin)
+
+    def get_fecha_texto(self, obj):
+        return fecha_corta(obj.fecha) if obj.fecha else None
 
     def validate(self, data):
         if data.get("recurrente") and data.get("dia_semana") is None:
@@ -233,12 +271,13 @@ class ExcepcionesView(APIView):
         prof = _profesional_del_usuario(request, profesional_id)
         s = ExcepcionSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        # upsert: una sola excepción por fecha (uq_excepcion_profesional_fecha)
-        exc, _ = ExcepcionHorario.objects.update_or_create(
-            profesional=prof, fecha=s.validated_data["fecha"],
-            defaults={"hora_inicio": s.validated_data["hora_inicio"],
-                      "hora_fin": s.validated_data["hora_fin"]},
-        )
+        # Se crea, no se sobrescribe. Antes esto era un update_or_create
+        # porque la restriccion unica (profesional, fecha) solo admitia una
+        # franja al dia. Retirada esa restriccion, mantener el upsert haria
+        # que guardar la jornada de la tarde borrase la de la manana sin
+        # decir nada: el dueno veria desaparecer lo que acaba de escribir.
+        exc = ExcepcionHorario.objects.create(
+            profesional=prof, **s.validated_data)
         return Response(ExcepcionSerializer(exc).data, status=status.HTTP_201_CREATED)
 
 
@@ -279,54 +318,12 @@ class EliminarBloqueoView(APIView):
 
 # ─────────────────────────────────────────────────────────────────
 #  Sprint 4 — Disponibilidad flexible (RF-06, RF-14, RF-15, RF-16)
+#
+#  Los serializadores de esta seccion vivian aqui DUPLICADOS: estaban
+#  definidos tambien mas arriba, y en Python gana la ultima definicion.
+#  El efecto era que editar la primera no hacia absolutamente nada, sin
+#  ningun aviso. Se conserva una sola copia, la de arriba.
 # ─────────────────────────────────────────────────────────────────
-from rest_framework import status
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
-from .models import Bloqueo, ExcepcionHorario
-
-
-class HorarioBaseSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = HorarioBase
-        fields = ["id", "dia_semana", "hora_inicio", "hora_fin"]
-
-    def validate(self, data):
-        if data["hora_fin"] <= data["hora_inicio"]:
-            raise serializers.ValidationError("hora_fin debe ser mayor que hora_inicio.")
-        return data
-
-
-class ExcepcionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ExcepcionHorario
-        fields = ["id", "fecha", "hora_inicio", "hora_fin"]
-
-    def validate(self, data):
-        if data["hora_fin"] <= data["hora_inicio"]:
-            raise serializers.ValidationError("hora_fin debe ser mayor que hora_inicio.")
-        return data
-
-
-class BloqueoSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Bloqueo
-        fields = ["id", "recurrente", "fecha", "dia_semana",
-                  "hora_inicio", "hora_fin", "motivo"]
-
-    def validate(self, data):
-        if data.get("recurrente") and data.get("dia_semana") is None:
-            raise serializers.ValidationError(
-                "Un bloqueo recurrente requiere dia_semana.")
-        if not data.get("recurrente") and data.get("fecha") is None:
-            raise serializers.ValidationError(
-                "Un bloqueo puntual requiere fecha.")
-        if (data.get("hora_inicio") is None) != (data.get("hora_fin") is None):
-            raise serializers.ValidationError(
-                "Defina ambas horas o ninguna (día completo).")
-        return data
-
 
 class _ProfesionalDelTenant(APIView):
     """Base: resuelve el profesional garantizando el aislamiento multi-tenant."""

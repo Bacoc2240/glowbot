@@ -219,7 +219,8 @@ class HorarioBase(models.Model):
 
 
 class ExcepcionHorario(models.Model):
-    """Capa 2 — Diccionario §2.7 (RF-16). PREVALECE sobre el horario base."""
+    """Capa 2 — Diccionario §2.7 (RF-16). PREVALECE sobre el horario base.
+    Admite varias franjas por fecha (jornada partida), igual que HorarioBase."""
 
     profesional = models.ForeignKey(
         Profesional, on_delete=models.CASCADE, related_name="excepciones", db_index=True,
@@ -231,9 +232,6 @@ class ExcepcionHorario(models.Model):
     class Meta:
         db_table = "excepcion_horario"
         constraints = [
-            models.UniqueConstraint(
-                fields=["profesional", "fecha"], name="uq_excepcion_profesional_fecha",
-            ),
             models.CheckConstraint(
                 check=models.Q(hora_fin__gt=models.F("hora_inicio")),
                 name="ck_excepcion_fin_mayor_inicio",

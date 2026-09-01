@@ -87,17 +87,52 @@ class HorariosFlexiblesTest(BaseSprint4Test):
         self.assertEqual(slots[0], time(14, 0))   # ya no arranca a las 9
         self.assertNotIn(time(9, 0), slots)
 
-    def test_excepcion_misma_fecha_hace_upsert(self):
-        """Una sola excepción por fecha: la segunda actualiza la primera."""
-        for fin in ["16:00", "20:00"]:
-            self.api.post(
+    def test_una_fecha_admite_dos_jornadas(self):
+        """El horario especial de un día también puede ser partido.
+
+        Sustituye a `test_excepcion_misma_fecha_hace_upsert`, que
+        documentaba la regla contraria: una restricción única
+        (profesional, fecha) obligaba a que la segunda llamada
+        sobrescribiera a la primera. El trabajo de campo mostró que la
+        mayoría de los negocios cierra a mediodía, así que la migración
+        0011 retiró esa restricción.
+
+        Guardar la tarde ya no puede borrar la mañana: sería el dueño
+        viendo desaparecer lo que acaba de escribir, sin ningún aviso.
+        """
+        for ini, fin in [("08:00", "12:00"), ("14:00", "19:00")]:
+            r = self.api.post(
                 f"/api/v1/profesionales/{self.carlos.id}/excepciones",
-                {"fecha": "2026-06-15", "hora_inicio": "14:00", "hora_fin": fin},
+                {"fecha": "2026-06-15", "hora_inicio": ini, "hora_fin": fin},
                 format="json",
             )
-        excs = ExcepcionHorario.objects.filter(profesional=self.carlos)
-        self.assertEqual(excs.count(), 1)
-        self.assertEqual(excs.first().hora_fin, time(20, 0))
+            self.assertEqual(r.status_code, 201)
+
+        excs = ExcepcionHorario.objects.filter(
+            profesional=self.carlos, fecha="2026-06-15").order_by("hora_inicio")
+        self.assertEqual(excs.count(), 2)
+        self.assertEqual([e.hora_inicio for e in excs], [time(8, 0), time(14, 0)])
+
+    def test_la_jornada_partida_deja_libre_el_mediodia(self):
+        """Lo que de verdad importa: que el hueco del almuerzo no se ofrezca.
+
+        Guardar dos franjas no sirve de nada si el cálculo las une en un
+        solo tramo continuo. Se comprueba sobre los slots, que es lo que
+        acaba viendo el cliente.
+        """
+        from datetime import date
+        for ini, fin in [("08:00", "12:00"), ("14:00", "19:00")]:
+            self.api.post(
+                f"/api/v1/profesionales/{self.carlos.id}/excepciones",
+                {"fecha": "2026-06-15", "hora_inicio": ini, "hora_fin": fin},
+                format="json",
+            )
+        slots = AgendaService.calcular_slots(
+            self.carlos, self.corte, date(2026, 6, 15))
+        self.assertIn(time(11, 30), slots)
+        self.assertIn(time(14, 0), slots)
+        self.assertNotIn(time(12, 0), slots)
+        self.assertNotIn(time(13, 0), slots)
 
     def test_bloqueo_recurrente_dia_libre(self):
         """RF-14: 'mi día para mí' — todos los domingos sin citas."""
@@ -1141,7 +1176,12 @@ class PantallaReservaManualTests(TestCase):
         distintas. La hora libre queda anotada para la v1.1."""
         vivas = self._vivas()
         self.assertIn("/disponibilidad?profesional=", vivas)
-        self.assertIn('@click="rHora = h"', vivas)
+        # Cada hora llega del backend como objeto {valor, texto}: el valor
+        # es lo que se envía, el texto lo que se muestra. Antes era una
+        # cadena que hacía las dos cosas, y eso obligaba a que el formato
+        # de doce horas se reimplementara en JavaScript.
+        self.assertIn('@click="rHora = h.valor"', vivas)
+        self.assertIn('x-text="h.texto"', vivas)
 
     def test_el_aviso_de_bloqueo_exige_una_segunda_pulsacion(self):
         """El dueno tiene que confirmar de forma explicita: el boton normal
@@ -1213,3 +1253,99 @@ class DependenciasFijadasTests(TestCase):
         faltan = [paquete for paquete in criticas.values()
                   if paquete not in declaradas]
         self.assertEqual(faltan, [], f"Se usan pero no se declaran: {faltan}")
+
+
+class PantallaJornadaPartidaTests(TestCase):
+    """La pantalla de horarios con doble jornada.
+
+    Mismo límite conocido que en las otras pruebas de pantalla: es
+    JavaScript y una prueba de Django no lo ejecuta. Solo puede verificar
+    que el enganche existe y no está comentado.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel/horarios").content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    def test_se_puede_elegir_jornada_partida_por_dia(self):
+        """Por día y no para toda la semana: es corriente cerrar a mediodía
+        entre semana y trabajar corrido el sábado. Un interruptor global
+        obligaría a configurar mal uno de los dos casos."""
+        vivas = self._vivas()
+        self.assertIn('x-model="d.partida"', vivas)
+        self.assertIn('x-model="d.inicio2"', vivas)
+        self.assertIn('x-model="d.fin2"', vivas)
+
+    def test_la_pantalla_lee_todas_las_franjas_del_dia(self):
+        """El defecto que esto cierra es de pérdida silenciosa de datos.
+
+        Antes la carga usaba `find()`, que devuelve la primera coincidencia.
+        Como el PUT reemplaza la semana completa, abrir la pantalla y pulsar
+        guardar borraba la segunda jornada sin decir nada. Se busca el
+        filtrado, y se comprueba que `find` ya no está.
+        """
+        vivas = self._vivas()
+        self.assertIn("filter(x => x.dia_semana === i)", vivas)
+        self.assertNotIn("franjas.find(", vivas)
+
+    def test_al_guardar_se_envia_tambien_la_segunda_jornada(self):
+        """El defecto que ninguna otra prueba veía.
+
+        Que los campos de la tarde existan en pantalla no significa que se
+        envíen. El arnés de mutación lo demostró: dejando el bloque de la
+        tarde inalcanzable, las tres pruebas de la sección seguían pasando
+        y el dueño habría escrito su jornada de tarde para que se perdiera
+        en silencio al pulsar guardar.
+        """
+        vivas = " ".join(self._vivas().split())
+        self.assertIn(
+            "if (d.partida) { franjas.push({ dia_semana: i, "
+            "hora_inicio: d.inicio2, hora_fin: d.fin2 }); }", vivas)
+
+    def test_se_puede_copiar_el_horario_a_los_demas_dias(self):
+        """Sin esto habría que repetir cuatro horas siete veces, y el que
+        se cansa a mitad deja la semana a medio configurar."""
+        self.assertIn('@click="copiarALosDemas()"', self._vivas())
+
+    def test_cada_hora_lleva_debajo_su_lectura_en_doce_horas(self):
+        """Los selectores de hora los pinta el navegador según el idioma del
+        teléfono: un dueño con el reloj en veinticuatro horas los vería en
+        veinticuatro horas. El eco de debajo lo escribimos nosotros y se lee
+        igual en cualquier dispositivo."""
+        vivas = self._vivas()
+        self.assertIn('x-text="textoFranja(d.inicio, d.fin)"', vivas)
+        self.assertIn('x-text="textoFranja(d.inicio2, d.fin2)"', vivas)
+
+    def test_los_listados_usan_las_etiquetas_del_backend(self):
+        """El listado mostraba '2026-08-29 · 09:00–12:00': fecha ISO y hora
+        de veinticuatro, formato de máquina, en la misma tarjeta donde el
+        selector ya escribía la hora en formato humano. Las etiquetas las
+        arma el backend para que exista una sola implementación."""
+        vivas = self._vivas()
+        self.assertIn("e.fecha_texto", vivas)
+        self.assertIn("e.franja_texto", vivas)
+        self.assertIn("b.franja_texto", vivas)
+        # Solo se prohíbe en los LISTADOS. Poblar un <input type="time">
+        # sigue exigiendo el corte a "HH:MM" de veinticuatro horas: ese
+        # control solo acepta ese formato, y ahí el recorte es correcto.
+        self.assertNotIn("e.hora_inicio.slice", vivas)
+        self.assertNotIn("b.hora_inicio.slice", vivas)
+
+    def test_la_tarde_no_puede_empezar_antes_de_cerrar_la_manana(self):
+        """Se valida en la pantalla y no solo en el servidor porque el PUT
+        envía la semana entera: una franja rechazada abortaría el lote y el
+        dueño no sabría cuál de los siete días tiene el problema."""
+        self.assertIn("La tarde no puede empezar antes de que cierre la mañana",
+                      self._vivas())
+
+
+class PantallaHoraLegibleTests(TestCase):
+    """El formato de doce horas donde lo lee el dueño."""
+
+    def test_la_agenda_muestra_la_hora_escrita_por_el_backend(self):
+        html = self.client.get("/panel").content.decode()
+        vivas = "\n".join(l for l in html.splitlines()
+                          if not l.strip().startswith("//"))
+        self.assertIn('x-text="c.hora_texto"', vivas)
+        self.assertNotIn('c.hora_inicio.slice(0,5)', vivas)
