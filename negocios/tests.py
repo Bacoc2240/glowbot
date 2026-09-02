@@ -843,3 +843,79 @@ class EliminarServicioTest(TestCase):
         r = self.api.delete(f"/api/v1/servicios/{ajeno.id}")
         self.assertEqual(r.status_code, 404)
         self.assertTrue(Servicio.objects.filter(pk=ajeno.id).exists())
+
+
+class CitasPorAtenderMiranElRelojTest(TestCase):
+    """El conteo de «citas por atender» de RF-04 usa la misma definición de
+    futuro que el resto del sistema.
+
+    Antes contaba con `fecha >= hoy`, así que una cita de esta mañana —ya
+    atendida— seguía apareciendo por la tarde como pendiente. No rompía
+    nada: el servicio se desactivaba igual, porque quien decide eso es la
+    clave foránea PROTECT y no este número. Lo que hacía era mentirle al
+    dueño en el mensaje, y el mensaje existe precisamente porque antes no
+    había ninguno y la función parecía rota.
+
+    Es la cuarta copia de la misma pregunta. Las otras tres eran el tope de
+    citas, el listado del asistente y el estado inyectado. Que las cuatro se
+    equivocaran igual es el argumento de por qué la definición vive ahora en
+    un solo sitio.
+    """
+
+    def setUp(self):
+        from datetime import time, timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+
+        self.api = APIClient()
+        duenio = Usuario.objects.create_user(
+            email="pa@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=duenio, nombre="B", slug="pa",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos")
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3005556666",
+            acepta_datos=True)
+        self.api.force_authenticate(user=duenio)
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        # Una cita de HOY a las diez de la mañana. Que esté en el pasado o en
+        # el futuro lo decide el reloj que congele cada prueba, no la hora a
+        # la que se ejecute la suite.
+        self.hoy = timezone.localdate()
+        _Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, fecha=self.hoy,
+            hora_inicio=time(10, 0), hora_fin=time(10, 30),
+            estado=_Cita.Estado.CONFIRMADA, canal=_Cita.Canal.MANUAL)
+
+    def _reloj(self, hora):
+        from datetime import datetime
+        from unittest.mock import patch
+        from django.utils import timezone
+        momento = timezone.make_aware(
+            datetime.combine(self.hoy, hora), timezone.get_current_timezone())
+        return patch("agenda.services.timezone.localtime", return_value=momento)
+
+    def _borrar(self):
+        return self.api.delete(f"/api/v1/servicios/{self.serv.id}").json()
+
+    def test_por_la_tarde_la_cita_de_la_manana_ya_no_esta_por_atender(self):
+        from datetime import time
+        with self._reloj(time(15, 0)):
+            datos = self._borrar()
+        self.assertEqual(datos["citas_futuras"], 0)
+        self.assertIn("historial", datos["detalle"])
+        self.assertNotIn("por atender", datos["detalle"])
+
+    def test_por_la_manana_esa_misma_cita_si_esta_por_atender(self):
+        """La contraparte, que es la que impide arreglar esto excluyendo el
+        día de hoy entero: a las ocho, la cita de las diez está por
+        atender."""
+        from datetime import time
+        with self._reloj(time(8, 0)):
+            datos = self._borrar()
+        self.assertEqual(datos["citas_futuras"], 1)
+        self.assertIn("por atender", datos["detalle"])

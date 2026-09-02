@@ -1608,6 +1608,22 @@ class NoAgendarEnElPasadoTest(TestCase):
         from negocios.models import (ClienteFinal, Establecimiento, HorarioBase,
                                      Profesional, Servicio)
 
+        # El reloj se congela a mediodía. Estas pruebas comparan los huecos
+        # calculados contra la hora real y el molde abre el día de 00:00 a
+        # 23:59, así que ejecutadas pasadas las 23:29 ya no queda ninguna
+        # hora futura en el día: las listas salían las dos vacías y dos
+        # pruebas fallaban —y las otras dos pasaban sin comprobar nada—.
+        # Defecto anterior a este paquete: verificado ejecutando esta clase
+        # sobre la rama limpia a las 23:27.
+        #
+        # Es el mismo aprendizaje de `fechas_de_prueba`, un escalón más
+        # abajo: una prueba con fecha fija caduca con el calendario; una que
+        # depende de la hora a la que se ejecute caduca cada noche.
+        self._reloj = patch("agenda.services.timezone.localtime",
+                            return_value=self.AHORA)
+        self._reloj.start()
+        self.addCleanup(self._reloj.stop)
+
         u = Usuario.objects.create_user(email="np@a.com", password="clave12345")
         self.est = Establecimiento.objects.create(
             propietario=u, nombre="G", slug="np",
@@ -1627,6 +1643,13 @@ class NoAgendarEnElPasadoTest(TestCase):
                                        hora_inicio=time(0, 0), hora_fin=time(23, 59))
 
     # ── Lo que se ofrece ──────────────────────────────────────────
+
+    # Mediodía deja doce horas de jornada por delante en el molde de 00:00 a
+    # 23:59, así que ninguna de estas pruebas depende de cuándo se ejecute.
+    # Se ancla al día de hoy y no a una fecha escrita: una fecha escrita
+    # vuelve a poner fecha de caducidad al proyecto.
+    AHORA = timezone.localtime().replace(hour=12, minute=0, second=0,
+                                         microsecond=0)
 
     def test_no_se_ofrecen_horas_que_ya_pasaron(self):
         from django.utils import timezone
@@ -1746,3 +1769,154 @@ class NoAgendarEnElPasadoTest(TestCase):
             servicio=self.serv, cliente=self.cli, dia=manana,
             hora_inicio=time(10, 0))
         self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+
+class QueCuentaComoCitaFuturaTest(TestCase):
+    """La definición de «futura», y por qué es el inicio y no el final.
+
+    Defecto de campo, con el tope en 2: un cliente con una cita a las 10:50
+    de esa mañana y otra el domingo intentó agendar por la tarde y el
+    asistente le respondió que ya tenía dos citas pendientes y que cancelara
+    una. La de las 10:50 ya había ocurrido; independientemente de si el
+    cliente fue o no, eso es pasado.
+
+    La causa era `fecha >= hoy`: una aproximación que mira el calendario y
+    no el reloj. La especificación estaba bien —el `help_text` del campo ya
+    decía «citas futuras»—; lo que se implementó fue algo más barato.
+
+    El corte se pone en `hora_inicio` para que espeje exactamente el de
+    `no_asistio` (RF-13), que permite marcar la falta «desde que la cita
+    EMPEZÓ». Así los dos conjuntos son complementarios: lo que ya empezó no
+    es futuro, y lo que es futuro no se puede marcar como falta.
+    """
+
+    # Las tres de la tarde deja horas por delante y por detrás dentro del
+    # mismo día, así que ningún desfase de esta clase cruza la medianoche.
+    AHORA = timezone.localtime().replace(hour=15, minute=0, second=0,
+                                         microsecond=0)
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="cf@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Mi Barbería", slug="cf",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            max_citas_abiertas=2)
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Eduardo",
+            telefono="3243269172", acepta_datos=True)
+
+    def _congelar(self):
+        return patch("agenda.services.timezone.localtime",
+                     return_value=self.AHORA)
+
+    def _cita(self, desfase, duracion=timedelta(minutes=30)):
+        """`desfase` es un timedelta respecto del ahora congelado."""
+        cuando = self.AHORA + desfase
+        return Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, fecha=cuando.date(),
+            hora_inicio=cuando.time(),
+            hora_fin=(cuando + duracion).time(),
+            estado=Cita.Estado.CONFIRMADA)
+
+    def _reservar(self, dias=3):
+        return AgendaService.reservar(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli,
+            dia=(self.AHORA + timedelta(days=dias)).date(),
+            hora_inicio=time(9, 0))
+
+    # ── El tope ───────────────────────────────────────────────────
+
+    def test_la_cita_de_esta_manana_ya_no_ocupa_cupo(self):
+        """El caso reportado, con el tope en 2: una cita de hoy ya pasada más
+        una futura NO agotan el cupo."""
+        self._cita(-timedelta(hours=5))          # esta mañana, ya atendida
+        self._cita(timedelta(days=5))            # el domingo
+        with self._congelar():
+            cita = self._reservar()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_una_cita_de_mas_tarde_hoy_si_ocupa_cupo(self):
+        """La contraparte, y la razón por la que no vale «arreglarlo»
+        excluyendo el día de hoy entero: dos citas para esta misma tarde
+        siguen siendo dos citas por venir."""
+        self._cita(timedelta(hours=1))
+        self._cita(timedelta(hours=3))
+        with self._congelar():
+            with self.assertRaises(TopeCitasAlcanzado):
+                self._reservar()
+
+    def test_una_cita_en_curso_no_ocupa_cupo(self):
+        """Decisión: el corte es `hora_inicio`, no `hora_fin`.
+
+        Esta cita empezó hace diez minutos y termina dentro de veinte. Si el
+        corte fuera el final, seguiría contando y el cliente que está en la
+        silla no podría dejar agendada la siguiente antes de irse.
+        """
+        self.est.max_citas_abiertas = 1
+        self.est.save(update_fields=["max_citas_abiertas"])
+        self._cita(-timedelta(minutes=10))
+        with self._congelar():
+            cita = self._reservar()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_lo_de_ayer_tampoco_cuenta(self):
+        self.est.max_citas_abiertas = 1
+        self.est.save(update_fields=["max_citas_abiertas"])
+        self._cita(-timedelta(days=1))
+        with self._congelar():
+            cita = self._reservar()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_el_tope_sigue_frenando_lo_que_debe_frenar(self):
+        """La corrección no puede haber desactivado el freno: es el control
+        de abuso que impide que una sola persona llene la agenda desde el
+        chat público."""
+        self._cita(timedelta(days=1))
+        self._cita(timedelta(days=2))
+        with self._congelar():
+            with self.assertRaises(TopeCitasAlcanzado):
+                self._reservar(dias=4)
+
+    # ── El filtro, en directo ─────────────────────────────────────
+
+    def test_el_filtro_parte_las_citas_del_dia_por_el_reloj(self):
+        """`solo_futuras` no separa por fecha sino por instante: de dos citas
+        del MISMO día deja fuera la de la mañana y dentro la de la tarde."""
+        manana_ = self._cita(-timedelta(hours=5))
+        tarde = self._cita(timedelta(hours=2))
+        futuras = list(AgendaService.solo_futuras(
+            Cita.objects.all(), ahora=self.AHORA))
+        self.assertIn(tarde, futuras)
+        self.assertNotIn(manana_, futuras)
+
+    def test_futuro_y_ya_empezo_no_dejan_hueco_ni_se_solapan(self):
+        """El invariante de la decisión: cada cita cae en uno de los dos
+        conjuntos y en uno solo.
+
+        Que se solaparan permitiría cancelar una cita para borrar una
+        inasistencia antes de que el dueño la registre; que dejaran hueco
+        haría invisible una cita para las dos vías.
+        """
+        api = APIClient()
+        api.force_authenticate(user=self.est.propietario)
+
+        for desfase in (-timedelta(minutes=10), timedelta(minutes=10)):
+            with self.subTest(desfase=desfase):
+                cita = self._cita(desfase)
+                es_futura = AgendaService.solo_futuras(
+                    Cita.objects.filter(pk=cita.pk), ahora=self.AHORA).exists()
+                with patch("agenda.api.timezone.localtime",
+                           return_value=self.AHORA):
+                    r = api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+                acepta_falta = r.status_code == 200
+                self.assertNotEqual(
+                    es_futura, acepta_falta,
+                    "Una cita tiene que ser futura O poder marcarse como "
+                    "falta, nunca las dos cosas ni ninguna")
+                cita.delete()

@@ -12,6 +12,7 @@ from datetime import date, time
 from unittest.mock import patch
 
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from agenda.fechas_de_prueba import proximo_dia_semana
 
@@ -684,6 +685,24 @@ class CancelarLaCitaCorrectaTest(TestCase):
     ocuparlo otra persona en segundos. Por eso el sistema no elige.
     """
 
+    # El reloj se congela a las 8 de la mañana para que la cita de las 10:40
+    # de HOY siga siendo futura mientras dura la prueba.
+    #
+    # El molde no se cambia por comodidad: «una esa misma mañana» es el caso
+    # de campo que dio origen a esta regla y quiero que la prueba lo siga
+    # contando. Lo que estaba mal era dejar que esa hora quedara pasada o
+    # futura según la hora a la que se ejecutara la suite. Desde que
+    # `_citas_activas` corta en el instante actual y no en la fecha, esa
+    # ambigüedad hacía fallar la clase entera por la tarde.
+    AHORA = timezone.localtime().replace(hour=8, minute=0, second=0,
+                                         microsecond=0)
+
+    def _congelar_reloj(self):
+        reloj = patch("agenda.services.timezone.localtime",
+                      return_value=self.AHORA)
+        reloj.start()
+        self.addCleanup(reloj.stop)
+
     def setUp(self):
         from datetime import timedelta
         from django.utils import timezone
@@ -692,6 +711,7 @@ class CancelarLaCitaCorrectaTest(TestCase):
                                      Servicio)
         from agenda.models import Cita
 
+        self._congelar_reloj()
         u = Usuario.objects.create_user(email="cc@b.com", password="clave12345")
         self.est = Establecimiento.objects.create(
             propietario=u, nombre="B", slug="cc",
@@ -950,6 +970,18 @@ class CancelacionPublicaSinAmbiguedadTest(TestCase):
     otra puerta.
     """
 
+    AHORA = timezone.localtime().replace(hour=8, minute=0, second=0,
+                                         microsecond=0)
+
+    def _congelar_reloj(self):
+        """Ver la nota de CancelarLaCitaCorrectaTest: la cita de las 10:40 de
+        hoy tiene que seguir siendo futura para que este molde tenga
+        sentido."""
+        reloj = patch("agenda.services.timezone.localtime",
+                      return_value=self.AHORA)
+        reloj.start()
+        self.addCleanup(reloj.stop)
+
     def setUp(self):
         from datetime import timedelta
         from django.utils import timezone
@@ -959,6 +991,7 @@ class CancelacionPublicaSinAmbiguedadTest(TestCase):
                                      Servicio)
         from agenda.models import Cita
 
+        self._congelar_reloj()
         self.api = APIClient()
         u = Usuario.objects.create_user(email="cp@b.com", password="clave12345")
         self.est = Establecimiento.objects.create(
@@ -1145,3 +1178,306 @@ class AsistenteNoOfreceHorasPasadasTest(TestCase):
         })
         self.assertIn("8:30 a. m.", final["respuesta"])
         self.assertNotIn("08:30", final["respuesta"])
+
+
+class NoSeCancelaLoQueYaEmpezoTest(TestCase):
+    """`_citas_activas` corta en el instante actual, no en la fecha.
+
+    No es solo cosmética. `no_asistio` exige que la cita siga CONFIRMADA,
+    así que mientras una cita ya empezada se dejara cancelar desde el chat,
+    quien no se presentaba podía anularla él mismo antes de que el dueño la
+    marcara. El control de inasistencias —y el bloqueo que se apoya en él—
+    tenía una puerta trasera abierta por un filtro de una línea.
+
+    La misma consulta la usa `CancelarCitaPublicaView`, que además no pide
+    autenticación: era la misma puerta por dos sitios.
+    """
+
+    AHORA = timezone.localtime().replace(hour=15, minute=0, second=0,
+                                         microsecond=0)
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        reloj = patch("agenda.services.timezone.localtime",
+                      return_value=self.AHORA)
+        reloj.start()
+        self.addCleanup(reloj.stop)
+
+        self.api = APIClient()
+        u = Usuario.objects.create_user(email="ye@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="ye",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+
+    def _cita(self, desfase):
+        cuando = self.AHORA + desfase
+        return Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, fecha=cuando.date(),
+            hora_inicio=cuando.time(),
+            hora_fin=(cuando + timedelta(minutes=30)).time(),
+            estado=Cita.Estado.CONFIRMADA, canal=Cita.Canal.IA)
+
+    def test_el_chat_no_cancela_una_cita_que_ya_empezo(self):
+        cita = self._cita(-timedelta(hours=1))
+        final, feedback = IAService._ejecutar_intencion(
+            self.est, {"intencion": "cancelar_cita", "telefono": "3001234567"})
+        self.assertIsNone(final)
+        self.assertIn("No hay citas confirmadas", feedback)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_la_puerta_publica_tampoco(self):
+        cita = self._cita(-timedelta(hours=1))
+        r = self.api.post("/api/v1/p/ye/citas/cancelar",
+                          {"telefono": "3001234567"}, format="json")
+        self.assertEqual(r.status_code, 404)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_ni_pasandole_el_identificador_de_esa_cita(self):
+        """El id se busca DENTRO de las citas activas, así que la ventana
+        estrecha también protege esta vía."""
+        cita = self._cita(-timedelta(hours=1))
+        final, feedback = IAService._ejecutar_intencion(
+            self.est, {"intencion": "cancelar_cita", "telefono": "3001234567",
+                       "cita_id": cita.id})
+        self.assertIsNone(final)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_asi_el_dueno_conserva_la_cita_para_marcar_la_falta(self):
+        """El motivo de fondo: la cita llega intacta al momento en que el
+        dueño puede registrar la inasistencia."""
+        cita = self._cita(-timedelta(hours=1))
+        self.api.post("/api/v1/p/ye/citas/cancelar",
+                      {"telefono": "3001234567"}, format="json")
+        self.api.force_authenticate(user=self.est.propietario)
+        with patch("agenda.api.timezone.localtime", return_value=self.AHORA):
+            r = self.api.patch(f"/api/v1/citas/{cita.id}/no-asistio")
+        self.assertEqual(r.status_code, 200)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.NO_ASISTIO)
+
+    def test_una_cita_de_mas_tarde_hoy_si_se_cancela(self):
+        """La contraparte: la ventana no puede haberse comido el día de hoy
+        entero. Una cita de esta misma tarde se cancela con normalidad."""
+        cita = self._cita(timedelta(hours=2))
+        final, _ = IAService._ejecutar_intencion(
+            self.est, {"intencion": "cancelar_cita", "telefono": "3001234567"})
+        self.assertIsNotNone(final)
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CANCELADA_CLIENTE)
+
+    def test_la_consulta_tampoco_informa_de_las_ya_pasadas(self):
+        self._cita(-timedelta(hours=1))
+        final, feedback = IAService._ejecutar_intencion(
+            self.est, {"intencion": "consultar_cita", "telefono": "3001234567"})
+        self.assertIn("No hay citas confirmadas", feedback)
+
+
+class ResumenDeEstadoTest(TestCase):
+    """El bloque [SISTEMA] que se inyecta en cada turno.
+
+    Su ventana es a propósito más ancha que la de `_citas_activas`: aquí
+    entra el día de hoy completo, con las ya pasadas marcadas. Es contexto,
+    no permiso. Con la ventana estricta, a quien preguntara «¿y mi cita de
+    esta mañana?» el modelo le habría respondido que no tiene ninguna —cierto
+    y desconcertante, y justo la conversación que el dueño querría que
+    ocurriera con precisión cuando hubo una inasistencia—.
+    """
+
+    AHORA = timezone.localtime().replace(hour=15, minute=0, second=0,
+                                         microsecond=0)
+
+    def setUp(self):
+        reloj = patch("agenda.services.timezone.localtime",
+                      return_value=self.AHORA)
+        reloj.start()
+        self.addCleanup(reloj.stop)
+
+        u = Usuario.objects.create_user(email="re@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="re",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+
+    def _cita(self, desfase, estado=None):
+        cuando = self.AHORA + desfase
+        return Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, fecha=cuando.date(),
+            hora_inicio=cuando.time(),
+            hora_fin=(cuando + timedelta(minutes=30)).time(),
+            estado=estado or Cita.Estado.CONFIRMADA)
+
+    def _resumen(self):
+        return IAService._resumen_citas(self.est, "3001234567")
+
+    def test_la_de_esta_manana_aparece_marcada(self):
+        self._cita(-timedelta(hours=5))
+        self.assertIn("YA PASO", self._resumen())
+
+    def test_la_de_esta_tarde_no_lleva_marca(self):
+        self._cita(timedelta(hours=2))
+        self.assertNotIn("YA PASO", self._resumen())
+
+    def test_una_inasistencia_no_se_le_presenta_como_cancelada(self):
+        """El texto anterior clasificaba en CONFIRMADA o CANCELADA, así que
+        una falta se le describía al modelo como una cancelación. Este bloque
+        existe precisamente para que el modelo no reciba datos falsos."""
+        self._cita(-timedelta(hours=5), estado=Cita.Estado.NO_ASISTIO)
+        resumen = self._resumen()
+        self.assertIn("NO ASISTIÓ", resumen)
+        self.assertNotIn("CANCELADA", resumen)
+
+    def test_sin_citas_lo_dice(self):
+        self.assertIn("no tiene ninguna cita", self._resumen())
+
+
+class DisponibilidadDeTodoElEquipoTest(TestCase):
+    """`consultar_disponibilidad` sin `profesional_id` (RF-07).
+
+    Defecto de campo: un cliente pidió Barba para el jueves y el asistente le
+    ofreció los horarios de Eduardo sin más, como si fuera toda la oferta.
+    Tuvo que preguntar «¿solo tienes con Eduardo?» para enterarse de que
+    también estaba Carlos.
+
+    El modelo no se equivocó: el campo `profesional_id` era obligatorio, así
+    que tenía que poner uno antes de saber nada. Molesto cuando el elegido
+    tiene huecos; caro cuando no los tiene, porque entonces el asistente
+    responde que no hay disponibilidad mientras otra persona del equipo tiene
+    el día entero libre.
+
+    La corrección no es pedirle al modelo que pregunte primero —eso deja la
+    regla en el prompt, la capa que menos garantiza— sino quitarle la
+    obligación de elegir. Mismo patrón que `cancelar_cita` sin `cita_id`:
+    ante varias opciones el backend no decide, devuelve el abanico y espera.
+    """
+
+    def setUp(self):
+        self.dia = proximo_dia_semana(3)          # el próximo jueves
+        u = Usuario.objects.create_user(email="eq@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Mi Barbería", slug="eq",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.barba = Servicio.objects.create(
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
+        self.manicura = Servicio.objects.create(
+            establecimiento=self.est, nombre="Manicura", duracion_min=60)
+
+        self.eduardo = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo Maldonado")
+        self.carlos = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos Rivero")
+        # Laura sí trabaja el jueves, pero no presta Barba: si aparece, la
+        # lista está ignorando la asignación M:N y no el horario.
+        self.laura = Profesional.objects.create(
+            establecimiento=self.est, nombre="Laura Pérez")
+
+        for prof, servicio in ((self.eduardo, self.barba),
+                               (self.carlos, self.barba),
+                               (self.laura, self.manicura)):
+            ProfesionalServicio.objects.create(profesional=prof, servicio=servicio)
+
+        # Eduardo y Laura atienden el jueves; Carlos libra ese día.
+        for prof in (self.eduardo, self.laura):
+            HorarioBase.objects.create(
+                profesional=prof, dia_semana=self.dia.weekday(),
+                hora_inicio=time(8, 0), hora_fin=time(12, 0))
+
+    def _consultar(self, **extra):
+        intencion = {"intencion": "consultar_disponibilidad",
+                     "servicio_id": self.barba.id, "fecha": str(self.dia)}
+        intencion.update(extra)
+        final, feedback = IAService._ejecutar_intencion(self.est, intencion)
+        self.assertIsNone(final)
+        return feedback
+
+    def test_sin_profesional_responde_por_todo_el_equipo(self):
+        feedback = self._consultar()
+        self.assertIn("Eduardo Maldonado", feedback)
+        self.assertIn("Carlos Rivero", feedback)
+
+    def test_quien_no_atiende_ese_dia_sale_dicho_asi(self):
+        """Callarlo obligaría al modelo a deducir por qué falta alguien que
+        el cliente vio en la lista, y diría que no presta el servicio cuando
+        lo que pasa es que libra."""
+        feedback = self._consultar()
+        self.assertIn("Carlos Rivero: sin horas libres", feedback)
+
+    def test_no_ofrece_a_quien_no_presta_el_servicio(self):
+        feedback = self._consultar()
+        self.assertNotIn("Laura", feedback)
+
+    def test_no_se_cuela_un_profesional_de_otro_establecimiento(self):
+        """Con un registro real del otro inquilino, no con un id inventado:
+        un id que no existe da el mismo resultado con el filtro y sin él, así
+        que no distinguiría nada."""
+        otro_duenio = Usuario.objects.create_user(
+            email="eq2@b.com", password="clave12345")
+        otro = Establecimiento.objects.create(
+            propietario=otro_duenio, nombre="Salón Ajeno", slug="eq2",
+            tipo=Establecimiento.Tipo.SALON, telefono="301")
+        intruso = Profesional.objects.create(
+            establecimiento=otro, nombre="Yesica Intrusa")
+        # Una fila de asignación que cruza inquilinos: nada en la base lo
+        # impide, y es exactamente lo que el filtro por establecimiento tiene
+        # que atajar.
+        ProfesionalServicio.objects.create(profesional=intruso, servicio=self.barba)
+        HorarioBase.objects.create(
+            profesional=intruso, dia_semana=self.dia.weekday(),
+            hora_inicio=time(8, 0), hora_fin=time(12, 0))
+
+        feedback = self._consultar()
+        self.assertNotIn("Yesica", feedback)
+
+    def test_le_dice_al_modelo_que_no_elija(self):
+        """El feedback es el contrato con el modelo: si no lleva la
+        instrucción, volverá a escoger por el cliente."""
+        feedback = self._consultar()
+        self.assertIn("no elijas tu", feedback)
+
+    def test_con_profesional_responde_solo_por_ese(self):
+        """La vía anterior sigue viva: cuando el cliente nombra a alguien, se
+        le responde por esa persona y no por el equipo entero."""
+        feedback = self._consultar(profesional_id=self.eduardo.id)
+        self.assertIn("Eduardo Maldonado", feedback)
+        self.assertNotIn("Carlos Rivero", feedback)
+
+    def test_si_nadie_lo_presta_no_ofrece_horarios(self):
+        """El dueño creó el servicio y no marcó a nadie. La respuesta honesta
+        es que no hay quien lo preste, no una lista vacía sin explicación."""
+        huerfano = Servicio.objects.create(
+            establecimiento=self.est, nombre="Cejas", duracion_min=15)
+        _, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "consultar_disponibilidad",
+            "servicio_id": huerfano.id, "fecha": str(self.dia)})
+        self.assertIn("Ningun profesional", feedback)
+        self.assertIn("NO ofrezcas horarios", feedback)
+
+    def test_si_nadie_tiene_hueco_lo_dice_sin_inventar(self):
+        cerrado = proximo_dia_semana(6)           # domingo, nadie trabaja
+        _, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "consultar_disponibilidad",
+            "servicio_id": self.barba.id, "fecha": str(cerrado)})
+        self.assertIn("Nadie tiene horas libres", feedback)
+
+    def test_el_prompt_le_prohibe_elegir_el_profesional(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("NUNCA elijas tu el profesional", prompt)
+        self.assertIn("OPCIONAL", prompt)

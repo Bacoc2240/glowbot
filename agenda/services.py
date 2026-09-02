@@ -83,6 +83,43 @@ class AgendaService:
         return ini_a < fin_b and ini_b < fin_a
 
     # ──────────────────────────────────────────────────────────────
+    #  Que significa "futura": una sola definicion para todo el sistema
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def solo_futuras(qs, ahora=None):
+        """Acota un queryset de citas a las que todavia no han empezado.
+
+        Existe porque cuatro sitios distintos --el tope de citas abiertas,
+        el listado del asistente, el estado inyectado en cada turno y el
+        conteo de citas por atender al borrar un servicio-- respondian cada
+        uno por su cuenta a la misma pregunta, y los cuatro con la misma
+        aproximacion barata: `fecha >= hoy`. Esa aproximacion mira el
+        calendario y no el reloj, de modo que una cita de esta manana seguia
+        contando como futura toda la tarde. Con tope de dos citas, quien ya
+        habia pasado por la silla no podia agendar otra vez el mismo dia.
+
+        El corte es `hora_inicio > ahora`, y no `hora_fin`, para que espeje
+        exactamente el de `no_asistio` (`localtime() < inicio`, «se permite
+        desde que la cita EMPEZO»). Asi "futura" y "ya empezo" son
+        complementarios: sin solape --una cita que contara en los dos lados
+        podria cancelarse para borrar una inasistencia-- y sin hueco --una
+        que no contara en ninguno seria invisible para el sistema--. Una
+        cita en curso deja de ocupar cupo, que es lo correcto: el cliente ya
+        esta atendido.
+
+        Se resuelve entero en SQL. `fecha` y `hora_inicio` son columnas
+        separadas, asi que la comparacion es exacta sin componer instantes
+        con zona horaria, que es la parte fragil de este tipo de consulta.
+        `ahora` es inyectable para que las pruebas fijen el reloj en vez de
+        depender de la hora a la que se ejecuten.
+        """
+        ahora = ahora or timezone.localtime()
+        return qs.filter(
+            Q(fecha__gt=ahora.date())
+            | Q(fecha=ahora.date(), hora_inicio__gt=ahora.time())
+        )
+
+    # ──────────────────────────────────────────────────────────────
     #  Capa 1 + Capa 2: franjas base del día (en minutos)
     # ──────────────────────────────────────────────────────────────
     @classmethod
@@ -316,13 +353,17 @@ class AgendaService:
         #    canal describe de donde vino la cita, no que permisos tiene
         #    quien la crea, y confundir ambas cosas hace que anadir un canal
         #    nuevo cambie en silencio quien puede saltarse el limite.
+        #    El conteo pasa por `solo_futuras` y no por `fecha >= hoy`: el
+        #    tope limita cuanta agenda POR VENIR retiene un telefono, y una
+        #    cita que ya empezo no retiene nada. Con `fecha >= hoy`, quien
+        #    se cortaba el pelo a las diez seguia gastando cupo a las ocho
+        #    de la noche.
         tope = establecimiento.max_citas_abiertas
-        abiertas = Cita.objects.filter(
+        abiertas = cls.solo_futuras(Cita.objects.filter(
             establecimiento=establecimiento,
             cliente__telefono=cliente.telefono,
             estado=Cita.Estado.CONFIRMADA,
-            fecha__gte=timezone.localdate(),
-        ).count()
+        )).count()
         if respetar_tope and abiertas >= tope:
             raise TopeCitasAlcanzado(
                 f"Ya tienes {abiertas} cita(s) pendientes con este número, que "

@@ -1400,6 +1400,13 @@ class PanelNoAgendaEnElPasadoTests(TestCase):
     ya está en el local— pero tampoco puede crear citas en el pasado.
     """
 
+    # Mismo motivo y misma solución que en agenda.tests: el molde abre el día
+    # entero y estas pruebas comparan contra el reloj, así que ejecutadas de
+    # noche no quedaba ninguna hora futura y la comprobación se quedaba sin
+    # objeto. Defecto anterior a este paquete, verificado en la rama limpia.
+    AHORA = timezone.localtime().replace(hour=12, minute=0, second=0,
+                                         microsecond=0)
+
     def setUp(self):
         from datetime import time, timedelta
         from django.utils import timezone
@@ -1407,6 +1414,11 @@ class PanelNoAgendaEnElPasadoTests(TestCase):
         from cuentas.models import Usuario
         from negocios.models import (ClienteFinal, Establecimiento, HorarioBase,
                                      Profesional, Servicio)
+
+        reloj = mock.patch("agenda.services.timezone.localtime",
+                           return_value=self.AHORA)
+        reloj.start()
+        self.addCleanup(reloj.stop)
 
         self.api = APIClient()
         u = Usuario.objects.create_user(email="pp@a.com", password="clave12345")

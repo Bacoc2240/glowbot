@@ -5,7 +5,6 @@ establecimiento del usuario autenticado (aislamiento multi-tenant, RF-02).
 from django.conf import settings
 from django.db import transaction
 from django.db.models import ProtectedError
-from django.utils import timezone
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -14,6 +13,7 @@ from rest_framework.views import APIView
 from .models import Establecimiento, HorarioBase, Profesional, Servicio
 from .qr import data_uri_del_enlace
 from agenda.fechas import fecha_corta, franja_texto
+from agenda.services import AgendaService
 
 
 class _EstablecimientoMixin:
@@ -75,8 +75,12 @@ class ServicioViewSet(_EstablecimientoMixin, viewsets.ModelViewSet):
         """
         instance = self.get_object()
         nombre = instance.nombre
-        por_atender = instance.citas.filter(
-            fecha__gte=timezone.localdate(),
+        # "Por atender" se cuenta con la misma definicion de futuro que usa
+        # el resto del sistema. Con `fecha >= hoy` este numero incluia las
+        # citas de esta manana, y el dueno leia que un servicio tenia citas
+        # pendientes que en realidad ya se habian atendido.
+        por_atender = AgendaService.solo_futuras(
+            instance.citas.all()
         ).exclude(estado__startswith="cancelada").count()
 
         try:

@@ -136,7 +136,9 @@ REGLAS OBLIGATORIAS:
 7. No converses de temas ajenos al agendamiento; redirige con cortesía.
 8. Cuando debas ejecutar una acción, responde ÚNICAMENTE con el JSON de la
    intención, sin texto adicional, en una de estas formas:
-   {{"intencion":"consultar_disponibilidad","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD"}}
+   {{"intencion":"consultar_disponibilidad","servicio_id":N,"fecha":"AAAA-MM-DD","profesional_id":N}}
+   (profesional_id es OPCIONAL aqui; omitelo si el cliente no ha dicho con
+   quien quiere atenderse. Ver la regla 15.)
    {{"intencion":"agendar","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD","hora_inicio":"HH:MM","cliente":{{"nombre":"...","telefono":"...","acepta_datos":true}}}}
    {{"intencion":"consultar_cita","telefono":"..."}}
    {{"intencion":"cancelar_cita","telefono":"...","cita_id":N}}
@@ -171,7 +173,19 @@ REGLAS OBLIGATORIAS:
    le des por buena una cita cancelada: se presentaria al local sin turno.
 14. Antes de cancelar, si el cliente tiene mas de una cita, pregunta cual
    describiendola por fecha y hora. Nunca elijas tu. Una cancelacion no se
-   deshace."""
+   deshace.
+15. NUNCA elijas tu el profesional. Si el cliente todavia no ha dicho con
+   quien quiere atenderse, emite consultar_disponibilidad SIN el campo
+   profesional_id: el sistema te devolvera las horas libres de TODAS las
+   personas que prestan ese servicio, agrupadas por nombre, y tu se las
+   presentas para que elija. Pon profesional_id solo cuando el cliente haya
+   nombrado a alguien. Elegir tu le esconde al resto del equipo, y si la
+   persona que elegiste tiene el dia lleno le diras que no hay
+   disponibilidad cuando si la hay.
+16. Las citas marcadas YA PASO en los mensajes [SISTEMA] son historia: no se
+   pueden cancelar ni cambiar, y no ocupan cupo. Puedes mencionarlas si el
+   cliente pregunta por ellas, pero nunca las ofrezcas para cancelar ni las
+   cuentes entre sus citas pendientes."""
 
 
     # ──────────────────────────────────────────────────────────────
@@ -230,11 +244,31 @@ REGLAS OBLIGATORIAS:
                     pk=intencion["servicio_id"],
                     establecimiento=establecimiento, activo=True,
                 )
+                dia = date.fromisoformat(intencion["fecha"])
+
+                # profesional_id es opcional. Cuando el cliente todavia no ha
+                # nombrado a nadie, el modelo tenia que poner uno igualmente
+                # porque el campo era obligatorio: elegia el primero de la
+                # lista y presentaba su agenda como si fuera toda la oferta.
+                # Molesto cuando el elegido tiene huecos; caro cuando no los
+                # tiene, porque entonces el asistente responde que no hay
+                # disponibilidad mientras otra persona del equipo tiene el dia
+                # entero libre, y la reserva se pierde.
+                #
+                # La solucion no es pedirle al modelo que pregunte primero
+                # --eso deja la regla en el prompt, que es la capa que menos
+                # garantiza-- sino quitarle la obligacion de elegir. Es el
+                # mismo patron que cancelar_cita sin cita_id: cuando hay
+                # varias opciones el backend no decide, devuelve el abanico y
+                # espera a que el cliente escoja.
+                if intencion.get("profesional_id") is None:
+                    return None, cls._disponibilidad_del_equipo(
+                        establecimiento, servicio, dia)
+
                 profesional = Profesional.objects.get(
                     pk=intencion["profesional_id"],
                     establecimiento=establecimiento, activo=True,
                 )
-                dia = date.fromisoformat(intencion["fecha"])
                 slots = AgendaService.calcular_slots(profesional, servicio, dia)
                 listado = ", ".join(hora_texto(s) for s in slots) or "ninguno"
                 return None, (
@@ -415,6 +449,67 @@ REGLAS OBLIGATORIAS:
             return None, f"{e} Consulta la disponibilidad y ofrece alternativas."
 
     @staticmethod
+    def _profesionales_que_prestan(establecimiento, servicio):
+        """Quienes pueden atender ese servicio, en el orden en que se ofrecen.
+
+        Solo los ASIGNADOS, y no "todos los activos si el servicio no tiene
+        asignaciones", que es lo que tolera `agendar`. La razon es que esta
+        lista se le lee al cliente: ofrecer a alguien que el prompt no le
+        muestra al modelo --porque no tiene servicios asignados-- seria
+        contradecir en voz alta la decision de no ofrecerlo. Es un criterio
+        mas estrecho que el de `agendar`, nunca mas ancho, asi que no puede
+        proponer a nadie que la reserva vaya a rechazar despues.
+
+        Consecuencia conocida: un servicio sin NINGUNA asignacion no se puede
+        consultar por esta via. Es el caso del dueno que crea un servicio y
+        no marca a nadie, y la respuesta honesta ahi es que no hay quien lo
+        preste. Queda anotado que `agendar` sigue siendo mas permisivo; que
+        los dos criterios se unifiquen es una decision aparte.
+        """
+        return (Profesional.objects
+                .filter(establecimiento=establecimiento, activo=True,
+                        servicios=servicio)
+                .order_by("nombre"))
+
+    @classmethod
+    def _disponibilidad_del_equipo(cls, establecimiento, servicio, dia) -> str:
+        """Horas libres de todo el equipo para ese servicio, agrupadas.
+
+        Se listan tambien los que NO tienen horas libres, dichos asi. Callarlos
+        obligaria al modelo a deducir por que falta alguien que el cliente vio
+        en la lista de profesionales, y deducir es justo lo que no hace bien:
+        diria que esa persona no presta el servicio cuando lo que pasa es que
+        libra ese dia.
+        """
+        equipo = cls._profesionales_que_prestan(establecimiento, servicio)
+        if not equipo:
+            return (f"Ningun profesional tiene asignado {servicio.nombre} en "
+                    f"este momento. Dile al cliente que ese servicio no se "
+                    f"puede agendar en linea y que consulte con el "
+                    f"establecimiento. NO ofrezcas horarios.")
+
+        lineas, con_cupo = [], 0
+        for p in equipo:
+            slots = AgendaService.calcular_slots(p, servicio, dia)
+            if slots:
+                con_cupo += 1
+                lineas.append(f"- {p.nombre}: "
+                              + ", ".join(hora_texto(h) for h in slots))
+            else:
+                lineas.append(f"- {p.nombre}: sin horas libres ese dia")
+
+        cabecera = (f"Disponibilidad real para {servicio.nombre} el "
+                    f"{fecha_larga(dia)}, por profesional:")
+        if con_cupo == 0:
+            cierre = ("Nadie tiene horas libres ese dia. Dilo y ofrece "
+                      "consultar otra fecha.")
+        else:
+            cierre = ("Presentale al cliente TODAS las personas con horas "
+                      "libres para que elija; no elijas tu. Ofrece SOLO estas "
+                      "horas y usa ese nombre de día.")
+        return "\n".join([cabecera] + lineas + [cierre])
+
+    @staticmethod
     def _citas_activas(establecimiento, telefono):
         """Todas las citas confirmadas y futuras de ese telefono, en orden.
 
@@ -423,17 +518,24 @@ REGLAS OBLIGATORIAS:
         proxima sin preguntar: un cliente que queria anular la del domingo
         perdio la de esa misma manana. El plural es lo que permite
         preguntar cual antes de tocar nada.
+
+        El corte lo pone `AgendaService.solo_futuras`, no un `fecha >= hoy`
+        propio. Con la version anterior el cliente podia cancelar desde el
+        chat una cita que ya habia empezado, y eso no era solo raro: como
+        `no_asistio` exige que la cita siga CONFIRMADA, quien no se presento
+        a las 10:50 podia entrar a las 11:00, cancelarla y dejar al dueno sin
+        poder registrarle la inasistencia. El control de faltas tenia una
+        puerta trasera abierta por un filtro de una linea.
         """
         if not telefono:
             return Cita.objects.none()
-        return (
+        return AgendaService.solo_futuras(
             Cita.objects.filter(
                 establecimiento=establecimiento,
                 cliente__telefono=telefono,
                 estado=Cita.Estado.CONFIRMADA,
-                fecha__gte=timezone.localdate(),
-            ).order_by("fecha", "hora_inicio")
-        )
+            )
+        ).order_by("fecha", "hora_inicio")
 
     @staticmethod
     def _resumen_citas(establecimiento, telefono):
@@ -452,8 +554,26 @@ REGLAS OBLIGATORIAS:
         del historial y no en el prompt de sistema a proposito: ese lleva
         cache_control, y cambiarlo por sesion anularia el descuento del
         prompt caching.
+
+        La ventana es a proposito mas ancha que la de `_citas_activas`: aqui
+        entra el dia de hoy completo, incluidas las citas que ya empezaron,
+        marcadas YA PASO. Este bloque es contexto, no permiso. Si el cliente
+        pregunta "¿y mi cita de esta manana?", con la ventana estricta el
+        modelo le responderia que no tiene ninguna, que es cierto y a la vez
+        desconcertante --y en el caso de una inasistencia, es justo la
+        conversacion que el dueno querria que ocurriera con precision--.
+        Ampliar el contexto no amplia los permisos: cancelar sigue pasando
+        por `_citas_activas`, que si corta en el instante actual, y la regla
+        16 del prompt le prohibe al modelo ofrecer las pasadas.
+
+        El estado se escribe con `get_estado_display()` y no con un if/else
+        propio. El anterior clasificaba en CONFIRMADA o CANCELADA, de modo
+        que una cita marcada NO ASISTIO se le presentaba al modelo como
+        cancelada: exactamente el tipo de dato falso que este mecanismo
+        existe para impedir.
         """
         hoy = timezone.localdate()
+        ahora = timezone.localtime()
         citas = (
             Cita.objects.filter(
                 establecimiento=establecimiento,
@@ -462,15 +582,18 @@ REGLAS OBLIGATORIAS:
             ).order_by("fecha", "hora_inicio")
         )
         if not citas:
-            return f"{MARCA_ESTADO} de {telefono}: no tiene ninguna cita futura."
+            return (f"{MARCA_ESTADO} de {telefono}: no tiene ninguna cita "
+                    f"de hoy en adelante.")
         lineas = []
         for c in citas:
-            estado = ("CONFIRMADA" if c.estado == Cita.Estado.CONFIRMADA
-                      else "CANCELADA")
+            ya_paso = (c.fecha < ahora.date()
+                       or (c.fecha == ahora.date()
+                           and c.hora_inicio <= ahora.time()))
+            marca = " — YA PASO" if ya_paso else ""
             lineas.append(
                 f"- id {c.id}: {c.servicio.nombre} el {fecha_larga(c.fecha)} "
                 f"a las {hora_texto(c.hora_inicio)} con {c.profesional.nombre} "
-                f"— {estado}"
+                f"— {c.get_estado_display().upper()}{marca}"
             )
         return (f"{MARCA_ESTADO} de {telefono} (unica fuente valida):\n"
                 + "\n".join(lineas))
