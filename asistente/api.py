@@ -19,6 +19,7 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from negocios.models import Establecimiento, Profesional, Servicio
+from agenda.fechas import fecha_larga, hora_texto
 from agenda.services import AgendaService
 from facturacion.services import SuscripcionService
 from .services import IAService
@@ -128,15 +129,24 @@ class ConsultarCitaPublicaView(APIView):
         if not est:
             return Response({"error": "Establecimiento no encontrado."},
                             status=status.HTTP_404_NOT_FOUND)
-        cita = IAService._proxima_cita(est, request.data.get("telefono"))
-        if not cita:
-            return Response({"cita": None})
-        return Response({"cita": {
-            "id": cita.id, "servicio": cita.servicio.nombre,
-            "fecha": str(cita.fecha),
-            "hora_inicio": cita.hora_inicio.strftime("%H:%M"),
-            "profesional": cita.profesional.nombre,
-        }})
+        citas = IAService._citas_activas(est, request.data.get("telefono"))
+        def _serializar(c):
+            return {
+                "id": c.id, "servicio": c.servicio.nombre,
+                "fecha": str(c.fecha),
+                "hora_inicio": c.hora_inicio.strftime("%H:%M"),
+                "hora_texto": hora_texto(c.hora_inicio),
+                "fecha_texto": fecha_larga(c.fecha),
+                "profesional": c.profesional.nombre,
+            }
+        # `cita` se conserva --la primera-- para no romper a quien ya consuma
+        # este endpoint, pero `citas` es lo correcto: informar solo de la
+        # proxima le ocultaba al cliente que tenia otra, y de ahi salia que
+        # pidiera cancelar "su cita" sin saber que habia dos.
+        return Response({
+            "cita": _serializar(citas[0]) if citas else None,
+            "citas": [_serializar(c) for c in citas],
+        })
 
 
 class CancelarCitaPublicaView(APIView):
@@ -154,10 +164,39 @@ class CancelarCitaPublicaView(APIView):
         if not est:
             return Response({"error": "Establecimiento no encontrado."},
                             status=status.HTTP_404_NOT_FOUND)
-        cita = IAService._proxima_cita(est, request.data.get("telefono"))
-        if not cita:
+        citas = IAService._citas_activas(est, request.data.get("telefono"))
+        if not citas:
             return Response({"error": "No hay citas confirmadas para ese teléfono."},
                             status=status.HTTP_404_NOT_FOUND)
+
+        cita_id = request.data.get("cita_id")
+        if cita_id is None:
+            if len(citas) > 1:
+                # No se elige por el cliente. Cancelar siempre la mas proxima
+                # le hizo perder a un cliente real la cita de esa manana
+                # cuando queria anular la del domingo. Una cancelacion no se
+                # deshace: el hueco queda libre en el acto.
+                return Response({
+                    "error": "varias_citas",
+                    "detalle": "Este teléfono tiene varias citas. Indica "
+                               "cuál con cita_id.",
+                    "citas": [{"id": c.id, "servicio": c.servicio.nombre,
+                               "fecha": str(c.fecha),
+                               "fecha_texto": fecha_larga(c.fecha),
+                               "hora_texto": hora_texto(c.hora_inicio)}
+                              for c in citas],
+                }, status=status.HTTP_409_CONFLICT)
+            cita = citas[0]
+        else:
+            # El id se busca DENTRO de las citas de ese telefono: un id
+            # ajeno no puede cancelar la cita de otra persona desde un
+            # endpoint sin autenticacion.
+            cita = next((c for c in citas if c.id == cita_id), None)
+            if cita is None:
+                return Response(
+                    {"error": "No hay ninguna cita confirmada con ese "
+                              "identificador para este teléfono."},
+                    status=status.HTTP_404_NOT_FOUND)
         from agenda.models import Notificacion
         AgendaService.cancelar(cita, por_cliente=True)
         Notificacion.objects.create(

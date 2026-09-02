@@ -115,7 +115,11 @@ class ConversacionTest(BaseIATest):
         historial_enviado = m.call_args_list[1].args[1]
         feedback = historial_enviado[-1]["content"]
         self.assertIn("[SISTEMA]", feedback)
-        self.assertIn("09:00", feedback)
+        # El asistente habla en reloj de doce horas, igual que el panel y
+        # los recordatorios: la hora la escribe `hora_texto`, una sola vez
+        # en todo el sistema.
+        self.assertIn("9:00 a. m.", feedback)
+        self.assertNotIn("09:00", feedback)
         self.assertIn("09:00", r["respuesta"])
 
     def test_agendar_crea_cita_real(self):
@@ -495,9 +499,42 @@ class MensajeDeConfirmacionTest(TestCase):
         self.assertIn("escribe tu n\u00famero de tel\u00e9fono", codigo)
 
     def test_la_consulta_ofrece_cancelar(self):
-        import inspect
+        """Se ejecuta la intención y se mira el feedback real.
+
+        Antes esto buscaba la frase dentro del código fuente con
+        `inspect.getsource`. Es frágil: la cadena está partida en dos
+        líneas del fuente, así que la prueba fallaba al reformatear el
+        texto sin que el comportamiento hubiera cambiado en absoluto.
+        Comprobar la salida es lo que dice el nombre de la prueba.
+        """
+        from datetime import timedelta
+        from django.utils import timezone
         from asistente.services import IAService
-        self.assertIn("puede cancelarla desde aqu", inspect.getsource(IAService))
+        from agenda.models import Cita
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+
+        u = Usuario.objects.create_user(email="oc@b.com", password="clave12345")
+        est = Establecimiento.objects.create(
+            propietario=u, nombre="Prueba", slug="oc",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        prof = Profesional.objects.create(establecimiento=est, nombre="Carlos")
+        serv = Servicio.objects.create(establecimiento=est, nombre="Corte",
+                                       duracion_min=30)
+        cli = ClienteFinal.objects.create(
+            establecimiento=est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+        Cita.objects.create(
+            establecimiento=est, profesional=prof, servicio=serv, cliente=cli,
+            fecha=timezone.localdate() + timedelta(days=2),
+            hora_inicio=time(10, 0), hora_fin=time(10, 30),
+            estado=Cita.Estado.CONFIRMADA, canal=Cita.Canal.IA)
+
+        final, feedback = IAService._ejecutar_intencion(
+            est, {"intencion": "consultar_cita", "telefono": "3001234567"})
+        self.assertIsNone(final)
+        self.assertIn("cancelar desde aqui", feedback)
 
 
 class CalendarioEnElPromptTest(TestCase):
@@ -515,7 +552,11 @@ class CalendarioEnElPromptTest(TestCase):
 
     def _prompt(self, hoy):
         class FalsoAhora:
+            # Doble de `timezone.localtime()`. Necesita `.time()` porque la
+            # hora del prompt pasa por `hora_texto`, que trabaja sobre un
+            # objeto time y no sobre una cadena ya formateada.
             def date(self_): return hoy
+            def time(self_): return time(10, 0)
             def strftime(self_, f): return "10:00"
         with patch("asistente.services.timezone.localtime", return_value=FalsoAhora()):
             return IAService.construir_prompt_sistema(self.est)
@@ -627,3 +668,373 @@ class ProfesionalSinServiciosTests(BaseIATest):
         prompt = IAService.construir_prompt_sistema(self.est)
         self.assertIn("(sin profesionales)", prompt)
         self.assertNotIn("presta todos los servicios", prompt)
+
+
+class CancelarLaCitaCorrectaTest(TestCase):
+    """Cancelación con varias citas activas (RF-12).
+
+    Caso real de campo: un cliente con dos citas confirmadas —una esa misma
+    mañana y otra el domingo— escribió «eliminar» queriendo anular la del
+    domingo. El sistema canceló la de esa mañana sin preguntar, porque
+    `_proxima_cita` devolvía siempre la más próxima con un `.first()`.
+
+    Una cancelación no se deshace: el hueco queda libre en el acto y puede
+    ocuparlo otra persona en segundos. Por eso el sistema no elige.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+        from agenda.models import Cita
+
+        u = Usuario.objects.create_user(email="cc@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="cc",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        prof = Profesional.objects.create(establecimiento=self.est, nombre="Carlos")
+        serv = Servicio.objects.create(establecimiento=self.est, nombre="Corte",
+                                       duracion_min=30)
+        cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+        hoy = timezone.localdate()
+        self.hoy = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy, hora_inicio=time(10, 40),
+            hora_fin=time(11, 10), estado=Cita.Estado.CONFIRMADA,
+            canal=Cita.Canal.IA)
+        self.domingo = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy + timedelta(days=5), hora_inicio=time(15, 0),
+            hora_fin=time(15, 30), estado=Cita.Estado.CONFIRMADA,
+            canal=Cita.Canal.IA)
+
+    def _cancelar(self, **extra):
+        from asistente.services import IAService
+        intencion = {"intencion": "cancelar_cita", "telefono": "3001234567"}
+        intencion.update(extra)
+        return IAService._ejecutar_intencion(self.est, intencion)
+
+    def test_con_dos_citas_no_se_cancela_ninguna(self):
+        """Lo esencial: ante la duda, el sistema NO toca nada."""
+        from agenda.models import Cita
+        final, feedback = self._cancelar()
+        self.assertIsNone(final)
+        self.assertIn("NO se canceló ninguna", feedback)
+        self.hoy.refresh_from_db()
+        self.domingo.refresh_from_db()
+        self.assertEqual(self.hoy.estado, Cita.Estado.CONFIRMADA)
+        self.assertEqual(self.domingo.estado, Cita.Estado.CONFIRMADA)
+
+    def test_el_sistema_devuelve_las_dos_para_que_el_modelo_pregunte(self):
+        """El modelo no puede preguntar por lo que no conoce, así que el
+        feedback trae ambas con su fecha, su hora y su identificador."""
+        _, feedback = self._cancelar()
+        self.assertIn(str(self.hoy.id), feedback)
+        self.assertIn(str(self.domingo.id), feedback)
+        self.assertIn("3:00 p. m.", feedback)
+        self.assertIn("cita_id", feedback)
+
+    def test_con_el_identificador_se_cancela_esa_y_solo_esa(self):
+        """El caso del cliente real: quería la del domingo."""
+        from agenda.models import Cita
+        final, _ = self._cancelar(cita_id=self.domingo.id)
+        self.assertIsNotNone(final)
+        self.assertEqual(final["accion"], "cita_cancelada")
+        self.hoy.refresh_from_db()
+        self.domingo.refresh_from_db()
+        self.assertEqual(self.hoy.estado, Cita.Estado.CONFIRMADA)
+        self.assertNotEqual(self.domingo.estado, Cita.Estado.CONFIRMADA)
+
+    def test_con_una_sola_cita_no_se_pregunta(self):
+        """No hay ambigüedad que resolver, y obligar a confirmar dos veces
+        para una sola cita solo añade fricción."""
+        from agenda.models import Cita
+        self.domingo.estado = Cita.Estado.CANCELADA_CLIENTE
+        self.domingo.save(update_fields=["estado"])
+        final, _ = self._cancelar()
+        self.assertIsNotNone(final)
+        self.hoy.refresh_from_db()
+        self.assertNotEqual(self.hoy.estado, Cita.Estado.CONFIRMADA)
+
+    def test_no_se_puede_cancelar_la_cita_de_otra_persona(self):
+        """El id se busca DENTRO de las citas de ese teléfono, no en toda la
+        tabla (RF-02).
+
+        Se usa una cita REAL de otro cliente y no un identificador
+        inventado: con un id inexistente las dos implementaciones devuelven
+        lo mismo, y el arnés de mutación demostró que la prueba no
+        distinguía nada. El riesgo verdadero es cancelarle la cita a un
+        tercero conociendo su número.
+        """
+        from datetime import timedelta
+        from django.utils import timezone
+        from agenda.models import Cita
+        from negocios.models import ClienteFinal, Profesional, Servicio
+
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Beto", telefono="3009998888",
+            acepta_datos=True)
+        ajena = Cita.objects.create(
+            establecimiento=self.est,
+            profesional=Profesional.objects.filter(establecimiento=self.est).first(),
+            servicio=Servicio.objects.filter(establecimiento=self.est).first(),
+            cliente=otro, fecha=timezone.localdate() + timedelta(days=3),
+            hora_inicio=time(9, 0), hora_fin=time(9, 30),
+            estado=Cita.Estado.CONFIRMADA, canal=Cita.Canal.IA)
+
+        final, feedback = self._cancelar(cita_id=ajena.id)
+        self.assertIsNone(final)
+        self.assertIn("no corresponde", feedback)
+        ajena.refresh_from_db()
+        self.assertEqual(ajena.estado, Cita.Estado.CONFIRMADA)
+
+    def test_la_consulta_informa_de_todas_las_citas(self):
+        """La raíz del incidente: el cliente pidió cancelar «su cita» sin
+        saber que tenía dos, porque la consulta solo le mostraba la próxima."""
+        from asistente.services import IAService
+        _, feedback = IAService._ejecutar_intencion(
+            self.est, {"intencion": "consultar_cita", "telefono": "3001234567"})
+        self.assertIn("(2)", feedback)
+        self.assertIn(str(self.domingo.id), feedback)
+
+
+class EstadoRealInyectadoTest(TestCase):
+    """Contramedida contra la alucinación de estado.
+
+    En producción el modelo respondió «tu cita de hoy queda confirmada y tú
+    vas a asistir» sobre una cita que acababa de cancelarse. No emitió
+    ninguna intención: no intentó ejecutar nada, así que el backend nunca
+    fue consultado y no pudo desmentirlo.
+
+    «La IA propone, el backend dispone» protege las acciones que el modelo
+    INTENTA. No protege de las que AFIRMA sin intentar. Ponerle delante el
+    estado verdadero en cada turno es lo que cierra ese hueco.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+        from agenda.models import Cita
+
+        u = Usuario.objects.create_user(email="er@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="er",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        prof = Profesional.objects.create(establecimiento=self.est, nombre="Carlos")
+        serv = Servicio.objects.create(establecimiento=self.est, nombre="Corte",
+                                       duracion_min=30)
+        cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+        hoy = timezone.localdate()
+        self.cancelada = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy, hora_inicio=time(10, 40),
+            hora_fin=time(11, 10), estado=Cita.Estado.CANCELADA_CLIENTE,
+            canal=Cita.Canal.IA)
+        self.viva = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy + timedelta(days=5), hora_inicio=time(15, 0),
+            hora_fin=time(15, 30), estado=Cita.Estado.CONFIRMADA,
+            canal=Cita.Canal.IA)
+
+    def test_el_resumen_distingue_cancelada_de_confirmada(self):
+        from asistente.services import IAService
+        r = IAService._resumen_citas(self.est, "3001234567")
+        self.assertIn("CANCELADA", r)
+        self.assertIn("CONFIRMADA", r)
+        self.assertIn("10:40 a. m.", r)
+        self.assertIn("3:00 p. m.", r)
+
+    def test_el_estado_viaja_en_el_turno_cuando_se_conoce_el_telefono(self):
+        """Se comprueba sobre los mensajes que se le entregan al modelo, no
+        sobre lo que responde: es lo único que el backend controla."""
+        from unittest.mock import patch
+        from asistente.models import ConversacionIA
+        from asistente.services import IAService
+
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="s1",
+            telefono_cliente="3001234567", mensajes=[])
+        capturado = {}
+
+        def falso(prompt, mensajes):
+            capturado["mensajes"] = mensajes
+            return "Claro, dime.", 10, 5
+
+        with patch.object(IAService, "_llamar_claude", side_effect=falso):
+            IAService.procesar_mensaje(self.est, "s1", "déjame la de hoy")
+
+        inyectado = [m for m in capturado["mensajes"]
+                     if m["content"].startswith("[SISTEMA] Estado de las citas")]
+        self.assertEqual(len(inyectado), 1)
+        self.assertIn("CANCELADA", inyectado[0]["content"])
+
+    def test_sin_telefono_conocido_no_se_inyecta_nada(self):
+        """Al principio de la conversación no hay teléfono, y no se puede
+        inventar: inyectar el estado de otra persona sería una fuga."""
+        from unittest.mock import patch
+        from asistente.services import IAService
+        capturado = {}
+
+        def falso(prompt, mensajes):
+            capturado["mensajes"] = mensajes
+            return "Hola, ¿en qué te ayudo?", 10, 5
+
+        with patch.object(IAService, "_llamar_claude", side_effect=falso):
+            IAService.procesar_mensaje(self.est, "s2", "hola")
+        self.assertFalse([m for m in capturado["mensajes"]
+                          if "Estado de las citas" in m["content"]])
+
+    def test_el_telefono_se_recuerda_al_darlo(self):
+        from unittest.mock import patch
+        from asistente.models import ConversacionIA
+        from asistente.services import IAService
+
+        respuestas = iter([
+            ('{"intencion":"consultar_cita","telefono":"3001234567"}', 10, 5),
+            ("Tienes una cita el domingo.", 10, 5),
+        ])
+        with patch.object(IAService, "_llamar_claude",
+                          side_effect=lambda p, m: next(respuestas)):
+            IAService.procesar_mensaje(self.est, "s3", "3001234567")
+        conv = ConversacionIA.objects.get(establecimiento=self.est, session_id="s3")
+        self.assertEqual(conv.telefono_cliente, "3001234567")
+
+    def test_los_estados_inyectados_no_se_acumulan_en_el_historial(self):
+        """Se recalculan en cada turno, así que guardarlos dejaría en la
+        conversación una pila de estados viejos contradiciéndose entre sí:
+        exactamente el ruido que este mecanismo viene a eliminar."""
+        from unittest.mock import patch
+        from asistente.models import ConversacionIA
+        from asistente.services import IAService
+
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="s4",
+            telefono_cliente="3001234567", mensajes=[])
+        with patch.object(IAService, "_llamar_claude",
+                          side_effect=lambda p, m: ("Vale.", 10, 5)):
+            for _ in range(3):
+                IAService.procesar_mensaje(self.est, "s4", "hola")
+
+        conv = ConversacionIA.objects.get(establecimiento=self.est, session_id="s4")
+        self.assertFalse([m for m in conv.mensajes
+                          if "Estado de las citas" in m.get("content", "")])
+
+    def test_el_prompt_prohibe_afirmar_cambios_de_estado(self):
+        """La regla del prompt no sustituye a la inyección: la acompaña. Una
+        es una instrucción y la otra una restricción, y por separado
+        ninguna basta."""
+        from asistente.services import IAService
+        p = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("queda confirmada", p)
+        self.assertIn("no se puede reactivar", p)
+        self.assertIn("pregunta cual", p)
+
+
+class CancelacionPublicaSinAmbiguedadTest(TestCase):
+    """La misma regla en la puerta sin IA (RF-12).
+
+    `CancelarCitaPublicaView` tenía exactamente el mismo defecto que el
+    asistente: cancelaba la más próxima sin preguntar. Es un endpoint
+    público y sin autenticación, así que era la misma pérdida de datos por
+    otra puerta.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                                     Servicio)
+        from agenda.models import Cita
+
+        self.api = APIClient()
+        u = Usuario.objects.create_user(email="cp@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="cp",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        prof = Profesional.objects.create(establecimiento=self.est, nombre="C")
+        serv = Servicio.objects.create(establecimiento=self.est, nombre="Corte",
+                                       duracion_min=30)
+        cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001234567",
+            acepta_datos=True)
+        hoy = timezone.localdate()
+        self.Cita = Cita
+        self.hoy = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy, hora_inicio=time(10, 40),
+            hora_fin=time(11, 10), estado=Cita.Estado.CONFIRMADA,
+            canal=Cita.Canal.IA)
+        self.domingo = Cita.objects.create(
+            establecimiento=self.est, profesional=prof, servicio=serv,
+            cliente=cli, fecha=hoy + timedelta(days=5), hora_inicio=time(15, 0),
+            hora_fin=time(15, 30), estado=Cita.Estado.CONFIRMADA,
+            canal=Cita.Canal.IA)
+
+    def test_con_varias_citas_no_cancela_ninguna(self):
+        r = self.api.post("/api/v1/p/cp/citas/cancelar",
+                          {"telefono": "3001234567"}, format="json")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "varias_citas")
+        self.hoy.refresh_from_db()
+        self.assertEqual(self.hoy.estado, self.Cita.Estado.CONFIRMADA)
+
+    def test_devuelve_las_opciones_para_poder_elegir(self):
+        r = self.api.post("/api/v1/p/cp/citas/cancelar",
+                          {"telefono": "3001234567"}, format="json")
+        horas = [c["hora_texto"] for c in r.json()["citas"]]
+        self.assertIn("10:40 a. m.", horas)
+        self.assertIn("3:00 p. m.", horas)
+
+    def test_con_identificador_cancela_esa_y_solo_esa(self):
+        r = self.api.post("/api/v1/p/cp/citas/cancelar",
+                          {"telefono": "3001234567", "cita_id": self.domingo.id},
+                          format="json")
+        self.assertEqual(r.status_code, 200)
+        self.hoy.refresh_from_db()
+        self.domingo.refresh_from_db()
+        self.assertEqual(self.hoy.estado, self.Cita.Estado.CONFIRMADA)
+        self.assertNotEqual(self.domingo.estado, self.Cita.Estado.CONFIRMADA)
+
+    def test_no_se_puede_cancelar_la_cita_de_otra_persona(self):
+        """Este endpoint no tiene autenticación, así que es la puerta más
+        expuesta: buscar el id en toda la tabla dejaría cancelar la cita de
+        cualquiera conociendo un número propio y probando identificadores
+        (RF-02). Se usa una cita real de otro cliente, no un id inventado."""
+        from datetime import timedelta
+        from django.utils import timezone
+        from negocios.models import ClienteFinal, Profesional, Servicio
+
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Beto", telefono="3009998888",
+            acepta_datos=True)
+        ajena = self.Cita.objects.create(
+            establecimiento=self.est,
+            profesional=Profesional.objects.filter(establecimiento=self.est).first(),
+            servicio=Servicio.objects.filter(establecimiento=self.est).first(),
+            cliente=otro, fecha=timezone.localdate() + timedelta(days=3),
+            hora_inicio=time(9, 0), hora_fin=time(9, 30),
+            estado=self.Cita.Estado.CONFIRMADA, canal=self.Cita.Canal.IA)
+
+        r = self.api.post("/api/v1/p/cp/citas/cancelar",
+                          {"telefono": "3001234567", "cita_id": ajena.id},
+                          format="json")
+        self.assertEqual(r.status_code, 404)
+        ajena.refresh_from_db()
+        self.assertEqual(ajena.estado, self.Cita.Estado.CONFIRMADA)
+
+    def test_la_consulta_publica_informa_de_todas(self):
+        r = self.api.post("/api/v1/p/cp/citas/consultar",
+                          {"telefono": "3001234567"}, format="json")
+        self.assertEqual(len(r.json()["citas"]), 2)
+        self.assertIsNotNone(r.json()["cita"])

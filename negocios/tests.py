@@ -700,3 +700,146 @@ class CodigoQrEnlacePublicoTests(TestCase):
         self.assertTrue(mio["enlace_publico"].endswith("/p/barberia-eduardo"))
         self.assertTrue(suyo["enlace_publico"].endswith("/p/salon-carolina"))
         self.assertNotEqual(mio["qr"], suyo["qr"])
+
+
+from agenda.models import Cita as _Cita
+from negocios.models import (ClienteFinal, Establecimiento, Profesional,
+                             Servicio)
+
+
+class EliminarServicioTest(TestCase):
+    """RF-04: eliminar un servicio, y que se note qué pasó.
+
+    Caso de campo: «intentamos eliminar un servicio y fue imposible». No era
+    imposible: se desactivaba en vez de borrarse, y el panel lo seguía
+    mostrando idéntico. Sin ninguna señal, el dueño concluía que la función
+    estaba rota y volvía a intentarlo.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="es@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="B", slug="es",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos")
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3005556666",
+            acepta_datos=True)
+        self.api.force_authenticate(user=self.duenio)
+        self.hoy = timezone.localdate()
+        self.Cita = _Cita
+
+    def _servicio(self, nombre="Corte"):
+        return Servicio.objects.create(
+            establecimiento=self.est, nombre=nombre, duracion_min=30)
+
+    def _cita(self, servicio, dias, estado=None):
+        from datetime import time, timedelta
+        return self.Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof, servicio=servicio,
+            cliente=self.cli, fecha=self.hoy + timedelta(days=dias),
+            hora_inicio=time(10, 0), hora_fin=time(10, 30),
+            estado=estado or self.Cita.Estado.CONFIRMADA,
+            canal=self.Cita.Canal.MANUAL)
+
+    def test_un_servicio_sin_citas_se_borra_de_verdad(self):
+        s = self._servicio()
+        r = self.api.delete(f"/api/v1/servicios/{s.id}")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["eliminado"])
+        self.assertFalse(Servicio.objects.filter(pk=s.id).exists())
+
+    def test_con_historial_se_desactiva_y_se_dice_por_que(self):
+        """Una cita de hace un año también protege el servicio, y no por una
+        regla nuestra: `Cita.servicio` es una clave foránea con PROTECT y la
+        base de datos no distingue pasadas de futuras.
+
+        Esta prueba documenta un intento fallido. Se quiso afinar la
+        condición a «solo citas por atender», razonando que el historial no
+        estorba; el resultado era un ProtectedError sin capturar, o sea un
+        error 500. La lección: no reimplementar en Python una regla que la
+        base ya impone. El mensaje sí distingue los dos motivos.
+        """
+        s = self._servicio()
+        self._cita(s, dias=-400)
+        datos = self.api.delete(f"/api/v1/servicios/{s.id}").json()
+        self.assertFalse(datos["eliminado"])
+        self.assertTrue(datos["desactivado"])
+        self.assertEqual(datos["citas_futuras"], 0)
+        self.assertIn("historial", datos["detalle"])
+        s.refresh_from_db()
+        self.assertFalse(s.activo)
+
+    def test_una_cita_cancelada_no_cuenta_como_cita_por_atender(self):
+        """Protege el servicio igual —sigue siendo una fila que apunta a
+        él—, pero el mensaje no debe decirle al dueño que tiene una cita por
+        atender cuando esa cita ya se anuló."""
+        s = self._servicio()
+        self._cita(s, dias=3, estado=self.Cita.Estado.CANCELADA_CLIENTE)
+        datos = self.api.delete(f"/api/v1/servicios/{s.id}").json()
+        self.assertTrue(datos["desactivado"])
+        self.assertEqual(datos["citas_futuras"], 0)
+        self.assertIn("historial", datos["detalle"])
+
+    def test_nunca_devuelve_un_error_de_servidor(self):
+        """El fallo concreto del intento anterior: ProtectedError subía sin
+        capturar. El dueño veía un error 500 al pulsar Eliminar."""
+        s = self._servicio()
+        self._cita(s, dias=-400)
+        self.assertEqual(self.api.delete(f"/api/v1/servicios/{s.id}").status_code,
+                         200)
+
+    def test_con_citas_por_atender_se_desactiva_y_se_explica(self):
+        """La regla sí es correcta: borrar rompería el historial (la clave
+        foránea es PROTECT). Lo que faltaba era decirlo."""
+        s = self._servicio()
+        self._cita(s, dias=2)
+        r = self.api.delete(f"/api/v1/servicios/{s.id}")
+        self.assertEqual(r.status_code, 200)
+        datos = r.json()
+        self.assertFalse(datos["eliminado"])
+        self.assertTrue(datos["desactivado"])
+        self.assertEqual(datos["citas_futuras"], 1)
+        self.assertIn("se desactivó", datos["detalle"])
+        s.refresh_from_db()
+        self.assertFalse(s.activo)
+
+    def test_la_respuesta_distingue_los_dos_desenlaces(self):
+        """Antes las dos ramas devolvían un 204 mudo idéntico. Sin poder
+        distinguirlas, el panel no tenía nada que contarle al dueño."""
+        borrable = self._servicio("Sin citas")
+        protegido = self._servicio("Con citas")
+        self._cita(protegido, dias=2)
+        a = self.api.delete(f"/api/v1/servicios/{borrable.id}").json()
+        b = self.api.delete(f"/api/v1/servicios/{protegido.id}").json()
+        self.assertNotEqual(a["eliminado"], b["eliminado"])
+        self.assertNotEqual(a["detalle"], b["detalle"])
+
+    def test_un_servicio_desactivado_se_puede_reactivar(self):
+        s = self._servicio()
+        self._cita(s, dias=2)
+        self.api.delete(f"/api/v1/servicios/{s.id}")
+        r = self.api.patch(f"/api/v1/servicios/{s.id}", {"activo": True},
+                           format="json")
+        self.assertEqual(r.status_code, 200)
+        s.refresh_from_db()
+        self.assertTrue(s.activo)
+
+    def test_no_se_puede_borrar_el_servicio_de_otro_establecimiento(self):
+        """RF-02. El aislamiento se comprueba también en esta puerta."""
+        otro = Usuario.objects.create_user(email="otro@a.com", password="clave12345")
+        est2 = Establecimiento.objects.create(
+            propietario=otro, nombre="Ajena", slug="ajena",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3009998888")
+        ajeno = Servicio.objects.create(establecimiento=est2, nombre="Corte",
+                                        duracion_min=30)
+        r = self.api.delete(f"/api/v1/servicios/{ajeno.id}")
+        self.assertEqual(r.status_code, 404)
+        self.assertTrue(Servicio.objects.filter(pk=ajeno.id).exists())

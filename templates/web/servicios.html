@@ -6,14 +6,26 @@
 
   <div class="card">
     <h2>Mis servicios</h2>
+    <p class="ok" x-show="avisoS" x-text="avisoS" style="margin-bottom:8px"></p>
     <template x-for="s in servicios" :key="s.id">
       <div class="fila" style="border-bottom:1px solid var(--borde);padding:8px 0">
         <div>
-          <b x-text="s.nombre"></b>
+          <b x-text="s.nombre" :style="!s.activo ? 'opacity:.55' : ''"></b>
+          <!-- Un servicio desactivado se veia EXACTAMENTE igual que uno
+               activo. El dueno pulsaba Eliminar, lo seguia viendo en su
+               sitio y concluia que no funcionaba. -->
+          <span class="chip chip-inactivo" x-show="!s.activo">Desactivado</span>
           <div class="muted" x-text="s.duracion_min + ' min'"></div>
+          <div class="muted" x-show="!s.activo">
+            No se ofrece a clientes nuevos. Sus citas ya agendadas siguen en pie.
+          </div>
         </div>
-        <button class="btn-peligro" style="max-width:90px;padding:7px;font-size:12px"
-                @click="borrarServicio(s.id)">Eliminar</button>
+        <div style="max-width:110px">
+          <button class="btn-peligro" style="padding:7px;font-size:12px"
+                  x-show="s.activo" @click="borrarServicio(s)">Eliminar</button>
+          <button class="btn btn-borde" style="padding:7px;font-size:12px"
+                  x-show="!s.activo" @click="reactivarServicio(s)">Reactivar</button>
+        </div>
       </div>
     </template>
     <label>Nombre del servicio</label>
@@ -83,7 +95,7 @@ function config() {
     servicios: [], profesionales: [],
     nuevo: { nombre: "", duracion_min: 30 },
     nuevoProf: { nombre: "", telefono_whatsapp: "" },
-    errorS: "", errorP: "",
+    errorS: "", errorP: "", avisoS: "",
     editando: null, guardando: false, guardado: null, errorAsig: {},
 
     nombresDe(ids) {
@@ -134,9 +146,23 @@ function config() {
       this.nuevo = { nombre: "", duracion_min: 30 };
       await this.cargar();
     },
-    async borrarServicio(id) {
-      if (!confirm("¿Eliminar/desactivar este servicio?")) return;
-      await api(`/servicios/${id}`, { method: "DELETE" });
+    async borrarServicio(s) {
+      if (!confirm(`¿Eliminar «${s.nombre}»?`)) return;
+      const r = await api(`/servicios/${s.id}`, { method: "DELETE" });
+      // Se cuenta lo que de verdad paso. Antes la respuesta era un 204 mudo,
+      // identico tanto si el servicio se borro como si solo se desactivo, y
+      // el dueno no tenia forma de saber cual de las dos cosas ocurrio.
+      if (r && r.ok) {
+        const d = await r.json().catch(() => null);
+        if (d && d.detalle) this.avisoS = d.detalle;
+      }
+      await this.cargar();
+    },
+    async reactivarServicio(s) {
+      this.avisoS = "";
+      await api(`/servicios/${s.id}`, {
+        method: "PATCH", body: JSON.stringify({ activo: true }),
+      });
       await this.cargar();
     },
     async crearProfesional() {

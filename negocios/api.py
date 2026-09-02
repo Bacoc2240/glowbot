@@ -3,6 +3,9 @@ Especificación de API §5 y §6. Todos exigen JWT y operan SOLO sobre el
 establecimiento del usuario autenticado (aislamiento multi-tenant, RF-02).
 """
 from django.conf import settings
+from django.db import transaction
+from django.db.models import ProtectedError
+from django.utils import timezone
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -48,13 +51,64 @@ class ServicioViewSet(_EstablecimientoMixin, viewsets.ModelViewSet):
     queryset = Servicio.objects.all()
     serializer_class = ServicioSerializer
 
-    def perform_destroy(self, instance):
-        """RF-04: si el servicio tiene citas futuras, se desactiva, no se borra."""
-        if instance.citas.exists():
+    def destroy(self, request, *args, **kwargs):
+        """RF-04: se intenta borrar; si la base lo protege, se desactiva.
+
+        El diseño llegó aquí después de un intento fallido que vale la pena
+        dejar escrito. La versión anterior decidía en Python: "si tiene
+        citas, desactivar". Se intentó afinarla a "si tiene citas POR
+        ATENDER", razonando que una cita de hace un año no estorba. Es
+        falso: `Cita.servicio` es una clave foránea con PROTECT, y la base
+        de datos no distingue pasadas de futuras. Ese intento producía un
+        ProtectedError sin capturar, es decir un error 500.
+
+        La lección: no reimplementar en Python una regla que la base ya
+        impone, porque las dos versiones divergen y la de Python es la que
+        se equivoca. Ahora se intenta borrar de verdad y es la base la que
+        decide; el conteo de citas por atender solo sirve para explicárselo
+        al dueño con precisión.
+
+        La segunda corrección es la respuesta. Antes era un 204 mudo,
+        idéntico tanto si el servicio se borraba como si solo se
+        desactivaba. Como el panel además lo seguía listando igual, el dueño
+        pulsaba Eliminar, lo veía en su sitio y concluía que estaba roto.
+        """
+        instance = self.get_object()
+        nombre = instance.nombre
+        por_atender = instance.citas.filter(
+            fecha__gte=timezone.localdate(),
+        ).exclude(estado__startswith="cancelada").count()
+
+        try:
+            with transaction.atomic():
+                instance.delete()
+        except ProtectedError:
+            # Tiene historial: borrarlo se llevaría por delante citas que
+            # son la memoria del negocio. Se desactiva, que es lo que el
+            # dueño quiere de verdad: dejar de ofrecerlo.
             instance.activo = False
             instance.save(update_fields=["activo"])
-        else:
-            instance.delete()
+            if por_atender:
+                detalle = (
+                    f"«{nombre}» tiene {por_atender} cita(s) por atender, así "
+                    "que se desactivó en lugar de borrarse: deja de ofrecerse "
+                    "a clientes nuevos y esas citas se conservan."
+                )
+            else:
+                detalle = (
+                    f"«{nombre}» ya se usó en citas anteriores, así que se "
+                    "desactivó en lugar de borrarse para no perder ese "
+                    "historial. Deja de ofrecerse a clientes nuevos."
+                )
+            return Response({
+                "eliminado": False, "desactivado": True,
+                "citas_futuras": por_atender, "detalle": detalle,
+            }, status=status.HTTP_200_OK)
+
+        return Response({
+            "eliminado": True, "desactivado": False, "citas_futuras": 0,
+            "detalle": f"«{nombre}» se eliminó.",
+        }, status=status.HTTP_200_OK)
 
 
 class ProfesionalSerializer(serializers.ModelSerializer):

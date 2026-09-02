@@ -1349,3 +1349,43 @@ class PantallaHoraLegibleTests(TestCase):
                           if not l.strip().startswith("//"))
         self.assertIn('x-text="c.hora_texto"', vivas)
         self.assertNotIn('c.hora_inicio.slice(0,5)', vivas)
+
+
+class PantallaServicioDesactivadoTests(TestCase):
+    """Que se vea qué pasó al eliminar un servicio.
+
+    El dueño reportó «intentamos eliminar un servicio y fue imposible». No
+    era imposible: se desactivaba, y el panel lo seguía mostrando idéntico.
+    Una acción que funciona pero no se nota es indistinguible de una rota.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel/servicios").content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    def test_un_servicio_desactivado_se_distingue_a_simple_vista(self):
+        # Se busca el enganche COMPLETO de la etiqueta y no `x-show="!s.activo"`
+        # a secas: esa condición aparece tres veces en la pantalla, así que
+        # una aserción suelta pasaba aunque la etiqueta desapareciera. Lo
+        # demostró el arnés de mutación.
+        vivas = " ".join(self._vivas().split())
+        self.assertIn('<span class="chip chip-inactivo" x-show="!s.activo">'
+                      'Desactivado</span>', vivas)
+
+    def test_se_explica_que_significa_estar_desactivado(self):
+        """«Desactivado» a secas no dice si el cliente lo sigue viendo ni qué
+        pasa con las citas ya agendadas, que es lo que el dueño teme."""
+        self.assertIn("No se ofrece a clientes nuevos", self._vivas())
+
+    def test_se_puede_reactivar_desde_la_misma_pantalla(self):
+        """Sin esto, desactivar sería un camino de ida: el dueño tendría que
+        crear el servicio otra vez y perdería su historial."""
+        self.assertIn('@click="reactivarServicio(s)"', self._vivas())
+
+    def test_la_pantalla_cuenta_lo_que_respondio_el_servidor(self):
+        """La respuesta distingue borrado de desactivado; si el panel no la
+        lee, esa distinción no le llega a nadie."""
+        vivas = " ".join(self._vivas().split())
+        self.assertIn("if (d && d.detalle) this.avisoS = d.detalle;", vivas)
+        self.assertIn('x-text="avisoS"', vivas)
