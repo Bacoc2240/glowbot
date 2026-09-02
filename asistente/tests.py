@@ -1330,11 +1330,11 @@ class ResumenDeEstadoTest(TestCase):
 
     def test_la_de_esta_manana_aparece_marcada(self):
         self._cita(-timedelta(hours=5))
-        self.assertIn("YA PASO", self._resumen())
+        self.assertIn("HISTORIAL", self._resumen())
 
     def test_la_de_esta_tarde_no_lleva_marca(self):
         self._cita(timedelta(hours=2))
-        self.assertNotIn("YA PASO", self._resumen())
+        self.assertNotIn("HISTORIAL", self._resumen())
 
     def test_una_inasistencia_no_se_le_presenta_como_cancelada(self):
         """El texto anterior clasificaba en CONFIRMADA o CANCELADA, así que
@@ -1481,3 +1481,384 @@ class DisponibilidadDeTodoElEquipoTest(TestCase):
         prompt = IAService.construir_prompt_sistema(self.est)
         self.assertIn("NUNCA elijas tu el profesional", prompt)
         self.assertIn("OPCIONAL", prompt)
+
+
+class NoNegarSinConsultarTest(TestCase):
+    """La red contra las negativas inventadas (RF-07).
+
+    Caso de campo: un cliente pidió Pedicure «para hoy» y el asistente le
+    respondió que ese horario ya había pasado, deduciéndolo de una cita suya
+    de las 7:40 que aparecía en el bloque de estado. No consultó nada. Si
+    quedaban huecos esa tarde, la reserva se perdió sin dejar rastro.
+
+    Al leer las reglas en bloque apareció la asimetría de fondo: las
+    dieciséis protegían contra que el modelo CONCEDIERA de más —no inventes
+    horarios, no confirmes lo que el sistema no confirmó, no des precios, no
+    reactives una cita cancelada— y ninguna contra que NEGARA. La regla 3
+    decía «nunca ofrezcas horarios de memoria»; no decía «nunca niegues de
+    memoria».
+
+    Negar es además el fallo más caro: el cliente se va, no queda cita, no
+    queda error y no queda registro. Falla en silencio.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="nn@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Gina Style", slug="nn",
+            tipo=Establecimiento.Tipo.SALON, telefono="300")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Paola")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Pedicure", duracion_min=30)
+        ProfesionalServicio.objects.create(profesional=self.prof, servicio=self.serv)
+        self.dia = proximo_dia_semana(0)
+        HorarioBase.objects.create(
+            profesional=self.prof, dia_semana=self.dia.weekday(),
+            hora_inicio=time(8, 0), hora_fin=time(18, 0))
+
+    def _mock(self, *textos):
+        return [(t, 100, 50) for t in textos]
+
+    # ── El detector ───────────────────────────────────────────────
+
+    def test_reconoce_las_formas_de_decir_que_no_hay(self):
+        for texto in (
+            "Lamentablemente no hay disponibilidad para hoy.",
+            "No tenemos horarios libres ese día.",
+            "Ya no quedan cupos para el jueves.",
+            "La agenda está llena hoy.",
+            "Ese horario ya pasó, ¿te sirve otro día?",
+            "No contamos con espacios esa tarde.",
+        ):
+            with self.subTest(texto=texto):
+                self.assertTrue(IAService.niega_disponibilidad(texto), texto)
+
+    def test_no_confunde_otras_negativas_con_falta_de_agenda(self):
+        """Un falso positivo solo cuesta una iteración, pero si saltara con
+        cualquier «no» el asistente se volvería insufrible."""
+        for texto in (
+            "No manejamos precios en esta plataforma; te lo confirma el salón.",
+            "No ofrecemos ese servicio, pero tenemos Manicure y Pedicure.",
+            "No puedo agendar en línea con este número.",
+            "¿Prefieres el lunes o el martes?",
+        ):
+            with self.subTest(texto=texto):
+                self.assertFalse(IAService.niega_disponibilidad(texto), texto)
+
+    # ── La red, en el orquestador ─────────────────────────────────
+
+    def test_una_negativa_sin_consultar_no_llega_al_cliente(self):
+        """El caso reportado. El modelo niega de memoria; el sistema no se lo
+        entrega al cliente y le obliga a preguntar."""
+        intencion = json.dumps({
+            "intencion": "consultar_disponibilidad",
+            "servicio_id": self.serv.id, "fecha": str(self.dia)})
+        # El texto es el que salió en producción, palabra por palabra.
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            "Lamentablemente, Pedicure tiene una duración de 30 minutos y "
+            "ese horario ya pasó. ¿Te gustaría agendar para otro día?",
+            intencion,
+            "Para el lunes tenemos 8:00, 8:30 y 9:00 a. m. ¿Cuál prefieres?",
+        )) as m:
+            r = IAService.procesar_mensaje(self.est, "sN", "quiero pedicure hoy")
+
+        self.assertNotIn("ya pasó", r["respuesta"])
+        self.assertIn("8:00", r["respuesta"])
+        # Y se le dijo exactamente por qué se le devolvió.
+        feedback = m.call_args_list[1].args[1][-1]["content"]
+        self.assertIn("No has consultado la disponibilidad", feedback)
+
+    def test_si_el_sistema_dice_que_no_hay_el_modelo_si_puede_decirlo(self):
+        """La contraparte, y la que impide «arreglar» esto prohibiendo la
+        palabra: cuando la negativa viene del backend, pasa."""
+        cerrado = proximo_dia_semana(6)           # domingo, nadie trabaja
+        intencion = json.dumps({
+            "intencion": "consultar_disponibilidad",
+            "servicio_id": self.serv.id, "fecha": str(cerrado)})
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            intencion,
+            "Ese día no hay horarios disponibles. ¿Te sirve el lunes?",
+        )):
+            r = IAService.procesar_mensaje(self.est, "sN2", "pedicure el domingo")
+        self.assertIn("no hay horarios", r["respuesta"])
+
+    def test_una_respuesta_normal_no_se_estorba(self):
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            "¡Claro! ¿Para qué día te gustaría el Pedicure?",
+        )):
+            r = IAService.procesar_mensaje(self.est, "sN3", "quiero pedicure")
+        self.assertIn("¿Para qué día", r["respuesta"])
+
+    def test_si_el_modelo_insiste_no_se_le_entrega_la_negativa(self):
+        """Agotadas las iteraciones, el cliente recibe la salida de
+        `sin_resolver`, no la negativa inventada. Preferimos pedirle que
+        repita antes que mandarlo a casa por algo que nadie comprobó."""
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            "No hay disponibilidad hoy.",
+            "No hay horarios disponibles hoy.",
+            "Hoy la agenda está llena.",
+        )):
+            r = IAService.procesar_mensaje(self.est, "sN4", "pedicure hoy")
+        self.assertEqual(r["accion"], "sin_resolver")
+        self.assertNotIn("llena", r["respuesta"])
+
+    def test_el_prompt_lleva_la_regla_escrita(self):
+        """La red es el respaldo, no el único sitio donde vive la regla."""
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("NUNCA digas que no hay disponibilidad", prompt)
+
+
+class ConversacionCaducaTest(TestCase):
+    """El chat público no arrastra al cliente anterior (RF-02, Ley 1581).
+
+    El `session_id` vive en `localStorage` sin caducidad, así que la misma
+    fila se reutilizaba para siempre. En un dispositivo compartido —la
+    tablet del mostrador, un celular prestado— el siguiente cliente heredaba
+    el teléfono del anterior, veía sus citas en el bloque de estado y podía
+    cancelárselas. Por la puerta pública y sin autenticación.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="cd@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="cd",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+
+    def _mock(self, *textos):
+        return [(t, 100, 50) for t in textos]
+
+    def _hablar(self, session_id="sC", texto="Hola"):
+        with patch(RUTA_LLAMAR, side_effect=self._mock("¡Hola! ¿Qué servicio?")):
+            return IAService.procesar_mensaje(self.est, session_id, texto)
+
+    def _envejecer(self, conv, horas):
+        from django.utils import timezone as tz
+        ConversacionIA.objects.filter(pk=conv.pk).update(
+            actualizado_en=tz.now() - timedelta(hours=horas))
+
+    def test_dentro_de_la_ventana_se_continua_la_misma(self):
+        self._hablar()
+        conv = ConversacionIA.objects.get()
+        conv.telefono_cliente = "3001234567"
+        conv.save()
+        self._envejecer(conv, 6)
+        self._hablar()
+        self.assertEqual(ConversacionIA.objects.count(), 1)
+
+    def test_pasada_la_ventana_se_empieza_de_cero(self):
+        self._hablar()
+        vieja = ConversacionIA.objects.get()
+        vieja.telefono_cliente = "3001234567"
+        vieja.save()
+        self._envejecer(vieja, 13)
+
+        self._hablar()
+        self.assertEqual(ConversacionIA.objects.count(), 2)
+        nueva = ConversacionIA.objects.exclude(pk=vieja.pk).get()
+        self.assertEqual(nueva.telefono_cliente, "")
+        self.assertEqual(nueva.mensajes[0]["content"], "Hola")
+
+    def test_la_conversacion_vieja_se_conserva_intacta(self):
+        """No se reescribe ni se borra: es el registro de auditoría de
+        tokens y costos (RNF-09), que es cosa distinta del hilo del
+        cliente."""
+        self._hablar()
+        vieja = ConversacionIA.objects.get()
+        vieja.telefono_cliente = "3001234567"
+        vieja.save()
+        mensajes_antes = list(vieja.mensajes)
+        self._envejecer(vieja, 13)
+
+        self._hablar()
+        vieja.refresh_from_db()
+        self.assertEqual(vieja.telefono_cliente, "3001234567")
+        self.assertEqual(vieja.mensajes, mensajes_antes)
+
+    def test_el_telefono_del_anterior_no_se_le_inyecta_al_siguiente(self):
+        """Lo que de verdad importa: que el bloque [SISTEMA] del cliente
+        nuevo no hable de las citas del cliente viejo."""
+        self._hablar()
+        vieja = ConversacionIA.objects.get()
+        vieja.telefono_cliente = "3001234567"
+        vieja.save()
+        self._envejecer(vieja, 13)
+
+        with patch(RUTA_LLAMAR, side_effect=self._mock("¡Hola!")) as m:
+            IAService.procesar_mensaje(self.est, "sC", "Hola")
+        enviados = "".join(x["content"] for x in m.call_args_list[0].args[1])
+        self.assertNotIn("3001234567", enviados)
+
+    def test_cada_sesion_sigue_teniendo_su_hilo(self):
+        """La caducidad no puede haber mezclado sesiones distintas."""
+        self._hablar(session_id="uno")
+        self._hablar(session_id="dos")
+        self.assertEqual(ConversacionIA.objects.count(), 2)
+
+
+class CuandoLaApiFallaTest(TestCase):
+    """El chat público no devuelve un 500 crudo (RF-10).
+
+    Caso de campo: la API de Claude respondió 529 «Overloaded» tres veces
+    seguidas —el SDK ya reintenta dos— y `OverloadedError` subió sin que
+    nadie la capturara. El cliente leyó «Tuvimos un problema al procesar tu
+    mensaje», no tuvo salida y se fue. Ni cita, ni aviso al dueño, ni rastro
+    de que se fue.
+
+    La sobrecarga del proveedor no es un caso raro: es transitoria y
+    esperable, y va a volver a pasar. La regla que se aplica es registrar
+    todo y no mostrar nada en crudo: la traza sigue entera en el log y al
+    cliente le llega una frase.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="af@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="af",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+
+    def _error_de_api(self):
+        """Un fallo real del SDK, no una imitación.
+
+        Con una excepción inventada la prueba pasaría igual y no
+        comprobaría que `_es_error_del_proveedor` reconoce lo que tiene que
+        reconocer, que es justo la bifurcación que decide qué se le dice al
+        cliente.
+        """
+        import anthropic
+        # `request` va en None y no con un objeto de transporte: la libreria
+        # HTTP que usa el SDK ha cambiado de nombre entre versiones y atarla
+        # aqui haria que la prueba se rompiera al actualizar el SDK, que es
+        # justo lo que no debe pasar en una prueba de resistencia.
+        return anthropic.APIConnectionError(request=None)
+
+    def test_una_sobrecarga_no_llega_como_error_al_cliente(self):
+        with patch(RUTA_LLAMAR, side_effect=self._error_de_api()):
+            r = IAService.procesar_mensaje(self.est, "sA", "hola")
+        self.assertEqual(r["accion"], "servicio_no_disponible")
+        self.assertIn("muchos mensajes", r["respuesta"])
+
+    def test_el_endpoint_responde_200_y_no_500(self):
+        """Lo que ve el navegador. Con un 500 el frontend cae en su rama de
+        error genérica y el hilo se corta; con un 200 el aviso aparece como
+        un mensaje más del asistente."""
+        from rest_framework.test import APIClient
+        api = APIClient()
+        with patch(RUTA_LLAMAR, side_effect=self._error_de_api()):
+            resp = api.post("/api/v1/p/af/chat",
+                            {"mensaje": "hola", "session_id": "sB"},
+                            format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("muchos mensajes", resp.json()["respuesta"])
+
+    def test_el_turno_fallido_no_se_persiste(self):
+        """Para que reescribir reproduzca el estado exacto en vez de
+        arrastrar medio turno roto."""
+        with patch(RUTA_LLAMAR, side_effect=self._error_de_api()):
+            IAService.procesar_mensaje(self.est, "sC", "hola")
+        conv = ConversacionIA.objects.get(session_id="sC")
+        self.assertEqual(conv.mensajes, [])
+
+    def test_los_tokens_gastados_si_quedan_registrados(self):
+        """Se pagaron aunque la respuesta no llegara. El registro de costos
+        tiene que reflejar lo que se pagó, no lo que salió bien."""
+        intencion = json.dumps({"intencion": "consultar_cita",
+                                "telefono": "3001234567"})
+        with patch(RUTA_LLAMAR, side_effect=[(intencion, 120, 40),
+                                             self._error_de_api()]):
+            IAService.procesar_mensaje(self.est, "sD", "mi cita")
+        conv = ConversacionIA.objects.get(session_id="sD")
+        self.assertEqual(conv.tokens_entrada, 120)
+        self.assertEqual(conv.tokens_salida, 40)
+
+    def test_un_defecto_nuestro_tampoco_sale_en_crudo_pero_se_registra(self):
+        """La otra rama. El cliente recibe otra frase, y la traza completa
+        queda en el log: no mostrarla no es tragársela."""
+        with patch(RUTA_LLAMAR, side_effect=ZeroDivisionError("boom")):
+            with self.assertLogs("asistente.services", level="ERROR") as reg:
+                r = IAService.procesar_mensaje(self.est, "sE", "hola")
+        self.assertEqual(r["accion"], "error_interno")
+        self.assertNotIn("boom", r["respuesta"])
+        self.assertIn("ZeroDivisionError", "\n".join(reg.output))
+
+    def test_el_presupuesto_corta_antes_de_quemar_el_worker(self):
+        """Gunicorn mata el worker a los 60 s. Si el turno ya consumió el
+        presupuesto, se cierra con el aviso en vez de arriesgar otra
+        llamada."""
+        intencion = json.dumps({"intencion": "consultar_cita",
+                                "telefono": "3001234567"})
+        with patch("asistente.services.time.monotonic", side_effect=[0, 100]):
+            with patch(RUTA_LLAMAR,
+                       side_effect=[(intencion, 10, 5)]) as m:
+                r = IAService.procesar_mensaje(self.est, "sF", "mi cita")
+        self.assertEqual(r["accion"], "servicio_no_disponible")
+        self.assertEqual(m.call_count, 1, "Se llamó al modelo pasado el corte")
+
+    def test_siempre_se_intenta_al_menos_una_vez(self):
+        """El presupuesto no se comprueba antes del primer intento: por malo
+        que sea el momento, al cliente hay que intentarlo una vez."""
+        with patch("asistente.services.time.monotonic", side_effect=[0, 999]):
+            with patch(RUTA_LLAMAR, side_effect=self._mock_texto()) as m:
+                r = IAService.procesar_mensaje(self.est, "sG", "hola")
+        self.assertEqual(m.call_count, 1)
+        self.assertIsNone(r["accion"])
+
+    def _mock_texto(self):
+        return [("¡Hola! ¿Qué servicio deseas?", 10, 5)]
+
+    def test_el_cliente_del_sdk_lleva_limites_explicitos(self):
+        """Sin `timeout` el SDK espera diez minutos y gunicorn mata el worker
+        a los sesenta: no un 500, un 502 y un worker menos de dos."""
+        import anthropic
+        with patch.object(anthropic, "Anthropic") as Cliente:
+            Cliente.return_value.messages.create.side_effect = RuntimeError("corte")
+            with self.assertRaises(RuntimeError):
+                IAService._llamar_claude("prompt", [{"role": "user", "content": "x"}])
+        kwargs = Cliente.call_args.kwargs
+        self.assertEqual(kwargs["timeout"], 15.0)
+        self.assertEqual(kwargs["max_retries"], 2)
+
+
+class MarcaDeActividadTest(TestCase):
+    """`actualizado_en` se escribe en cada mensaje.
+
+    Se escapó en la primera versión: el `conv.save()` final usa
+    `update_fields`, y Django solo llama al `pre_save` de los campos que
+    aparecen ahí, así que un campo `auto_now` que no se nombre no se
+    actualiza nunca. La caducidad contaba desde que la conversación empezó y
+    no desde el último mensaje: quien agendaba a las ocho perdía el hilo a
+    las veinte aunque estuviera escribiendo.
+
+    La prueba original no lo detectó porque movía `actualizado_en` a mano con
+    un `.update()`: verificaba la lectura y nunca la escritura.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="ma@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="ma",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+
+    def _hablar(self, texto):
+        with patch(RUTA_LLAMAR, side_effect=[("Hola", 10, 5)]):
+            IAService.procesar_mensaje(self.est, "sM", texto)
+
+    def test_cada_mensaje_refresca_la_marca(self):
+        self._hablar("uno")
+        conv = ConversacionIA.objects.get(session_id="sM")
+        antes = conv.actualizado_en
+        self._hablar("dos")
+        conv.refresh_from_db()
+        self.assertGreater(conv.actualizado_en, antes)
+
+    def test_tambien_cuando_el_turno_falla(self):
+        """Si no, un rato de sobrecarga caducaría conversaciones vivas."""
+        import anthropic
+        self._hablar("uno")
+        conv = ConversacionIA.objects.get(session_id="sM")
+        antes = conv.actualizado_en
+        fallo = anthropic.APIConnectionError(request=None)
+        with patch(RUTA_LLAMAR, side_effect=fallo):
+            IAService.procesar_mensaje(self.est, "sM", "dos")
+        conv.refresh_from_db()
+        self.assertGreater(conv.actualizado_en, antes)

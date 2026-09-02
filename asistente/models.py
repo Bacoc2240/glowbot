@@ -19,6 +19,12 @@ class ConversacionIA(models.Model):
     tokens_entrada = models.PositiveIntegerField(default=0)
     tokens_salida = models.PositiveIntegerField(default=0)
     creado_en = models.DateTimeField(auto_now_add=True)
+    # Marca de la ultima actividad. Sin ella no hay forma de saber si una
+    # conversacion sigue viva: el navegador guarda el session_id en
+    # localStorage sin caducidad, asi que la fila se reutilizaba para
+    # siempre y el siguiente que abriera el chat en ese dispositivo heredaba
+    # el telefono y las citas del anterior.
+    actualizado_en = models.DateTimeField(auto_now=True)
 
     objects = TenantManager()
 

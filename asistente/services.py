@@ -17,6 +17,7 @@ Defensa en profundidad (5 capas):
 import json
 import re
 import logging
+import time
 
 from datetime import datetime, date, timedelta
 
@@ -36,6 +37,74 @@ from .models import ConversacionIA
 logger = logging.getLogger(__name__)
 MAX_ITERACIONES = 3     # llamadas al modelo por mensaje del usuario
 MAX_HISTORIAL = 20      # interacciones enviadas (control de costos, §8)
+
+# Cuanto vive una conversacion sin actividad antes de empezar de cero.
+#
+# El navegador guarda el session_id en localStorage y no caduca nunca, asi
+# que la misma fila se reutilizaba indefinidamente. En un dispositivo
+# compartido --la tablet del mostrador, un celular prestado-- eso significa
+# que el siguiente cliente hereda el telefono del anterior, ve sus citas en
+# el bloque de estado y puede cancelarselas. Por la puerta publica y sin
+# autenticacion: es una divulgacion de datos personales (Ley 1581, RF-02),
+# no una molestia de usabilidad.
+#
+# Doce horas: quien agenda por la manana y vuelve por la tarde no repite el
+# telefono, y la tablet no arrastra a la persona de ayer.
+CADUCIDAD_CONVERSACION = timedelta(hours=12)
+
+# Palabras con las que se habla de hueco en la agenda.
+_AGENDA = r"(disponibilidad|horario|hora|cupo|espacio|turno|agenda|hueco)"
+
+# Formas de decir "no hay". Todas exigen la negacion Y una palabra de agenda
+# cerca, para no disparar con "no tengo informacion de precios".
+_NEGACIONES = [
+    r"\bno\s+(?:hay|tenemos|tengo|queda|quedan|contamos\s+con)\b[^.!?]{0,45}" + _AGENDA,
+    r"\bya\s+no\s+(?:hay|queda|quedan)\b[^.!?]{0,45}" + _AGENDA,
+    r"\bsin\s+" + _AGENDA + r"s?\s+(?:disponible|libre)",
+    r"\b(?:agenda|d[ií]a|jornada)\s+(?:est[áa]\s+)?(?:llen[ao]|complet[ao])\b",
+    _AGENDA + r"[^.!?]{0,25}\bya\s+pas[óo]\b",
+    r"\bya\s+pas[óo]\b[^.!?]{0,25}" + _AGENDA,
+]
+# Hubo un patron mas, "no (puedo|se puede|es posible) agendar", y se retiro.
+# Esa frase la usan tambien las negativas legitimas que NO hablan de la
+# agenda: el telefono vetado, el servicio que no se presta, la fecha ya
+# pasada. El texto que el backend entrega palabra por palabra cuando un
+# numero esta bloqueado empieza exactamente asi. Cubrir una forma de hablar
+# tan comun a cambio de marcar como sospechosas las negativas correctas no
+# salia a cuenta: el caso real se reconoce igual por "horario ... ya paso".
+_RE_NIEGA = re.compile("|".join(_NEGACIONES), re.IGNORECASE)
+
+# Limites de la llamada al proveedor.
+#
+# El cliente se construia sin timeout, es decir con el del SDK: diez
+# minutos. Gunicorn arranca con --timeout 60. Una llamada colgada --no
+# fallida, colgada-- se comia el worker entero y Railway lo mataba: no un
+# 500, un 502 y uno de los dos workers menos.
+#
+# Peor caso de UNA llamada: tres intentos de 15 s mas las esperas entre
+# ellos, unos 46 s. Cabe en los 60 de gunicorn. El presupuesto de turno
+# impide que una segunda iteracion se coma lo que queda.
+TIMEOUT_API = 15.0
+REINTENTOS_API = 2
+PRESUPUESTO_TURNO = 35.0
+
+# No se suben mas los reintentos a proposito. Aguantar una sobrecarga larga
+# significa dejar al cliente medio minuto mirando "Escribiendo...", y esa
+# espera tambien se pierde. Es mejor fallar pronto y con buenas palabras.
+RESPUESTA_SATURADO = (
+    "Estamos recibiendo muchos mensajes en este momento. ¿Puedes volver a "
+    "escribirlo en unos segundos?"
+)
+RESPUESTA_ERROR_INTERNO = (
+    "Tuvimos un inconveniente de nuestro lado. ¿Puedes intentarlo otra vez?"
+)
+
+AVISO_SIN_CONSULTAR = (
+    "No has consultado la disponibilidad de esa fecha en este turno, asi que "
+    "no puedes afirmar que no hay. Emite consultar_disponibilidad y responde "
+    "con lo que devuelva el sistema. Si de verdad no queda ningun horario, el "
+    "sistema te lo dira y entonces si puedes decirlo."
+)
 
 # Prefijo de las inyecciones de estado. Se necesita reconocerlas para NO
 # guardarlas en el historial: se recalculan en cada turno, y acumularlas
@@ -182,10 +251,17 @@ REGLAS OBLIGATORIAS:
    nombrado a alguien. Elegir tu le esconde al resto del equipo, y si la
    persona que elegiste tiene el dia lleno le diras que no hay
    disponibilidad cuando si la hay.
-16. Las citas marcadas YA PASO en los mensajes [SISTEMA] son historia: no se
-   pueden cancelar ni cambiar, y no ocupan cupo. Puedes mencionarlas si el
-   cliente pregunta por ellas, pero nunca las ofrezcas para cancelar ni las
-   cuentes entre sus citas pendientes."""
+16. Las citas marcadas HISTORIAL en los mensajes [SISTEMA] ya se atendieron:
+   no se pueden cancelar ni cambiar, y no ocupan cupo. Puedes mencionarlas si
+   el cliente pregunta por ellas, pero nunca las ofrezcas para cancelar ni las
+   cuentes entre sus citas pendientes. Y no dicen NADA sobre que horarios hay
+   libres: son citas de una persona, no la agenda del establecimiento.
+17. NUNCA digas que no hay disponibilidad, que un dia esta lleno o que ya no
+   quedan horarios si un mensaje [SISTEMA] de ESTE MISMO turno no te lo ha
+   dicho. Para saberlo hay que preguntarselo al sistema con
+   consultar_disponibilidad, igual que para ofrecer horarios (regla 3). Una
+   negativa inventada es peor que un horario inventado: el cliente se va y no
+   queda ni cita ni rastro de que se fue."""
 
 
     # ──────────────────────────────────────────────────────────────
@@ -197,7 +273,10 @@ REGLAS OBLIGATORIAS:
         El prompt de sistema lleva cache_control para activar prompt caching
         (90% de descuento en lecturas de caché — control de costos §8)."""
         import anthropic  # import perezoso: los tests lo simulan
-        cliente = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        cliente = anthropic.Anthropic(
+            api_key=settings.ANTHROPIC_API_KEY,
+            timeout=TIMEOUT_API, max_retries=REINTENTOS_API,
+        )
         respuesta = cliente.messages.create(
             model=settings.ANTHROPIC_MODEL,
             max_tokens=500,
@@ -589,7 +668,15 @@ REGLAS OBLIGATORIAS:
             ya_paso = (c.fecha < ahora.date()
                        or (c.fecha == ahora.date()
                            and c.hora_inicio <= ahora.time()))
-            marca = " — YA PASO" if ya_paso else ""
+            # La marca describe QUE ES la cita, no que hora es.
+            #
+            # Decia " — YA PASO", y el modelo tomo esa etiqueta --pegada a
+            # una cita concreta de las 7:40-- y la uso como conclusion sobre
+            # el dia entero: "ese horario ya paso", sin consultar nada. Una
+            # etiqueta que habla del reloj invita a razonar sobre el reloj.
+            # Esta habla de la cita y de sus consecuencias, que es justo lo
+            # que el modelo necesita saber de ella.
+            marca = " — HISTORIAL (ya se atendio, no ocupa cupo)" if ya_paso else ""
             lineas.append(
                 f"- id {c.id}: {c.servicio.nombre} el {fecha_larga(c.fecha)} "
                 f"a las {hora_texto(c.hora_inicio)} con {c.profesional.nombre} "
@@ -599,13 +686,97 @@ REGLAS OBLIGATORIAS:
                 + "\n".join(lineas))
 
     # ──────────────────────────────────────────────────────────────
+    #  Continuidad de la conversacion y red contra las negativas falsas
+    # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _conversacion_viva(establecimiento, session_id: str) -> ConversacionIA:
+        """La conversacion en curso de esa sesion, o una nueva si caduco.
+
+        Antes era un `get_or_create`, que devolvia siempre la misma fila
+        porque el session_id vive en localStorage y no caduca. La fila
+        antigua NO se reescribe ni se borra: se deja intacta como registro de
+        auditoria (RNF-09) y se abre otra. Reutilizar la fila habria hecho
+        que limpiar los datos de un cliente borrara el historial de tokens y
+        costos del establecimiento, que son cosas distintas.
+        """
+        conv = (ConversacionIA.objects
+                .filter(establecimiento=establecimiento, session_id=session_id)
+                .order_by("-creado_en").first())
+        if conv is not None and (timezone.now() - conv.actualizado_en
+                                 <= CADUCIDAD_CONVERSACION):
+            return conv
+        return ConversacionIA.objects.create(
+            establecimiento=establecimiento, session_id=session_id)
+
+    @staticmethod
+    def niega_disponibilidad(texto: str) -> bool:
+        """¿Este texto le dice al cliente que no hay hueco?
+
+        El prompt tenia una asimetria que solo se ve cuando se leen las
+        reglas en bloque: todas protegian contra que el modelo CONCEDIERA de
+        mas --no inventes horarios, no confirmes lo que el sistema no
+        confirmo, no des precios, no reactives una cita cancelada-- y
+        ninguna contra que NEGARA. La regla 3 dice "nunca ofrezcas horarios
+        de memoria"; no decia "nunca niegues de memoria".
+
+        Negar es ademas el fallo mas caro: el cliente se va, no queda cita,
+        no queda error y no queda registro. Falla en silencio. El caso de
+        campo fue un cliente que pidio Pedicure para hoy y recibio un "ese
+        horario ya paso" deducido de una cita suya de las 7:40 que aparecia
+        en el bloque de estado, sin que el modelo consultara nada.
+
+        Es una heuristica sobre texto en espanol, y eso normalmente seria
+        motivo para no ponerla. Aqui se acepta por la asimetria de sus
+        errores: un falso positivo cuesta UNA iteracion de mas y termina en
+        una consulta real; un falso negativo deja el comportamiento que ya
+        habia. Nunca concede nada --solo puede obligar a comprobar mas--,
+        asi que equivocarse no abre ningun camino nuevo.
+
+        Falso positivo conocido y aceptado: "tu cita ya paso" dicho a quien
+        pregunta por la suya sin que el modelo emita `consultar_cita`. Cuesta
+        una iteracion y termina en una consulta real, que es una respuesta
+        mejor que la que se iba a dar.
+        """
+        return bool(_RE_NIEGA.search(texto or ""))
+
+    @staticmethod
+    def _salida_degradada(conv, respuesta: str, accion: str) -> dict:
+        """Cierra el turno sin respuesta del modelo, dejando el estado limpio.
+
+        El historial NO se guarda. Eso ya pasaba antes por accidente --la
+        excepcion se propagaba y `conv.save()` nunca llegaba a ejecutarse--,
+        y resulta ser lo correcto: al volver a escribir, el cliente reproduce
+        el estado exacto en vez de arrastrar medio turno roto. Aqui pasa a
+        ser deliberado.
+
+        Los tokens SI se guardan. Se gastaron de verdad aunque la respuesta
+        no llegara, y el registro de costos (RNF-09) tiene que reflejar lo
+        que se pago, no lo que salio bien.
+        """
+        conv.save(update_fields=["tokens_entrada", "tokens_salida",
+                                 "actualizado_en"])
+        return {"respuesta": respuesta, "accion": accion, "cita": None}
+
+    @staticmethod
+    def _es_error_del_proveedor(exc: Exception) -> bool:
+        """¿Es un fallo de la API de Claude y no un defecto nuestro?
+
+        El import sigue siendo perezoso, como en `_llamar_claude`: subirlo al
+        modulo haria que un problema instalando el SDK tumbara la aplicacion
+        entera en vez de solo el chat.
+        """
+        try:
+            import anthropic
+        except ImportError:          # pragma: no cover - el SDK va en requirements
+            return False
+        return isinstance(exc, anthropic.APIError)
+
+    # ──────────────────────────────────────────────────────────────
     #  Orquestador principal: un mensaje del cliente → una respuesta
     # ──────────────────────────────────────────────────────────────
     @classmethod
     def procesar_mensaje(cls, establecimiento, session_id: str, mensaje: str) -> dict:
-        conv, _ = ConversacionIA.objects.get_or_create(
-            establecimiento=establecimiento, session_id=session_id,
-        )
+        conv = cls._conversacion_viva(establecimiento, session_id)
         historial = list(conv.mensajes)
 
         # Estado real de las citas ANTES del mensaje del cliente. Es la
@@ -628,18 +799,79 @@ REGLAS OBLIGATORIAS:
                                   "¿Puedes intentarlo de nuevo?",
                      "accion": None, "cita": None}
 
-        for _ in range(MAX_ITERACIONES):
-            texto, tk_in, tk_out = cls._llamar_claude(
-                prompt_sistema, historial[-MAX_HISTORIAL:],
-            )
+        # ¿Llego el backend a decir algo en este turno?
+        #
+        # La red de mas abajo solo se arma cuando la respuesta NO paso por
+        # ninguna intencion, que es el caso que fallo: el modelo contesto
+        # entero desde el bloque de estado, sin consultar nada, y el backend
+        # nunca tuvo ocasion de desmentirlo. Si hubo intencion, la respuesta
+        # ya esta anclada a un [SISTEMA] real y vigilarla ademas seria
+        # desconfiar de la arquitectura, no reforzarla.
+        #
+        # Ademas evita un falso positivo concreto: el texto que el backend
+        # entrega palabra por palabra cuando un telefono esta vetado empieza
+        # por "No puedo agendar en linea con este numero". Es una negativa,
+        # pero es SUYA.
+        #
+        # Se reinicia en cada mensaje: lo del turno anterior no autoriza nada
+        # sobre este.
+        el_backend_hablo = False
+
+        inicio = time.monotonic()
+
+        for iteracion in range(MAX_ITERACIONES):
+            # El presupuesto no se comprueba antes del PRIMER intento: por
+            # malo que sea el momento, al cliente hay que intentarlo una vez.
+            if iteracion and time.monotonic() - inicio > PRESUPUESTO_TURNO:
+                logger.warning(
+                    "IAService: presupuesto de turno agotado | "
+                    "establecimiento=%s session=%s",
+                    establecimiento.id, session_id,
+                )
+                return cls._salida_degradada(conv, RESPUESTA_SATURADO,
+                                             "servicio_no_disponible")
+            try:
+                texto, tk_in, tk_out = cls._llamar_claude(
+                    prompt_sistema, historial[-MAX_HISTORIAL:],
+                )
+            except Exception as exc:
+                # Un 529 de sobrecarga --transitorio y esperable-- salia como
+                # error 500 en la zona publica: el cliente leia "tuvimos un
+                # problema", no tenia salida y se iba. Ni cita, ni error
+                # visible para el dueno, ni rastro de que se fue.
+                if cls._es_error_del_proveedor(exc):
+                    logger.warning(
+                        "IAService: la API de Claude fallo | "
+                        "establecimiento=%s session=%s | %s: %s",
+                        establecimiento.id, session_id,
+                        type(exc).__name__, exc,
+                    )
+                    return cls._salida_degradada(conv, RESPUESTA_SATURADO,
+                                                 "servicio_no_disponible")
+                # Cualquier otra cosa es un defecto nuestro. Se registra
+                # ENTERA --logger.exception incluye la traza-- y el cliente
+                # recibe una frase, no una pila de llamadas. Registrar todo,
+                # no mostrar nada en crudo.
+                logger.exception(
+                    "IAService: fallo inesperado | establecimiento=%s "
+                    "session=%s", establecimiento.id, session_id,
+                )
+                return cls._salida_degradada(conv, RESPUESTA_ERROR_INTERNO,
+                                             "error_interno")
             conv.tokens_entrada += tk_in
             conv.tokens_salida += tk_out
 
             intencion = cls._extraer_intencion(texto)
             if intencion is None:  # respuesta conversacional normal
                 historial.append({"role": "assistant", "content": texto})
-                resultado = {"respuesta": texto, "accion": None, "cita": None}
-                break
+                # Red: una negativa de disponibilidad que no viene del backend
+                # no sale de aqui. Se le devuelve al modelo para que consulte.
+                if el_backend_hablo or not cls.niega_disponibilidad(texto):
+                    resultado = {"respuesta": texto, "accion": None, "cita": None}
+                    break
+                feedback = AVISO_SIN_CONSULTAR
+                historial.append({"role": "user", "content": f"[SISTEMA] {feedback}"})
+                continue
 
             # El telefono se recuerda en cuanto el cliente lo da, para poder
             # inyectar el estado de sus citas en los turnos siguientes. El
@@ -650,6 +882,7 @@ REGLAS OBLIGATORIAS:
             if telefono and conv.telefono_cliente != telefono:
                 conv.telefono_cliente = telefono
 
+            el_backend_hablo = True
             final, feedback = cls._ejecutar_intencion(establecimiento, intencion)
             historial.append({"role": "assistant", "content": texto})
             if final is not None:  # acción ejecutada: cierre del turno
@@ -680,6 +913,12 @@ REGLAS OBLIGATORIAS:
             m for m in historial
             if not m.get("content", "").startswith(f"[SISTEMA] {MARCA_ESTADO}")
         ]
+        # `actualizado_en` va en la lista aunque sea auto_now. Django solo
+        # llama al pre_save de los campos que aparecen en update_fields, asi
+        # que sin nombrarlo la columna no se escribia nunca y la caducidad
+        # contaba desde que la conversacion EMPEZO, no desde el ultimo
+        # mensaje: quien agendaba a las ocho perdia el hilo a las veinte
+        # aunque estuviera escribiendo.
         conv.save(update_fields=["mensajes", "tokens_entrada", "tokens_salida",
-                                 "telefono_cliente"])
+                                 "telefono_cliente", "actualizado_en"])
         return resultado
