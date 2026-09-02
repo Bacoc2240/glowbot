@@ -7,6 +7,8 @@ from unittest import mock
 from django.conf import settings
 from django.core import mail
 from django.test import TestCase, override_settings
+
+from agenda.fechas_de_prueba import proximo_dia_semana
 from django.conf import settings
 from django.utils import timezone
 
@@ -47,7 +49,7 @@ class BaseSprint4Test(TestCase):
             establecimiento=self.est, nombre="Corte",
             duracion_min=30,
         )
-        self.lunes = date(2026, 6, 15)
+        self.lunes = proximo_dia_semana(0)
 
 
 class HorariosFlexiblesTest(BaseSprint4Test):
@@ -79,7 +81,7 @@ class HorariosFlexiblesTest(BaseSprint4Test):
         )
         r = self.api.post(
             f"/api/v1/profesionales/{self.carlos.id}/excepciones",
-            {"fecha": "2026-06-15", "hora_inicio": "14:00", "hora_fin": "16:00"},
+            {"fecha": str(self.lunes), "hora_inicio": "14:00", "hora_fin": "16:00"},
             format="json",
         )
         self.assertEqual(r.status_code, 201)
@@ -103,13 +105,13 @@ class HorariosFlexiblesTest(BaseSprint4Test):
         for ini, fin in [("08:00", "12:00"), ("14:00", "19:00")]:
             r = self.api.post(
                 f"/api/v1/profesionales/{self.carlos.id}/excepciones",
-                {"fecha": "2026-06-15", "hora_inicio": ini, "hora_fin": fin},
+                {"fecha": str(self.lunes), "hora_inicio": ini, "hora_fin": fin},
                 format="json",
             )
             self.assertEqual(r.status_code, 201)
 
         excs = ExcepcionHorario.objects.filter(
-            profesional=self.carlos, fecha="2026-06-15").order_by("hora_inicio")
+            profesional=self.carlos, fecha=self.lunes).order_by("hora_inicio")
         self.assertEqual(excs.count(), 2)
         self.assertEqual([e.hora_inicio for e in excs], [time(8, 0), time(14, 0)])
 
@@ -124,11 +126,11 @@ class HorariosFlexiblesTest(BaseSprint4Test):
         for ini, fin in [("08:00", "12:00"), ("14:00", "19:00")]:
             self.api.post(
                 f"/api/v1/profesionales/{self.carlos.id}/excepciones",
-                {"fecha": "2026-06-15", "hora_inicio": ini, "hora_fin": fin},
+                {"fecha": str(self.lunes), "hora_inicio": ini, "hora_fin": fin},
                 format="json",
             )
         slots = AgendaService.calcular_slots(
-            self.carlos, self.corte, date(2026, 6, 15))
+            self.carlos, self.corte, self.lunes)
         self.assertIn(time(11, 30), slots)
         self.assertIn(time(14, 0), slots)
         self.assertNotIn(time(12, 0), slots)
@@ -1389,3 +1391,89 @@ class PantallaServicioDesactivadoTests(TestCase):
         vivas = " ".join(self._vivas().split())
         self.assertIn("if (d && d.detalle) this.avisoS = d.detalle;", vivas)
         self.assertIn('x-text="avisoS"', vivas)
+
+
+class PanelNoAgendaEnElPasadoTests(TestCase):
+    """La puerta del panel: reserva manual (RF-07).
+
+    El canal manual no tiene antelación mínima —quien el dueño agenda a mano
+    ya está en el local— pero tampoco puede crear citas en el pasado.
+    """
+
+    def setUp(self):
+        from datetime import time, timedelta
+        from django.utils import timezone
+        from rest_framework.test import APIClient
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, HorarioBase,
+                                     Profesional, Servicio)
+
+        self.api = APIClient()
+        u = Usuario.objects.create_user(email="pp@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="pp",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.prof = Profesional.objects.create(establecimiento=self.est, nombre="E")
+        self.serv = Servicio.objects.create(establecimiento=self.est,
+                                            nombre="Corte", duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3005556666",
+            acepta_datos=True)
+        self.hoy = timezone.localdate()
+        self.ayer = self.hoy - timedelta(days=1)
+        for d in (self.hoy.weekday(), self.ayer.weekday()):
+            HorarioBase.objects.get_or_create(
+                profesional=self.prof, dia_semana=d,
+                hora_inicio=time(0, 0), hora_fin=time(23, 59))
+        self.api.force_authenticate(user=u)
+
+    def test_el_panel_no_puede_agendar_ayer(self):
+        from agenda.models import Cita
+        r = self.api.post("/api/v1/citas", {
+            "fecha": str(self.ayer), "hora_inicio": "09:00",
+            "profesional": self.prof.id, "servicio": self.serv.id,
+            "cliente": self.cli.id}, format="json")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()["error"], "cita_en_el_pasado")
+        self.assertFalse(Cita.objects.filter(fecha=self.ayer).exists())
+
+    def test_no_devuelve_error_de_servidor(self):
+        """Sin capturar la excepción, el dueño vería un 500 al equivocarse
+        de fecha por un dígito."""
+        r = self.api.post("/api/v1/citas", {
+            "fecha": str(self.ayer), "hora_inicio": "09:00",
+            "profesional": self.prof.id, "servicio": self.serv.id,
+            "cliente": self.cli.id}, format="json")
+        self.assertLess(r.status_code, 500)
+
+    def test_las_horas_del_panel_incluyen_lo_inmediato(self):
+        """La otra mitad de la regla, y la que ninguna prueba cubría.
+
+        Comprobar que el panel no ofrece horas pasadas no distingue si pide
+        margen cero o margen treinta: en ambos casos las pasadas desaparecen.
+        Lo que hay que verificar es que SÍ ofrece los próximos minutos,
+        porque quien el dueño agenda a mano ya está en el local.
+        """
+        from datetime import timedelta
+        from django.utils import timezone
+        ahora = timezone.localtime()
+        # Una hora dentro de la ventana de antelación: con margen treinta no
+        # se ofrecería; con margen cero sí.
+        objetivo = (ahora + timedelta(minutes=10)).strftime("%H:%M")
+        d = self.api.get(f"/api/v1/disponibilidad?profesional={self.prof.id}"
+                         f"&servicio={self.serv.id}&fecha={self.hoy}").json()
+        valores = [s["valor"] for s in d["slots"]]
+        limite = (ahora + timedelta(minutes=30)).strftime("%H:%M")
+        self.assertTrue([v for v in valores if v < limite],
+                        f"El panel no ofrece nada antes de {limite}: está "
+                        f"aplicando la antelación mínima del autoservicio")
+
+    def test_las_horas_del_panel_no_llevan_antelacion_minima(self):
+        """El endpoint que consume la reserva manual pide margen cero: quien
+        llega al local ya está ahí. Pero tampoco ofrece lo ya pasado."""
+        from django.utils import timezone
+        d = self.api.get(f"/api/v1/disponibilidad?profesional={self.prof.id}"
+                         f"&servicio={self.serv.id}&fecha={self.hoy}").json()
+        ahora = timezone.localtime().strftime("%H:%M")
+        pasados = [s["valor"] for s in d["slots"] if s["valor"] < ahora]
+        self.assertFalse(pasados, f"Ofrece horas ya pasadas: {pasados}")

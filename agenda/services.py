@@ -22,6 +22,18 @@ from negocios.models import (
 )
 from .models import Cita
 
+# Antelacion minima para agendar. Si son las 10:13 no se ofrece --ni se
+# acepta-- un hueco a las 10:30: el cliente no llega. Con cero margen alguien
+# puede reservar a las 10:29 para las 10:30 desde el celular y llegar tarde
+# igual, con el turno ya bloqueado para los demas.
+#
+# Es un valor fijo y no un ajuste del establecimiento a proposito: una
+# barberia de barrio donde el cliente llega caminando quiere cero margen y un
+# spa que prepara cabina quiere una hora, asi que configurable es lo correcto
+# a la larga. Anadir un campo, una migracion y una cuarta opcion a la pantalla
+# de ajustes a un mes del PMV no lo es. Queda anotado para la v1.1.
+ANTELACION_MINIMA_MIN = 30
+
 
 class TelefonoVetado(Exception):
     """El establecimiento bloqueó este número para reservas en línea."""
@@ -33,6 +45,17 @@ class TopeCitasAlcanzado(Exception):
     Se distingue de SlotNoDisponible a proposito: ahi el problema es la hora
     y ofrecer otra resuelve; aqui el problema es el cliente y ofrecer otra
     hora no resolveria nada. El asistente tiene que decir cosas distintas.
+    """
+
+
+class CitaEnElPasado(Exception):
+    """Se intento agendar una cita que ya empezo o esta a punto de empezar.
+
+    Vive aqui y no como una validacion de serializador porque el invariante
+    es del dominio: ninguna puerta --el asistente, el panel, una peticion
+    directa al API-- puede crear una cita en el pasado. Ofrecer bien los
+    horarios no basta: el modelo puede pedir una hora que no se le ofrecio, y
+    cualquiera con un token puede hacerlo con curl.
     """
 
 
@@ -122,13 +145,18 @@ class AgendaService:
     # ──────────────────────────────────────────────────────────────
     @classmethod
     def calcular_slots(cls, profesional: Profesional, servicio: Servicio,
-                       dia: date, paso_min: int = 15):
+                       dia: date, paso_min: int = 15,
+                       antelacion_min: int = ANTELACION_MINIMA_MIN):
         """Lista de objetos time con las horas de inicio disponibles para
         agendar `servicio` con `profesional` en la fecha `dia`.
 
         Combina las 3 capas + ocupación:
           disponible = (Capa1∨Capa2) − Capa3 − citas_confirmadas
         y fragmenta el tiempo libre en slots del tamaño del servicio."""
+        ahora = timezone.localtime()
+        if dia < ahora.date():
+            return []  # el pasado no se agenda
+
         duracion = servicio.duracion_min
         base = cls._franjas_del_dia(profesional, dia)
         if not base:
@@ -144,11 +172,20 @@ class AgendaService:
         modo = profesional.establecimiento.modo_agenda
         paso = duracion if modo == Establecimiento.ModoAgenda.COMPACTO else paso_min
 
+        # En el dia de hoy, todo lo que ya empezo --o empieza en menos de la
+        # antelacion minima-- deja de ofrecerse. El calculo no miraba el reloj
+        # en ningun momento: a las 10:13 seguia ofreciendo las 8:30, y un
+        # cliente real agendo una cita que ya habia pasado.
+        minimo = None
+        if dia == ahora.date():
+            minimo = (ahora.hour * 60 + ahora.minute) + antelacion_min
+
         slots = []
         for hueco_ini, hueco_fin in cls._huecos_libres(base, ocupados):
             t = hueco_ini
             while t + duracion <= hueco_fin:
-                slots.append(cls._a_time(t))
+                if minimo is None or t >= minimo:
+                    slots.append(cls._a_time(t))
                 t += paso
         return sorted(slots)
 
@@ -188,7 +225,8 @@ class AgendaService:
     def reservar(cls, *, establecimiento, profesional, servicio, cliente,
                  dia: date, hora_inicio: time, canal=Cita.Canal.IA,
                  respetar_bloqueo: bool = True,
-                 respetar_tope: bool = True) -> Cita:
+                 respetar_tope: bool = True,
+                 antelacion_min: int = ANTELACION_MINIMA_MIN) -> Cita:
         """Crea una cita de forma atómica.
 
         Doble blindaje contra el double-booking (RN-01):
@@ -203,6 +241,34 @@ class AgendaService:
         """
         fin_min = cls._a_minutos(hora_inicio) + servicio.duracion_min
         hora_fin = cls._a_time(fin_min)
+
+        # 0) La cita tiene que estar en el futuro.
+        #
+        #    Se comprueba aqui y no solo al calcular los horarios porque esta
+        #    es la unica puerta por la que pasan TODOS los canales. Filtrar lo
+        #    que se ofrece evita que el cliente vea opciones invalidas; esto
+        #    evita que se creen. El modelo puede pedir una hora que no se le
+        #    ofrecio, el panel puede mandar una fecha vieja, y cualquiera con
+        #    un token puede hacerlo con curl.
+        #
+        #    Se comprobo en produccion: `reservar` aceptaba una cita para AYER
+        #    y otra para hoy a las 00:30 sin rechistar.
+        #    `antelacion_min=0` es la puerta del canal manual, por el mismo
+        #    motivo que respetar_tope: la antelacion existe para que el
+        #    cliente tenga tiempo de LLEGAR, y quien el dueno agenda a mano
+        #    ya esta en el local. Lo que no se abre en ningun canal es
+        #    agendar en el pasado: un dia mal tecleado no puede crear una
+        #    cita ayer.
+        ahora = timezone.localtime()
+        inicio_min = cls._a_minutos(hora_inicio)
+        if dia < ahora.date() or (
+            dia == ahora.date()
+            and inicio_min < (ahora.hour * 60 + ahora.minute) + antelacion_min
+        ):
+            raise CitaEnElPasado(
+                "Esa hora ya pasó o está demasiado próxima. Consulta la "
+                "disponibilidad y elige otra."
+            )
 
         # 0a) Telefono vetado por el establecimiento.
         #

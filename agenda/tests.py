@@ -15,6 +15,8 @@ from datetime import date, datetime, time
 
 from django.test import TestCase
 
+from agenda.fechas_de_prueba import manana, proximo_dia_semana
+
 from cuentas.models import Usuario
 from negocios.models import (
     Bloqueo, ClienteFinal, Establecimiento, ExcepcionHorario,
@@ -43,7 +45,7 @@ class BaseAgendaTest(TestCase):
             establecimiento=self.est, nombre="Corte + barba", duracion_min=50,
         )
         # Lunes a viernes, 9:00–12:00 (180 min)
-        self.lunes = date(2026, 6, 15)  # un lunes
+        self.lunes = proximo_dia_semana(0)   # el proximo lunes, siempre futuro
         for d in range(5):  # 0..4 = lun..vie
             HorarioBase.objects.create(
                 profesional=self.carlos, dia_semana=d,
@@ -66,7 +68,7 @@ class CalcularSlotsTest(BaseAgendaTest):
 
     def test_dia_sin_horario_devuelve_vacio(self):
         """El domingo no hay horario base → sin slots."""
-        domingo = date(2026, 6, 21)
+        domingo = proximo_dia_semana(6)
         self.assertEqual(
             AgendaService.calcular_slots(self.carlos, self.corte, domingo), []
         )
@@ -982,7 +984,7 @@ class ModoAgendaTest(TestCase):
             establecimiento=self.est, nombre="Corte", duracion_min=40)
         self.barba = Servicio.objects.create(
             establecimiento=self.est, nombre="Barba", duracion_min=30)
-        self.dia = date(2026, 8, 20)
+        self.dia = proximo_dia_semana(3)   # un jueves futuro
         HorarioBase.objects.create(
             profesional=self.p, dia_semana=self.dia.weekday(),
             hora_inicio=time(9, 0), hora_fin=time(12, 0),
@@ -1583,3 +1585,164 @@ class JornadaPartidaTest(TestCase):
         textos = sorted(f["franja_texto"] for f in r.json())
         self.assertEqual(textos, ["2:00 p. m. a 7:00 p. m.",
                                   "8:00 a. m. a 12:00 m."])
+
+
+class NoAgendarEnElPasadoTest(TestCase):
+    """No se ofrecen ni se aceptan horas que ya pasaron (RF-07).
+
+    Caso real de campo: a las 10:13 el asistente ofreció «8:30 a. m., 9:10
+    a. m., 9:50 a. m.…» y una clienta agendó a las 8:30 de ese mismo día. El
+    cálculo de disponibilidad no miraba el reloj en ningún momento.
+
+    Al sondearlo apareció un segundo agujero, más grave y que no se ve desde
+    el chat: `reservar` aceptaba una cita para AYER y otra para hoy a las
+    00:30. Son dos cosas distintas —lo que se OFRECE y lo que se ACEPTA— y
+    hacían falta las dos: filtrar los huecos no impide que el modelo pida una
+    hora que nadie le ofreció, ni que alguien con un token lo haga con curl.
+    """
+
+    def setUp(self):
+        from datetime import time, timedelta
+        from django.utils import timezone
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, HorarioBase,
+                                     Profesional, Servicio)
+
+        u = Usuario.objects.create_user(email="np@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="G", slug="np",
+            tipo=Establecimiento.Tipo.SALON, telefono="300")
+        self.prof = Profesional.objects.create(establecimiento=self.est,
+                                               nombre="Yesica")
+        self.serv = Servicio.objects.create(establecimiento=self.est,
+                                            nombre="Corte", duracion_min=40)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Rosa", telefono="3112824151",
+            acepta_datos=True)
+        self.hoy = timezone.localdate()
+        self.ayer = self.hoy - timedelta(days=1)
+        # Horario amplio hoy y ayer, para que lo único que decida sea el reloj.
+        for d in (self.hoy.weekday(), self.ayer.weekday()):
+            HorarioBase.objects.create(profesional=self.prof, dia_semana=d,
+                                       hora_inicio=time(0, 0), hora_fin=time(23, 59))
+
+    # ── Lo que se ofrece ──────────────────────────────────────────
+
+    def test_no_se_ofrecen_horas_que_ya_pasaron(self):
+        from django.utils import timezone
+        from .services import AgendaService
+        slots = AgendaService.calcular_slots(self.prof, self.serv, self.hoy)
+        ahora = timezone.localtime().time()
+        self.assertFalse([s for s in slots if s < ahora],
+                         "Se están ofreciendo horas que ya pasaron")
+
+    def test_tampoco_se_ofrece_lo_que_empieza_en_diez_minutos(self):
+        """Con cero margen, alguien reserva a las 10:29 para las 10:30 desde
+        el celular y llega tarde igual, con el turno ya bloqueado para los
+        demás. La antelación mínima le da tiempo de llegar."""
+        from datetime import timedelta
+        from django.utils import timezone
+        from .services import AgendaService
+
+        # Los treinta minutos van escritos aquí a propósito, en vez de
+        # importar ANTELACION_MINIMA_MIN. El arnés de mutación demostró que
+        # con la constante la prueba era circular: al ponerla a cero, los dos
+        # lados de la comparación cambiaban a la vez y la prueba seguía
+        # pasando con la antelación desactivada. Una prueba debe fijar la
+        # regla, no repetir el valor que usa el código.
+        slots = AgendaService.calcular_slots(self.prof, self.serv, self.hoy)
+        limite = (timezone.localtime() + timedelta(minutes=30)).time()
+        self.assertFalse([s for s in slots if s < limite])
+
+    def test_en_un_dia_futuro_se_ofrece_la_jornada_entera(self):
+        """El filtro es solo del día de hoy: en los días siguientes no hay
+        ninguna hora que haya pasado."""
+        from datetime import time, timedelta
+        from .services import AgendaService
+        manana = self.hoy + timedelta(days=1)
+        from negocios.models import HorarioBase
+        HorarioBase.objects.get_or_create(
+            profesional=self.prof, dia_semana=manana.weekday(),
+            hora_inicio=time(0, 0), hora_fin=time(23, 59))
+        slots = AgendaService.calcular_slots(self.prof, self.serv, manana)
+        self.assertIn(time(0, 0), slots)
+
+    def test_el_panel_puede_agendar_sin_antelacion_minima(self):
+        """La antelación existe para que el cliente tenga tiempo de LLEGAR, y
+        quien el dueño agenda a mano ya está en el local. Mismo criterio que
+        `respetar_tope`: es un parámetro explícito, no una deducción a partir
+        del canal."""
+        from django.utils import timezone
+        from .services import AgendaService
+        con = AgendaService.calcular_slots(self.prof, self.serv, self.hoy)
+        sin = AgendaService.calcular_slots(self.prof, self.serv, self.hoy,
+                                           antelacion_min=0)
+        self.assertGreater(len(sin), len(con))
+        ahora = timezone.localtime().time()
+        self.assertFalse([s for s in sin if s < ahora],
+                         "Ni con margen cero se ofrece algo ya pasado")
+
+    # ── Lo que se acepta ──────────────────────────────────────────
+
+    def test_no_se_puede_reservar_ayer(self):
+        """Se comprobó en el código real: `reservar` creaba la cita sin
+        rechistar. Un día mal tecleado bastaba."""
+        from datetime import time
+        from .services import AgendaService, CitaEnElPasado
+        with self.assertRaises(CitaEnElPasado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.prof,
+                servicio=self.serv, cliente=self.cli, dia=self.ayer,
+                hora_inicio=time(9, 0))
+
+    def test_no_se_puede_reservar_una_hora_de_hoy_ya_pasada(self):
+        from datetime import time
+        from .services import AgendaService, CitaEnElPasado
+        with self.assertRaises(CitaEnElPasado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.prof,
+                servicio=self.serv, cliente=self.cli, dia=self.hoy,
+                hora_inicio=time(0, 30))
+
+    def test_el_rechazo_ocurre_aunque_la_hora_estuviera_libre(self):
+        """El invariante es del dominio, no del cálculo de huecos: que el
+        hueco esté libre no lo convierte en una hora válida."""
+        from datetime import time
+        from .models import Cita
+        from .services import AgendaService, CitaEnElPasado
+        self.assertFalse(Cita.objects.filter(fecha=self.ayer).exists())
+        with self.assertRaises(CitaEnElPasado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.prof,
+                servicio=self.serv, cliente=self.cli, dia=self.ayer,
+                hora_inicio=time(14, 0))
+        self.assertFalse(Cita.objects.filter(fecha=self.ayer).exists())
+
+    def test_el_canal_manual_tampoco_puede_agendar_en_el_pasado(self):
+        """La puerta que se abre para el panel es la antelación, no el
+        pasado. Registrar una cita que ya ocurrió es otra cosa distinta de
+        agendar, y mezclarlas dejaría entrar los errores de tecleo."""
+        from datetime import time
+        from .services import AgendaService, CitaEnElPasado
+        with self.assertRaises(CitaEnElPasado):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.prof,
+                servicio=self.serv, cliente=self.cli, dia=self.ayer,
+                hora_inicio=time(9, 0), antelacion_min=0)
+
+    def test_una_hora_futura_sigue_aceptandose(self):
+        """La contraparte: la validación no puede haber cerrado el camino
+        normal."""
+        from datetime import time, timedelta
+        from .models import Cita
+        from .services import AgendaService
+        manana = self.hoy + timedelta(days=1)
+        from negocios.models import HorarioBase
+        HorarioBase.objects.get_or_create(
+            profesional=self.prof, dia_semana=manana.weekday(),
+            hora_inicio=time(0, 0), hora_fin=time(23, 59))
+        cita = AgendaService.reservar(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, dia=manana,
+            hora_inicio=time(10, 0))
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)

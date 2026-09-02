@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 from django.test import Client, TestCase
 
+from agenda.fechas_de_prueba import proximo_dia_semana
+
 from cuentas.models import Usuario
 from negocios.models import (
     ClienteFinal, Establecimiento, HorarioBase, Profesional,
@@ -49,7 +51,7 @@ class BaseIATest(TestCase):
         # con no asignar nada y el prompt decia "presta todos los servicios".
         self.carlos.servicios.set([self.corte])
         # Lunes 9:00–12:00
-        self.lunes = date(2026, 6, 15)
+        self.lunes = proximo_dia_semana(0)
         HorarioBase.objects.create(
             profesional=self.carlos, dia_semana=0,
             hora_inicio=time(9, 0), hora_fin=time(12, 0),
@@ -104,7 +106,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "consultar_disponibilidad",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15",
+            "fecha": str(self.lunes),
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion,
@@ -127,7 +129,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": True},
         })
@@ -154,7 +156,7 @@ class ConversacionTest(BaseIATest):
             intencion = json.dumps({
                 "intencion": "agendar",
                 "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-                "fecha": "2026-06-15", "hora_inicio": hora,
+                "fecha": str(self.lunes), "hora_inicio": hora,
                 "cliente": {"nombre": nombre, "telefono": "3192846956",
                             "acepta_datos": True},
             })
@@ -184,7 +186,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
                         "acepta_datos": True},
         })
@@ -206,7 +208,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
                         "acepta_datos": True},
         })
@@ -229,7 +231,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": False},
         })
@@ -256,7 +258,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": True},
         })
@@ -276,7 +278,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar", "servicio_id": 9999,
             "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": True},
         })
@@ -299,7 +301,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar", "servicio_id": manicure.id,
             "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": True},
         })
@@ -342,7 +344,7 @@ class ConversacionTest(BaseIATest):
         intencion = json.dumps({
             "intencion": "agendar", "servicio_id": 9999,
             "profesional_id": self.carlos.id,
-            "fecha": "2026-06-15", "hora_inicio": "09:00",
+            "fecha": str(self.lunes), "hora_inicio": "09:00",
             "cliente": {"nombre": "Juan", "telefono": "3001112233",
                         "acepta_datos": True},
         })
@@ -1038,3 +1040,108 @@ class CancelacionPublicaSinAmbiguedadTest(TestCase):
                           {"telefono": "3001234567"}, format="json")
         self.assertEqual(len(r.json()["citas"]), 2)
         self.assertIsNotNone(r.json()["cita"])
+
+
+class AsistenteNoOfreceHorasPasadasTest(TestCase):
+    """La puerta del asistente (RF-07).
+
+    Reproduce el incidente tal como ocurrió: a las 10:13 el asistente ofreció
+    las 8:30 y una clienta agendó en el pasado.
+    """
+
+    def setUp(self):
+        from datetime import time
+        from django.utils import timezone
+        from cuentas.models import Usuario
+        from negocios.models import (ClienteFinal, Establecimiento, HorarioBase,
+                                     Profesional, Servicio)
+
+        u = Usuario.objects.create_user(email="ap@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Gina Style", slug="ap",
+            tipo=Establecimiento.Tipo.SALON, telefono="300")
+        self.prof = Profesional.objects.create(establecimiento=self.est,
+                                               nombre="Yesica")
+        self.serv = Servicio.objects.create(establecimiento=self.est,
+                                            nombre="Corte", duracion_min=40)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Rosa", telefono="3112824151",
+            acepta_datos=True)
+        self.hoy = timezone.localdate()
+        HorarioBase.objects.create(profesional=self.prof,
+                                   dia_semana=self.hoy.weekday(),
+                                   hora_inicio=time(0, 0), hora_fin=time(23, 59))
+
+    def test_el_feedback_no_contiene_horas_pasadas(self):
+        """Lo que el sistema le entrega al modelo es lo único que el backend
+        controla. Si ahí van horas pasadas, el modelo las va a ofrecer."""
+        from django.utils import timezone
+        from asistente.services import IAService
+        from agenda.fechas import hora_texto
+        from agenda.services import AgendaService
+
+        _, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "consultar_disponibilidad",
+            "servicio_id": self.serv.id, "profesional_id": self.prof.id,
+            "fecha": str(self.hoy),
+        })
+        ahora = timezone.localtime().time()
+        todos = AgendaService.calcular_slots(self.prof, self.serv, self.hoy,
+                                             antelacion_min=0)
+        for s in [x for x in todos if x < ahora]:
+            self.assertNotIn(hora_texto(s), feedback,
+                             f"Se está ofreciendo {hora_texto(s)}, que ya pasó")
+
+    def test_si_el_modelo_pide_una_hora_pasada_el_sistema_la_rechaza(self):
+        """El filtro de huecos no basta: el modelo puede pedir una hora que
+        nadie le ofreció, y ahí es el servicio quien tiene que negarse."""
+        from agenda.models import Cita
+        from asistente.services import IAService
+
+        final, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar",
+            "servicio_id": self.serv.id, "profesional_id": self.prof.id,
+            "fecha": str(self.hoy), "hora_inicio": "00:30",
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
+                        "acepta_datos": True},
+        })
+        self.assertIsNone(final)
+        self.assertIn("ya pasó", feedback)
+        self.assertFalse(Cita.objects.filter(hora_inicio="00:30").exists())
+
+    def test_al_rechazar_se_le_pide_consultar_de_nuevo(self):
+        """Si solo se le dijera «esa hora no sirve», el modelo tiende a
+        proponer otra de la misma lista vieja, que también puede haber
+        pasado ya."""
+        from asistente.services import IAService
+        _, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar",
+            "servicio_id": self.serv.id, "profesional_id": self.prof.id,
+            "fecha": str(self.hoy), "hora_inicio": "00:30",
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
+                        "acepta_datos": True},
+        })
+        self.assertIn("Vuelve a consultar la disponibilidad", feedback)
+
+    def test_la_confirmacion_dice_la_hora_en_doce_horas(self):
+        """En la captura de campo el mensaje final decía «a las 08:30»:
+        formato de máquina, con cero inicial. Venía de reutilizar la cadena
+        cruda del JSON del modelo en lugar de la hora de la cita creada."""
+        from datetime import time, timedelta
+        from django.utils import timezone
+        from negocios.models import HorarioBase
+        from asistente.services import IAService
+
+        manana = timezone.localdate() + timedelta(days=1)
+        HorarioBase.objects.get_or_create(
+            profesional=self.prof, dia_semana=manana.weekday(),
+            hora_inicio=time(0, 0), hora_fin=time(23, 59))
+        final, _ = IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar",
+            "servicio_id": self.serv.id, "profesional_id": self.prof.id,
+            "fecha": str(manana), "hora_inicio": "08:30",
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
+                        "acepta_datos": True},
+        })
+        self.assertIn("8:30 a. m.", final["respuesta"])
+        self.assertNotIn("08:30", final["respuesta"])

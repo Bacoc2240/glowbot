@@ -26,7 +26,8 @@ from django.utils import timezone
 from agenda.fechas import DIAS, MESES, fecha_larga, hora_texto  # noqa: F401
 from agenda.models import Cita, Notificacion
 from agenda.services import (
-    AgendaService, SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
+    AgendaService, CitaEnElPasado, SlotNoDisponible, TelefonoVetado,
+    TopeCitasAlcanzado,
 )
 from negocios.clientes import ClienteService
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
@@ -293,7 +294,8 @@ REGLAS OBLIGATORIAS:
                     "respuesta": (
                         f"¡Listo, {cliente.nombre}! Tu cita quedó confirmada: "
                         f"{servicio.nombre}, {fecha_larga(dia)} a las "
-                        f"{intencion['hora_inicio']} con {profesional.nombre}.\n\n"
+                        f"{hora_texto(cita.hora_inicio)} con "
+                        f"{profesional.nombre}.\n\n"
                         f"Para consultar o cancelar tu cita, entra a "
                         f"{settings.SITIO_URL}/p/{establecimiento.slug} "
                         "y escribe tu número de teléfono."
@@ -401,6 +403,14 @@ REGLAS OBLIGATORIAS:
             return None, (f"{e} NO ofrezcas otras horas ni otros profesionales: "
                           f"el limite es por cliente. Explicaselo y sugiere "
                           f"que cancele una cita existente.")
+        except CitaEnElPasado as e:
+            # Distinta de SlotNoDisponible: el hueco puede estar libre, lo que
+            # no se puede es viajar al pasado. Decirle "esta ocupado" mandaria
+            # al modelo a ofrecer otro profesional a la misma hora, que
+            # fallaria igual.
+            return None, (f"{e} Es una hora que ya paso. Vuelve a consultar la "
+                          "disponibilidad de HOY y ofrece solo lo que devuelva "
+                          "el sistema.")
         except SlotNoDisponible as e:
             return None, f"{e} Consulta la disponibilidad y ofrece alternativas."
 

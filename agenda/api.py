@@ -16,7 +16,7 @@ from negocios.models import (ClienteFinal, Profesional, Servicio,
 from .models import Cita, Notificacion
 from .recordatorios import RecordatorioService
 from .fechas import hora_texto
-from .services import (AgendaService, SlotNoDisponible,
+from .services import (AgendaService, CitaEnElPasado, SlotNoDisponible,
                        TelefonoVetado, TopeCitasAlcanzado)
 
 
@@ -40,7 +40,10 @@ class DisponibilidadView(APIView):
                 {"error": "Parámetros inválidos. Use profesional, servicio y fecha."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        slots = AgendaService.calcular_slots(profesional, servicio, dia)
+        # Sin antelacion minima: este endpoint lo consume la reserva manual
+        # del panel, y quien el dueno agenda a mano ya esta en el local.
+        slots = AgendaService.calcular_slots(profesional, servicio, dia,
+                                             antelacion_min=0)
         # Cada hora viaja con las dos caras: el valor que el sistema compara
         # y ordena, y la etiqueta que lee una persona. Van juntas en el mismo
         # objeto y no en dos listas paralelas para que no puedan
@@ -172,6 +175,7 @@ class CitaViewSet(viewsets.ModelViewSet):
                 canal=Cita.Canal.MANUAL,
                 respetar_bloqueo=not confirmado,
                 respetar_tope=False,
+                antelacion_min=0,
             )
         except TelefonoVetado:
             return Response(
@@ -179,6 +183,11 @@ class CitaViewSet(viewsets.ModelViewSet):
                  "detalle": "Este número está bloqueado en tu establecimiento. "
                             "Puedes agendarle de todos modos si confirmas."},
                 status=status.HTTP_409_CONFLICT)
+        except CitaEnElPasado as e:
+            # Tambien alcanza al panel: el dueno podia crear una cita para
+            # ayer mandando la fecha a mano.
+            return Response({"error": "cita_en_el_pasado", "detalle": str(e)},
+                            status=status.HTTP_409_CONFLICT)
         except SlotNoDisponible as e:
             return Response({"error": "slot_ocupado", "detalle": str(e)},
                             status=status.HTTP_409_CONFLICT)
