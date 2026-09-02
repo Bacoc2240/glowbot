@@ -74,6 +74,38 @@ _NEGACIONES = [
 # salia a cuenta: el caso real se reconoce igual por "horario ... ya paso".
 _RE_NIEGA = re.compile("|".join(_NEGACIONES), re.IGNORECASE)
 
+# ── Segundo disparador: lo que escribio el CLIENTE ──────────────────────
+#
+# Los patrones de arriba miran la prosa del modelo, que es donde hay
+# infinitas formas de ser vago: "podrian estar ocupados", "es posible que no
+# haya espacio", "no estoy seguro de que quede". Perseguirlas una a una es
+# una carrera que no se gana.
+#
+# El mensaje del cliente es mejor señal porque su vocabulario es corto y
+# cerrado: hoy, esta tarde, el viernes, a las 4. Si el cliente puso una
+# fecha o una hora sobre la mesa y el turno no consulto nada, cualquier
+# afirmacion del modelo sobre huecos sale de su imaginacion.
+_RE_CUANDO = re.compile(
+    r"\b(hoy|mañana|manana)\b"
+    r"|\bpasado\s+mañana\b"
+    r"|\b(esta|este)\s+(tarde|mañana|manana|noche|semana)\b"
+    r"|\b(lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)\b"
+    r"|\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre"
+    r"|octubre|noviembre|diciembre)\b"
+    r"|\ba\s+las?\s+\d{1,2}\b"
+    r"|\b\d{1,2}\s*[:.]\s*\d{2}\b"
+    r"|\b\d{1,2}\s*(a\.?\s?m\.?|p\.?\s?m\.?)"
+    r"|\b(semana|mes)\s+(que\s+viene|entrante|pr[óo]xim[ao])\b",
+    re.IGNORECASE,
+)
+
+# Vocabulario de agenda ampliado con los adjetivos de ocupacion, que es por
+# donde se colo el caso real: "ocupados" no estaba en ninguna lista.
+_RE_AGENDA_AMPLIA = re.compile(
+    _AGENDA + r"|\b(ocupad[oa]s?|llen[oa]s?|libres?|copad[oa]s?|apretad[oa]s?)\b",
+    re.IGNORECASE,
+)
+
 # Limites de la llamada al proveedor.
 #
 # El cliente se construia sin timeout, es decir con el del SDK: diez
@@ -261,7 +293,14 @@ REGLAS OBLIGATORIAS:
    dicho. Para saberlo hay que preguntarselo al sistema con
    consultar_disponibilidad, igual que para ofrecer horarios (regla 3). Una
    negativa inventada es peor que un horario inventado: el cliente se va y no
-   queda ni cita ni rastro de que se fue."""
+   queda ni cita ni rastro de que se fue.
+18. NO tienes los horarios de trabajo de nadie. En este prompt no hay ninguna
+   jornada, ningun dia libre y ninguna agenda ocupada: no puedes saber si
+   alguien esta ocupado, ni siquiera de forma aproximada. Por eso tampoco
+   vale dudar en voz alta -"podria estar ocupado", "es posible que no haya
+   espacio", "no estoy seguro de que quede"-: dudar tambien es responder sin
+   saber, y al cliente lo deja peor que un no claro. Si menciona un dia o una
+   hora, emite consultar_disponibilidad ANTES de escribir nada sobre huecos."""
 
 
     # ──────────────────────────────────────────────────────────────
@@ -740,6 +779,53 @@ REGLAS OBLIGATORIAS:
         return bool(_RE_NIEGA.search(texto or ""))
 
     @staticmethod
+    def menciona_fecha_u_hora(texto: str) -> bool:
+        """¿El cliente puso una fecha o una hora sobre la mesa?"""
+        return bool(_RE_CUANDO.search(texto or ""))
+
+    @staticmethod
+    def afirma_sobre_agenda(texto: str) -> bool:
+        """¿El modelo AFIRMA algo sobre huecos, en vez de preguntarlo?
+
+        Las preguntas se descartan, y ese descarte es lo que hace viable la
+        comprobacion. "¿Para que hora te gustaria?" lleva la palabra "hora" y
+        es el turno mas frecuente de toda la conversacion: sin separar
+        preguntas de afirmaciones, la red saltaria a todas horas y acabaria
+        desactivandose por insufrible.
+
+        Se parte por frases y se descarta la que lleve '¿' o termine en '?'.
+        Asi "Podrian estar ocupados a esa hora. ¿Te sirve otro dia?" se
+        reconoce por la primera mitad sin que la segunda estorbe.
+        """
+        for frase in re.split(r"(?<=[.!?\n])", texto or ""):
+            if "¿" in frase or "?" in frase:
+                continue
+            if _RE_AGENDA_AMPLIA.search(frase):
+                return True
+        return False
+
+    @classmethod
+    def responde_sin_haber_mirado(cls, mensaje_cliente: str, texto: str) -> bool:
+        """¿Esta respuesta habla de la agenda sin que nadie la haya mirado?
+
+        Dos disparadores. El primero son las negativas rotundas, que valen
+        aunque el cliente no haya nombrado ninguna fecha. El segundo es el
+        del caso real: el cliente dijo "esta tarde", el turno no consulto
+        nada, y el modelo respondio "podrian estar ocupados a esa hora".
+
+        Eso ultimo ni siquiera era una negativa: era una NO-respuesta. No
+        afirmaba que no hubiera hueco, se negaba a averiguarlo, y
+        comercialmente es peor que un no claro porque el cliente se queda sin
+        siquiera eso. Solo se descubrio porque quien estaba al otro lado
+        sabia que el sistema se equivoca e insistio; un cliente cierra la
+        pestaña.
+        """
+        if cls.niega_disponibilidad(texto):
+            return True
+        return (cls.menciona_fecha_u_hora(mensaje_cliente)
+                and cls.afirma_sobre_agenda(texto))
+
+    @staticmethod
     def _salida_degradada(conv, respuesta: str, accion: str) -> dict:
         """Cierra el turno sin respuesta del modelo, dejando el estado limpio.
 
@@ -866,7 +952,8 @@ REGLAS OBLIGATORIAS:
                 historial.append({"role": "assistant", "content": texto})
                 # Red: una negativa de disponibilidad que no viene del backend
                 # no sale de aqui. Se le devuelve al modelo para que consulte.
-                if el_backend_hablo or not cls.niega_disponibilidad(texto):
+                if el_backend_hablo or not cls.responde_sin_haber_mirado(
+                        mensaje, texto):
                     resultado = {"respuesta": texto, "accion": None, "cita": None}
                     break
                 feedback = AVISO_SIN_CONSULTAR

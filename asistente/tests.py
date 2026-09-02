@@ -1862,3 +1862,129 @@ class MarcaDeActividadTest(TestCase):
             IAService.procesar_mensaje(self.est, "sM", "dos")
         conv.refresh_from_db()
         self.assertGreater(conv.actualizado_en, antes)
+
+
+class NoResponderSinMirarTest(TestCase):
+    """El segundo disparador de la red: lo que escribió el CLIENTE.
+
+    Caso de campo: «quiero maquillaje para esta tarde» a las 4 p. m., con
+    Paola trabajando hasta las 6 y la agenda libre. El asistente respondió
+    que **podrían estar ocupados**, sin consultar. Al insistirle —«revisa
+    bien»— sí devolvió los horarios.
+
+    Ese «podrían estar ocupados» no es una negativa: es una NO-respuesta. No
+    afirma que no haya hueco, se niega a averiguarlo, y es peor que un no
+    claro porque el cliente se queda sin siquiera eso. Y solo se descubrió
+    porque quien estaba al otro lado sabía que el sistema se equivoca e
+    insistió. Un cliente cierra la pestaña.
+
+    Los patrones que miran la prosa del modelo no lo cazaban, y perseguir
+    una a una las formas de ser vago es una carrera que no se gana. El
+    mensaje del cliente es mejor señal: su vocabulario es corto y cerrado
+    —hoy, esta tarde, el viernes, a las 4— y no admite mil variantes.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="sm@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Gina Style", slug="sm",
+            tipo=Establecimiento.Tipo.SALON, telefono="300")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Maquillaje", duracion_min=60)
+
+    def _mock(self, *t):
+        return [(x, 100, 50) for x in t]
+
+    # ── Las dos señales, por separado ─────────────────────────────
+
+    def test_reconoce_cuando_el_cliente_pone_una_fecha_o_una_hora(self):
+        for texto in ("quiero maquillaje esta tarde", "para hoy",
+                      "el viernes", "a las 4", "mañana por la mañana",
+                      "el 5 de octubre", "a las 16:30", "la semana que viene"):
+            with self.subTest(texto=texto):
+                self.assertTrue(IAService.menciona_fecha_u_hora(texto), texto)
+
+    def test_no_ve_fechas_donde_no_las_hay(self):
+        for texto in ("quiero maquillaje", "acepto", "Gina Perales",
+                      "3003009812", "con Paola"):
+            with self.subTest(texto=texto):
+                self.assertFalse(IAService.menciona_fecha_u_hora(texto), texto)
+
+    def test_distingue_una_afirmacion_de_una_pregunta(self):
+        """El descarte de preguntas es lo que hace viable la comprobación:
+        «¿Para qué hora te gustaría?» lleva la palabra «hora» y es el turno
+        más frecuente de toda la conversación."""
+        self.assertTrue(IAService.afirma_sobre_agenda(
+            "Podrían estar ocupados a esa hora."))
+        self.assertFalse(IAService.afirma_sobre_agenda(
+            "¿Para qué hora te gustaría la cita?"))
+
+    def test_una_afirmacion_no_se_salva_por_llevar_una_pregunta_detras(self):
+        """«Podrían estar ocupados. ¿Te sirve otro día?» se reconoce por la
+        primera mitad, sin que la segunda la tape."""
+        self.assertTrue(IAService.afirma_sobre_agenda(
+            "Podrían estar ocupados a esa hora. ¿Te sirve otro día?"))
+
+    # ── La red completa ───────────────────────────────────────────
+
+    def test_la_evasiva_del_caso_real_no_llega_al_cliente(self):
+        intencion = json.dumps({"intencion": "consultar_disponibilidad",
+                                "servicio_id": self.serv.id,
+                                "fecha": str(proximo_dia_semana(0))})
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            "Podrían estar ocupados a esa hora.",
+            intencion,
+            "Tenemos las 4:30 y las 5:00 p. m. ¿Cuál prefieres?",
+        )):
+            r = IAService.procesar_mensaje(
+                self.est, "sV", "quiero maquillaje para esta tarde")
+        self.assertNotIn("ocupados", r["respuesta"])
+        self.assertIn("4:30", r["respuesta"])
+
+    def test_las_demas_evasivas_tambien(self):
+        for evasiva in ("Es posible que Paola ya esté ocupada esta tarde.",
+                        "Puede que la agenda esté apretada hoy.",
+                        "No estoy seguro de que quede espacio."):
+            with self.subTest(evasiva=evasiva):
+                self.assertTrue(IAService.responde_sin_haber_mirado(
+                    "quiero maquillaje esta tarde", evasiva))
+
+    def test_una_pregunta_normal_sigue_pasando(self):
+        """La red no puede estorbar el turno más común de la conversación."""
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            "¡Claro! ¿Para qué hora te gustaría el Maquillaje?",
+        )) as m:
+            r = IAService.procesar_mensaje(self.est, "sW", "maquillaje hoy")
+        self.assertEqual(m.call_count, 1)
+        self.assertIn("¿Para qué hora", r["respuesta"])
+
+    def test_si_el_backend_hablo_la_red_no_se_arma(self):
+        """Una respuesta anclada a un [SISTEMA] real no se vigila además."""
+        intencion = json.dumps({"intencion": "consultar_disponibilidad",
+                                "servicio_id": self.serv.id,
+                                "fecha": str(proximo_dia_semana(6))})
+        with patch(RUTA_LLAMAR, side_effect=self._mock(
+            intencion,
+            "Ese día no hay horarios libres. ¿Te sirve el lunes?",
+        )):
+            r = IAService.procesar_mensaje(self.est, "sX", "maquillaje el domingo")
+        self.assertIn("no hay horarios", r["respuesta"])
+
+    def test_limite_conocido_sin_fecha_del_cliente_la_evasiva_pasa(self):
+        """Documentado a propósito, no escondido.
+
+        Si el cliente no nombra ninguna fecha, el segundo disparador no se
+        arma y una vaguedad se cuela. Cerrarlo del todo exigiría que TODA
+        respuesta pasara por una intención declarada, y eso es rediseño del
+        protocolo, no un parche. Queda para la v1.1.
+        """
+        self.assertFalse(IAService.responde_sin_haber_mirado(
+            "quiero maquillaje", "Podrían estar ocupados."))
+
+    def test_el_prompt_le_dice_que_no_tiene_los_horarios(self):
+        """La causa de fondo: el prompt no lleva ninguna jornada, así que el
+        modelo se inventó la ocupación entera. Decírselo le quita la ilusión
+        de que puede estimar."""
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("NO tienes los horarios de trabajo de nadie", prompt)
+        self.assertNotIn("JORNADAS", prompt)

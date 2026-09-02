@@ -17,6 +17,7 @@ C=asistente.tests.ConversacionCaducaTest
 R=asistente.tests.ResumenDeEstadoTest
 A=asistente.tests.CuandoLaApiFallaTest
 M=asistente.tests.MarcaDeActividadTest
+V=asistente.tests.NoResponderSinMirarTest
 PY=.venv/bin/python
 restaurar() { cp /tmp/l10/asistente/services.py asistente/services.py; }
 trap restaurar EXIT INT TERM
@@ -41,6 +42,12 @@ MUTACIONES=(
 "El presupuesto corta antes del primer intento~asistente/services.py~            if iteracion and time.monotonic() - inicio > PRESUPUESTO_TURNO:~            if time.monotonic() - inicio > PRESUPUESTO_TURNO:~$A.test_siempre_se_intenta_al_menos_una_vez"
 "El cliente del SDK pierde sus limites~asistente/services.py~            timeout=TIMEOUT_API, max_retries=REINTENTOS_API,~~$A.test_el_cliente_del_sdk_lleva_limites_explicitos"
 "La marca de actividad deja de escribirse (el defecto que se escapo)~asistente/services.py~                                 \"telefono_cliente\", \"actualizado_en\"])~                                 \"telefono_cliente\"])~$M.test_cada_mensaje_refresca_la_marca"
+"El segundo disparador desaparece: vuelven a colarse las evasivas~asistente/services.py~        return (cls.menciona_fecha_u_hora(mensaje_cliente)\n                and cls.afirma_sobre_agenda(texto))~        return False~$V.test_la_evasiva_del_caso_real_no_llega_al_cliente,$V.test_las_demas_evasivas_tambien"
+"Se ignora si el cliente puso fecha: la red salta siempre~asistente/services.py~        return (cls.menciona_fecha_u_hora(mensaje_cliente)\n                and cls.afirma_sobre_agenda(texto))~        return cls.afirma_sobre_agenda(texto)~$V.test_limite_conocido_sin_fecha_del_cliente_la_evasiva_pasa"
+"Las preguntas dejan de descartarse~asistente/services.py~            if \"¿\" in frase or \"?\" in frase:\n                continue~            if False:\n                pass~$V.test_distingue_una_afirmacion_de_una_pregunta,$V.test_una_pregunta_normal_sigue_pasando"
+"El vocabulario pierde los adjetivos de ocupacion~asistente/services.py~    _AGENDA + r\"|\\b(ocupad[oa]s?|llen[oa]s?|libres?|copad[oa]s?|apretad[oa]s?)\\b\",~    _AGENDA,~$V.test_las_demas_evasivas_tambien"
+"El detector de fechas se queda sin \"esta tarde\"~asistente/services.py~    r\"|\\b(esta|este)\\s+(tarde|mañana|manana|noche|semana)\\b\"~    r\"|\\b(esteXX)\\b\"~$V.test_reconoce_cuando_el_cliente_pone_una_fecha_o_una_hora,$V.test_la_evasiva_del_caso_real_no_llega_al_cliente"
+"La regla 18 desaparece del prompt~asistente/services.py~18. NO tienes los horarios de trabajo de nadie.~18. Conviene revisar los horarios.~$V.test_el_prompt_le_dice_que_no_tiene_los_horarios"
 )
 
 desde=${1:-0}; hasta=${2:-${#MUTACIONES[@]}}
