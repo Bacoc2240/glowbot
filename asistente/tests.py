@@ -1843,25 +1843,50 @@ class MarcaDeActividadTest(TestCase):
         with patch(RUTA_LLAMAR, side_effect=[("Hola", 10, 5)]):
             IAService.procesar_mensaje(self.est, "sM", texto)
 
+    def _envejecer_una_hora(self, conv):
+        """Retrasa la marca una hora antes de actuar, y devuelve el valor.
+
+        La primera versión de estas pruebas comparaba la marca de antes con
+        la de después de un mensaje. En Linux pasaba; en el Windows de
+        desarrollo falla, porque el reloj agrupa unos quince milisegundos por
+        tic y los dos instantes salen idénticos hasta el microsegundo.
+
+        Comparar instantes consecutivos no es una comprobación, es una
+        carrera: el veredicto lo decide la máquina. Con una hora de por medio
+        el resultado es el mismo en cualquier reloj, y la prueba sigue
+        mordiendo igual —si el campo no entra en `update_fields`, se queda
+        una hora atrás—.
+
+        Es la segunda prueba de este proyecto que se cae por depender del
+        reloj; la otra fue la de las 23:29.
+        """
+        retrasado = timezone.now() - timedelta(hours=1)
+        ConversacionIA.objects.filter(pk=conv.pk).update(actualizado_en=retrasado)
+        return retrasado
+
     def test_cada_mensaje_refresca_la_marca(self):
         self._hablar("uno")
         conv = ConversacionIA.objects.get(session_id="sM")
-        antes = conv.actualizado_en
+        retrasado = self._envejecer_una_hora(conv)
+
         self._hablar("dos")
+
         conv.refresh_from_db()
-        self.assertGreater(conv.actualizado_en, antes)
+        self.assertGreater(conv.actualizado_en, retrasado + timedelta(minutes=30))
 
     def test_tambien_cuando_el_turno_falla(self):
         """Si no, un rato de sobrecarga caducaría conversaciones vivas."""
         import anthropic
         self._hablar("uno")
         conv = ConversacionIA.objects.get(session_id="sM")
-        antes = conv.actualizado_en
+        retrasado = self._envejecer_una_hora(conv)
+
         fallo = anthropic.APIConnectionError(request=None)
         with patch(RUTA_LLAMAR, side_effect=fallo):
             IAService.procesar_mensaje(self.est, "sM", "dos")
+
         conv.refresh_from_db()
-        self.assertGreater(conv.actualizado_en, antes)
+        self.assertGreater(conv.actualizado_en, retrasado + timedelta(minutes=30))
 
 
 class NoResponderSinMirarTest(TestCase):
@@ -1988,3 +2013,59 @@ class NoResponderSinMirarTest(TestCase):
         prompt = IAService.construir_prompt_sistema(self.est)
         self.assertIn("NO tienes los horarios de trabajo de nadie", prompt)
         self.assertNotIn("JORNADAS", prompt)
+
+
+class EnlacesDeCalendarioEnLaRespuestaTest(TestCase):
+    """Los dos enlaces viajan con la cita creada (RF-11).
+
+    Se arman en el backend y no en el navegador porque la firma sale de la
+    `SECRET_KEY`, que no puede salir del servidor ni un momento.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="en@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="en",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
+        self.dia = proximo_dia_semana(4)
+        HorarioBase.objects.create(
+            profesional=self.prof, dia_semana=self.dia.weekday(),
+            hora_inicio=time(8, 0), hora_fin=time(20, 0))
+
+    def _agendar(self):
+        final, _ = IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar", "servicio_id": self.serv.id,
+            "profesional_id": self.prof.id, "fecha": str(self.dia),
+            "hora_inicio": "19:40",
+            "cliente": {"nombre": "Pedro", "telefono": "3243269172",
+                        "acepta_datos": True},
+        })
+        return final
+
+    def test_la_cita_creada_trae_los_dos_enlaces(self):
+        final = self._agendar()
+        self.assertIn("/cita/", final["cita"]["ics"])
+        self.assertIn("calendar.google.com", final["cita"]["google"])
+
+    def test_el_enlace_del_ics_funciona_de_verdad(self):
+        """Recorrido completo: lo que el backend dice que se puede descargar,
+        se descarga. Comprobar solo que la cadena existe dejaría pasar una
+        firma mal calculada o una ruta que no resuelve."""
+        final = self._agendar()
+        ruta = final["cita"]["ics"].split("/p/")[1]
+        r = self.client.get(f"/p/{ruta}")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/calendar", r["Content-Type"])
+
+    def test_una_consulta_no_trae_enlaces(self):
+        """El botón solo tiene sentido en la cita recién creada. `cita` hace
+        de bandera para el frontend, así que no puede aparecer en otros
+        turnos."""
+        self._agendar()
+        final, _ = IAService._ejecutar_intencion(self.est, {
+            "intencion": "consultar_cita", "telefono": "3243269172"})
+        self.assertIsNone(final)

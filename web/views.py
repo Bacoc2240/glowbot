@@ -8,7 +8,7 @@ import logging
 
 from django.contrib.auth import views as auth_views
 from django.db import OperationalError, connections
-from django.http import Http404, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.generic import TemplateView
 
@@ -194,3 +194,38 @@ class RecuperarView(auth_views.PasswordResetView):
     email_template_name = "web/correo_recuperar.txt"
     subject_template_name = "web/correo_recuperar_asunto.txt"
     success_url = "/panel/recuperar/enviado"
+
+
+def cita_ics(request, slug, cita_id, firma):
+    """Descarga el .ics de una cita (RF-11).
+
+    La ruta lleva firma HMAC porque es publica y sin autenticacion: con
+    /cita/47.ics cualquiera recorreria los numeros y leeria las citas de
+    todos los establecimientos.
+
+    Una cita CANCELADA devuelve 404, igual que hicimos con los slugs
+    inexistentes y con la cancelacion de citas ya empezadas. Entregar un
+    evento de algo que ya no existe es la clase de dato falso que llevamos
+    varias sesiones quitando de en medio.
+
+    El slug se comprueba ademas de la firma. La firma sola ya bastaria, pero
+    sin la comprobacion la cita de un establecimiento se podria descargar
+    desde la URL de otro, y el aislamiento entre inquilinos no es algo que
+    convenga dejar apoyado en un solo mecanismo.
+    """
+    from agenda.calendario import evento_ics, firma_valida
+    from agenda.models import Cita
+
+    if not firma_valida(cita_id, firma):
+        raise Http404
+    cita = get_object_or_404(
+        Cita.objects.select_related("servicio", "profesional", "establecimiento"),
+        pk=cita_id, establecimiento__slug=slug,
+        estado=Cita.Estado.CONFIRMADA,
+    )
+    respuesta = HttpResponse(evento_ics(cita),
+                             content_type="text/calendar; charset=utf-8")
+    # El nombre del archivo no lleva datos del cliente: acaba en la carpeta
+    # de descargas del telefono, a la vista de cualquiera que lo coja.
+    respuesta["Content-Disposition"] = f'attachment; filename="cita-{cita.id}.ics"'
+    return respuesta

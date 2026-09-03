@@ -25,6 +25,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from agenda.fechas import DIAS, MESES, fecha_larga, hora_texto  # noqa: F401
+from agenda.calendario import enlace_google, firma as firma_cita
 from agenda.models import Cita, Notificacion
 from agenda.services import (
     AgendaService, CitaEnElPasado, SlotNoDisponible, TelefonoVetado,
@@ -458,6 +459,12 @@ REGLAS OBLIGATORIAS:
                         "fecha": intencion["fecha"],
                         "hora_inicio": intencion["hora_inicio"],
                         "profesional": profesional.nombre,
+                        # Los dos enlaces se arman AQUI y no en el navegador.
+                        # La firma sale de la SECRET_KEY, que no puede salir
+                        # del servidor ni un momento.
+                        "ics": (f"{settings.SITIO_URL}/p/{establecimiento.slug}"
+                                f"/cita/{cita.id}/{firma_cita(cita.id)}.ics"),
+                        "google": enlace_google(cita),
                     },
                 }, None
 

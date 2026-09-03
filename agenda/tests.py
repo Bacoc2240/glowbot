@@ -1920,3 +1920,160 @@ class QueCuentaComoCitaFuturaTest(TestCase):
                     "Una cita tiene que ser futura O poder marcarse como "
                     "falta, nunca las dos cosas ni ninguna")
                 cita.delete()
+
+
+class CalendarioDescargableTest(TestCase):
+    """El .ics que el cliente se lleva al teléfono (RF-11).
+
+    Existe porque el recordatorio por WhatsApp del piloto es semiautomático y
+    depende de que el dueño pulse un botón. Un evento en el calendario avisa
+    solo, y ataca las inasistencias por el otro lado.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="ics@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Mi Barbería", slug="ics",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            direccion="Calle 12 #4-30, Saravena")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo Maldonado")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Barba, corte y cejas",
+            duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Pedro", telefono="3243269172",
+            acepta_datos=True)
+        self.cita = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli,
+            fecha=date(2026, 10, 9), hora_inicio=time(19, 40),
+            hora_fin=time(20, 10), estado=Cita.Estado.CONFIRMADA)
+
+    def _url(self, cita_id=None, firma=None):
+        from agenda.calendario import firma as firmar
+        cita_id = cita_id or self.cita.id
+        return (f"/p/{self.est.slug}/cita/{cita_id}/"
+                f"{firma or firmar(cita_id)}.ics")
+
+    # ── El contenido del archivo ──────────────────────────────────
+
+    def test_la_hora_local_se_emite_en_utc(self):
+        """7:40 p. m. en Bogotá son las 00:40 UTC del día siguiente.
+
+        Si la conversión fallara, la cita aparecería en el calendario del
+        cliente cinco horas corrida y llegaría tarde o directamente otro día.
+        """
+        from agenda.calendario import evento_ics
+        texto = evento_ics(self.cita)
+        self.assertIn("DTSTART:20261010T004000Z", texto)
+        self.assertIn("DTEND:20261010T011000Z", texto)
+
+    def test_el_identificador_es_estable(self):
+        """Para que reabrir el enlace ACTUALICE el evento en vez de duplicarlo.
+        Con un UID aleatorio, cada descarga le dejaría otra copia en la
+        agenda."""
+        from agenda.calendario import evento_ics
+        uno = evento_ics(self.cita)
+        otro = evento_ics(Cita.objects.get(pk=self.cita.pk))
+        self.assertIn(f"UID:cita-{self.cita.id}@", uno)
+        self.assertIn(f"UID:cita-{self.cita.id}@", otro)
+
+    def test_las_comas_del_servicio_van_escapadas(self):
+        """«Barba, corte y cejas» lleva una coma, que en el estándar separa
+        valores. Sin escapar, el calendario lee mal el resumen entero."""
+        from agenda.calendario import evento_ics
+        self.assertIn("Barba\\, corte y cejas", evento_ics(self.cita))
+
+    def test_ninguna_linea_pasa_de_75_octetos(self):
+        """Outlook rechaza el archivo completo si se pasa. Se cuenta en bytes
+        porque las tildes ocupan dos y los servicios llevan tildes casi
+        siempre."""
+        from agenda.calendario import evento_ics
+        for linea in evento_ics(self.cita).split("\r\n"):
+            with self.subTest(linea=linea[:40]):
+                self.assertLessEqual(len(linea.encode("utf-8")), 75)
+
+    def test_el_plegado_no_parte_un_caracter_por_la_mitad(self):
+        """Cortar a mitad de un carácter multibyte produce basura ilegible."""
+        from agenda.calendario import evento_ics
+        # El límite del campo son 80 caracteres, así que la línea larga se
+        # provoca por la descripción —que suma nombre del profesional,
+        # establecimiento y enlace— y por un servicio lleno de tildes.
+        self.serv.nombre = "Diseño de barba, perfilado de cejas y mascarilla ñ"
+        self.serv.save()
+        texto = evento_ics(Cita.objects.get(pk=self.cita.pk))
+        self.assertIn("Diseño", texto)          # se decodifica sin romperse
+        self.assertIn("SUMMARY:", texto)
+
+    def test_termina_cada_linea_como_manda_el_estandar(self):
+        from agenda.calendario import evento_ics
+        texto = evento_ics(self.cita)
+        self.assertTrue(texto.startswith("BEGIN:VCALENDAR\r\n"))
+        self.assertTrue(texto.endswith("END:VCALENDAR\r\n"))
+
+    def test_no_promete_una_sincronizacion_que_no_existe(self):
+        """El evento remite al enlace del establecimiento porque un .ics ya
+        descargado no se entera de una cancelación."""
+        from agenda.calendario import evento_ics
+        self.assertIn(f"/p/{self.est.slug}", evento_ics(self.cita))
+
+    # ── La ruta pública ───────────────────────────────────────────
+
+    def test_se_descarga_con_la_firma_correcta(self):
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("text/calendar", r["Content-Type"])
+        self.assertIn("attachment", r["Content-Disposition"])
+
+    def test_sin_firma_valida_no_se_entrega(self):
+        """Sin esto, /cita/1.ics, /cita/2.ics… leería las citas de todos los
+        establecimientos: es una URL pública y sin autenticación."""
+        self.assertEqual(self.client.get(self._url(firma="0" * 16)).status_code, 404)
+
+    def test_la_firma_de_otra_cita_no_sirve(self):
+        """Una firma válida pero ajena tiene que fallar igual, o el
+        mecanismo no separa nada."""
+        from agenda.calendario import firma as firmar
+        otra = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli,
+            fecha=date(2026, 10, 16), hora_inicio=time(19, 40),
+            hora_fin=time(20, 10), estado=Cita.Estado.CONFIRMADA)
+        r = self.client.get(self._url(cita_id=self.cita.id, firma=firmar(otra.id)))
+        self.assertEqual(r.status_code, 404)
+
+    def test_una_cita_cancelada_no_se_descarga(self):
+        """Entregar el evento de algo que ya no existe es la misma clase de
+        dato falso que llevamos varias sesiones quitando."""
+        self.cita.estado = Cita.Estado.CANCELADA_CLIENTE
+        self.cita.save(update_fields=["estado"])
+        self.assertEqual(self.client.get(self._url()).status_code, 404)
+
+    def test_no_se_descarga_desde_el_slug_de_otro_establecimiento(self):
+        """La firma sola bastaría, pero el aislamiento entre inquilinos no
+        conviene dejarlo apoyado en un solo mecanismo."""
+        from agenda.calendario import firma as firmar
+        otro_duenio = Usuario.objects.create_user(
+            email="ics2@a.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=otro_duenio, nombre="Ajeno", slug="ics-ajeno",
+            tipo=Establecimiento.Tipo.SALON, telefono="301")
+        r = self.client.get(
+            f"/p/ics-ajeno/cita/{self.cita.id}/{firmar(self.cita.id)}.ics")
+        self.assertEqual(r.status_code, 404)
+
+    def test_el_nombre_del_archivo_no_lleva_datos_del_cliente(self):
+        """Acaba en la carpeta de descargas del teléfono, a la vista de
+        cualquiera que lo coja."""
+        r = self.client.get(self._url())
+        self.assertNotIn("Pedro", r["Content-Disposition"])
+        self.assertNotIn("3243269172", r["Content-Disposition"])
+
+    # ── El enlace de Google ───────────────────────────────────────
+
+    def test_el_enlace_de_google_lleva_las_mismas_horas(self):
+        from agenda.calendario import enlace_google
+        url = enlace_google(self.cita)
+        self.assertIn("dates=20261010T004000Z/20261010T011000Z", url)
+        self.assertIn("calendar.google.com", url)
