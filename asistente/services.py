@@ -144,6 +144,7 @@ AVISO_SIN_CONSULTAR = (
 # dejaria en la conversacion una pila de estados viejos que se contradicen
 # entre si --justo el ruido que este mecanismo viene a eliminar--.
 MARCA_ESTADO = "Estado de las citas"
+MARCA_CONSENTIMIENTO = "Consentimiento de esta conversacion"
 
 # DIAS, MESES y fecha_larga se importan de agenda.fechas (ver cabecera).
 
@@ -230,10 +231,15 @@ REGLAS OBLIGATORIAS:
    emite la intención consultar_disponibilidad y espera la respuesta del sistema.
 4. Antes de confirmar una cita debes tener: servicio, fecha, hora, profesional,
    nombre del cliente y número de teléfono. Pide lo que falte, un dato a la vez.
-5. Antes de pedir nombre y telefono, pide aceptar el aviso de privacidad. No cites
-   la ley por su numero: di que el establecimiento guardara su nombre y telefono
-   para gestionar la cita y que puede leer el detalle en el enlace del aviso. Una
-   persona no puede consentir algo que no entiende.
+5. Antes de pedir nombre y telefono, emite la intencion
+   solicitar_consentimiento. NO redactes tu la peticion ni interpretes la
+   respuesta: el sistema muestra el texto del aviso y un boton, y solo el
+   boton vale como aceptacion. NO lo deduzcas de lo que escriba el cliente:
+   en cada turno recibes una linea [SISTEMA] que empieza por "Consentimiento
+   de esta conversacion" y esa es la unica fuente valida. Si dice
+   REGISTRADO, sigue adelante y no vuelvas a pedirlo aunque el cliente no
+   haya escrito nada parecido a "acepto". Si dice NO REGISTRADO, emite
+   solicitar_consentimiento, aunque el cliente acabe de escribir "acepto".
 6. Responde siempre en español, con tono cálido y breve (máximo 3 oraciones).
 7. No converses de temas ajenos al agendamiento; redirige con cortesía.
 8. Cuando debas ejecutar una acción, responde ÚNICAMENTE con el JSON de la
@@ -241,7 +247,10 @@ REGLAS OBLIGATORIAS:
    {{"intencion":"consultar_disponibilidad","servicio_id":N,"fecha":"AAAA-MM-DD","profesional_id":N}}
    (profesional_id es OPCIONAL aqui; omitelo si el cliente no ha dicho con
    quien quiere atenderse. Ver la regla 15.)
-   {{"intencion":"agendar","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD","hora_inicio":"HH:MM","cliente":{{"nombre":"...","telefono":"...","acepta_datos":true}}}}
+   {{"intencion":"solicitar_consentimiento"}}
+   {{"intencion":"agendar","servicio_id":N,"profesional_id":N,"fecha":"AAAA-MM-DD","hora_inicio":"HH:MM","cliente":{{"nombre":"...","telefono":"..."}}}}
+   (el cliente ya NO lleva acepta_datos: esa marca la escribe el sistema
+   cuando el titular pulsa el boton, y si la mandas se ignora.)
    {{"intencion":"consultar_cita","telefono":"..."}}
    {{"intencion":"cancelar_cita","telefono":"...","cita_id":N}}
    (cita_id es opcional; omitelo la primera vez. Si el telefono tiene varias
@@ -351,13 +360,38 @@ REGLAS OBLIGATORIAS:
     #  Ejecución validada de intenciones (Capa 3 de defensa)
     # ──────────────────────────────────────────────────────────────
     @classmethod
-    def _ejecutar_intencion(cls, establecimiento, intencion: dict):
+    def _ejecutar_intencion(cls, establecimiento, intencion: dict, conv=None):
         """Devuelve (final: dict | None, feedback: str | None).
         final   → la conversación termina este turno con ese resultado.
-        feedback→ texto [SISTEMA] que se realimenta al modelo para que reformule."""
+        feedback→ texto [SISTEMA] que se realimenta al modelo para que reformule.
+
+        `conv` es la conversación en curso. Entra aquí porque el
+        consentimiento vive en ella: sin la conversación, `agendar` no tiene
+        forma de saber si el titular pulsó el botón, y volveríamos a
+        creernos lo que diga el JSON del modelo.
+        """
         tipo = intencion.get("intencion")
 
         try:
+            if tipo == "solicitar_consentimiento":
+                # El texto lo escribe el backend, no el modelo. En un
+                # consentimiento la redaccion exacta es parte de la prueba:
+                # no puede variar segun como le de al modelo ese dia. Por eso
+                # se devuelve como `final`, que en este protocolo significa
+                # que el turno termina aqui y el texto del modelo se descarta.
+                return {
+                    "respuesta": (
+                        f"Para agendar, {establecimiento.nombre} necesita "
+                        "guardar tu nombre y tu teléfono, y usarlos "
+                        "únicamente para gestionar tu cita.\n\n"
+                        "Puedes leer el detalle en el aviso de privacidad: "
+                        f"{settings.SITIO_URL}/p/{establecimiento.slug}/privacidad\n\n"
+                        "Si estás de acuerdo, pulsa el botón."
+                    ),
+                    "accion": "pedir_consentimiento",
+                    "cita": None,
+                }, None
+
             if tipo == "consultar_disponibilidad":
                 servicio = Servicio.objects.get(
                     pk=intencion["servicio_id"],
@@ -417,9 +451,24 @@ REGLAS OBLIGATORIAS:
                 datos_cli = intencion.get("cliente") or {}
                 if not datos_cli.get("nombre") or not datos_cli.get("telefono"):
                     return None, "Faltan nombre o teléfono del cliente (RN-06). Solicítalos."
-                if not datos_cli.get("acepta_datos"):
-                    return None, ("El cliente debe aceptar el aviso de privacidad "
-                                  "antes de confirmar (RN-07). Solicita la aceptación.")
+                # El consentimiento se lee del REGISTRO de la conversación,
+                # no del JSON. Antes bastaba con que el modelo escribiera
+                # `acepta_datos: true`, o sea que la prueba de la
+                # autorización era «la IA entendió que dijo que sí». La ley
+                # exige que sea demostrable por el responsable, y una
+                # inferencia no lo es.
+                #
+                # No es un tecnicismo: esa misma marca decidía el origen
+                # AUTOSERVICIO, que es el que habilita el envío automático de
+                # recordatorios. Un consentimiento mal inferido no manchaba
+                # solo el registro, autorizaba un envío.
+                if conv is None or conv.consentimiento_en is None:
+                    return None, (
+                        "No consta que el titular haya pulsado el botón de "
+                        "aceptación, así que la cita no se puede crear (RN-07). "
+                        "Emite solicitar_consentimiento y pídele que use el "
+                        "botón; escribir «acepto» no basta."
+                    )
                 # El alta pasa por ClienteService y no por un
                 # get_or_create aqui: es la misma puerta por la que entra el
                 # alta manual del panel, y es lo que garantiza que ningun
@@ -435,6 +484,10 @@ REGLAS OBLIGATORIAS:
                     nombre=datos_cli["nombre"],
                     telefono=datos_cli["telefono"],
                     origen=ClienteFinal.OrigenConsentimiento.AUTOSERVICIO,
+                    # La version que se guarda es la que el titular vio al
+                    # pulsar, no la vigente al confirmar: si el aviso cambia
+                    # a mitad de conversacion, lo que acepto fue la anterior.
+                    version=conv.version_aviso or None,
                 )
                 dia = date.fromisoformat(intencion["fecha"])
                 hora = datetime.strptime(intencion["hora_inicio"], "%H:%M").time()
@@ -663,6 +716,22 @@ REGLAS OBLIGATORIAS:
         ).order_by("fecha", "hora_inicio")
 
     @staticmethod
+    def _estado_consentimiento(conv) -> str:
+        """Le dice al modelo si el titular ya pulso el boton.
+
+        No se persiste en el historial, igual que el resumen de citas: se
+        recalcula fresco en cada turno para que no quede una version vieja
+        contradiciendo a la base.
+        """
+        if conv is not None and conv.consentimiento_en is not None:
+            return (f"{MARCA_CONSENTIMIENTO}: REGISTRADO. El titular ya pulso "
+                    "el boton de aceptacion. Puedes pedir nombre y telefono y "
+                    "agendar con normalidad. NO se lo vuelvas a pedir.")
+        return (f"{MARCA_CONSENTIMIENTO}: NO REGISTRADO. Emite "
+                "solicitar_consentimiento y espera. Que el cliente escriba "
+                "«acepto» no cambia esta linea.")
+
+    @staticmethod
     def _resumen_citas(establecimiento, telefono):
         """Estado real de las citas del telefono, para inyectarlo en el turno.
 
@@ -885,6 +954,23 @@ REGLAS OBLIGATORIAS:
                 "content": "[SISTEMA] " + cls._resumen_citas(
                     establecimiento, conv.telefono_cliente),
             })
+
+        # Y el consentimiento, en su propia linea.
+        #
+        # Va aparte del resumen de citas porque el resumen solo se inyecta
+        # cuando ya hay telefono, y el consentimiento se pide ANTES de
+        # pedirlo. Compartir la condicion dejaba al modelo sin el dato justo
+        # en el tramo donde lo necesita.
+        #
+        # Sin esta linea el modelo no tenia forma de saber si el titular
+        # habia pulsado: la constancia estaba escrita en la base y el le
+        # seguia pidiendo al cliente que usara el boton, una y otra vez. Yo
+        # le habia pedido en la regla 5 que comprobara algo que no podia ver,
+        # que es el mismo error que llevamos toda la sesion corrigiendo.
+        historial.append({
+            "role": "user",
+            "content": "[SISTEMA] " + cls._estado_consentimiento(conv),
+        })
         historial.append({"role": "user", "content": mensaje})
 
         prompt_sistema = cls.construir_prompt_sistema(establecimiento)
@@ -977,7 +1063,8 @@ REGLAS OBLIGATORIAS:
                 conv.telefono_cliente = telefono
 
             el_backend_hablo = True
-            final, feedback = cls._ejecutar_intencion(establecimiento, intencion)
+            final, feedback = cls._ejecutar_intencion(
+                establecimiento, intencion, conv=conv)
             historial.append({"role": "assistant", "content": texto})
             if final is not None:  # acción ejecutada: cierre del turno
                 historial.append({"role": "assistant", "content": final["respuesta"]})
@@ -1005,7 +1092,8 @@ REGLAS OBLIGATORIAS:
         # turno y se recalculan en el siguiente con datos frescos.
         conv.mensajes = [
             m for m in historial
-            if not m.get("content", "").startswith(f"[SISTEMA] {MARCA_ESTADO}")
+            if not m.get("content", "").startswith(
+                (f"[SISTEMA] {MARCA_ESTADO}", f"[SISTEMA] {MARCA_CONSENTIMIENTO}"))
         ]
         # `actualizado_en` va en la lista aunque sea auto_now. Django solo
         # llama al pre_save de los campos que aparecen en update_fields, asi

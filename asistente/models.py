@@ -25,6 +25,21 @@ class ConversacionIA(models.Model):
     # siempre y el siguiente que abriera el chat en ese dispositivo heredaba
     # el telefono y las citas del anterior.
     actualizado_en = models.DateTimeField(auto_now=True)
+    # Constancia del consentimiento del titular en ESTA sesion (Ley 1581).
+    #
+    # Antes la unica prueba era `acepta_datos: true` dentro del JSON que
+    # emitia el modelo, es decir: «la IA entendio que dijo que si». La ley
+    # exige que la autorizacion sea DEMOSTRABLE por el responsable, y una
+    # inferencia no lo es. Peor: esa misma marca decidia el origen
+    # AUTOSERVICIO, que es el que habilita el envio automatico de mensajes.
+    # Un consentimiento mal inferido no manchaba solo el registro, autorizaba
+    # un envio.
+    #
+    # Ahora lo escribe el backend cuando el titular pulsa el boton, con
+    # instante y version del aviso. La IA propone; el consentimiento lo
+    # dispone el backend.
+    consentimiento_en = models.DateTimeField(null=True, blank=True)
+    version_aviso = models.CharField(max_length=20, blank=True)
 
     objects = TenantManager()
 

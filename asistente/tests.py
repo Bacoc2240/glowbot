@@ -31,6 +31,21 @@ from .services import IAService, MAX_ITERACIONES, fecha_larga
 RUTA_LLAMAR = "asistente.services.IAService._llamar_claude"
 
 
+def dejar_constancia(est, session_id="s1", version="2026-10"):
+    """Deja el consentimiento registrado, como si el titular pulsara el botón.
+
+    Existe porque `acepta_datos: true` dentro del JSON del modelo ya no vale:
+    la prueba de la autorización la escribe el backend cuando el titular
+    pulsa, no la IA cuando cree haber entendido un sí.
+    """
+    from django.utils import timezone as _tz
+    conv = IAService._conversacion_viva(est, session_id)
+    conv.consentimiento_en = _tz.now()
+    conv.version_aviso = version
+    conv.save(update_fields=["consentimiento_en", "version_aviso"])
+    return conv
+
+
 class BaseIATest(TestCase):
     def setUp(self):
         self.user = Usuario.objects.create_user(
@@ -131,9 +146,9 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
+        dejar_constancia(self.est, "s3")
         with patch(RUTA_LLAMAR, side_effect=self._mock(intencion)):
             r = IAService.procesar_mensaje(self.est, "s3", "Confirmo la de las 9")
         self.assertEqual(r["accion"], "cita_creada")
@@ -154,12 +169,12 @@ class ConversacionTest(BaseIATest):
         quedaba a nombre de quien no lo dio.
         """
         def agendar(nombre, hora, sesion):
+            dejar_constancia(self.est, sesion)
             intencion = json.dumps({
                 "intencion": "agendar",
                 "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
                 "fecha": str(self.lunes), "hora_inicio": hora,
-                "cliente": {"nombre": nombre, "telefono": "3192846956",
-                            "acepta_datos": True},
+                "cliente": {"nombre": nombre, "telefono": "3192846956"},
             })
             with patch(RUTA_LLAMAR, side_effect=self._mock(intencion)):
                 return IAService.procesar_mensaje(self.est, sesion, "Confirmo")
@@ -188,9 +203,9 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956"},
         })
+        dejar_constancia(self.est, "sC")
         with patch(RUTA_LLAMAR, side_effect=self._mock(intencion)):
             IAService.procesar_mensaje(self.est, "sC", "Confirmo")
         cliente = ClienteFinal.objects.get(
@@ -205,13 +220,13 @@ class ConversacionTest(BaseIATest):
         en AgendaService.
         """
         from negocios.clientes import ClienteService
+        dejar_constancia(self.est, "sV")
         ClienteService.bloquear(self.est, "3192846956", "3 inasistencias")
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Wilson Vergara", "telefono": "3192846956"},
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion,
@@ -233,8 +248,7 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": False},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion, "Antes de confirmar necesito que aceptes el aviso de privacidad."
@@ -256,12 +270,12 @@ class ConversacionTest(BaseIATest):
             servicio=self.corte, cliente=cliente,
             dia=self.lunes, hora_inicio=time(9, 0),
         )
+        dejar_constancia(self.est, "s5")
         intencion = json.dumps({
             "intencion": "agendar",
             "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion,
@@ -280,8 +294,7 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar", "servicio_id": 9999,
             "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion, "Ese servicio no está en nuestro catálogo. Ofrecemos Corte.",
@@ -303,8 +316,7 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar", "servicio_id": manicure.id,
             "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
         with patch(RUTA_LLAMAR, side_effect=self._mock(
             intencion, "El manicure lo presta Sofía. ¿Agendamos con ella?",
@@ -346,8 +358,7 @@ class ConversacionTest(BaseIATest):
             "intencion": "agendar", "servicio_id": 9999,
             "profesional_id": self.carlos.id,
             "fecha": str(self.lunes), "hora_inicio": "09:00",
-            "cliente": {"nombre": "Juan", "telefono": "3001112233",
-                        "acepta_datos": True},
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
         })
         with patch(RUTA_LLAMAR, return_value=(intencion, 100, 50)) as m:
             r = IAService.procesar_mensaje(self.est, "s9", "Quiero agendar")
@@ -1135,9 +1146,8 @@ class AsistenteNoOfreceHorasPasadasTest(TestCase):
             "intencion": "agendar",
             "servicio_id": self.serv.id, "profesional_id": self.prof.id,
             "fecha": str(self.hoy), "hora_inicio": "00:30",
-            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
-                        "acepta_datos": True},
-        })
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151"},
+        }, conv=dejar_constancia(self.est, "pas1"))
         self.assertIsNone(final)
         self.assertIn("ya pasó", feedback)
         self.assertFalse(Cita.objects.filter(hora_inicio="00:30").exists())
@@ -1151,9 +1161,8 @@ class AsistenteNoOfreceHorasPasadasTest(TestCase):
             "intencion": "agendar",
             "servicio_id": self.serv.id, "profesional_id": self.prof.id,
             "fecha": str(self.hoy), "hora_inicio": "00:30",
-            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
-                        "acepta_datos": True},
-        })
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151"},
+        }, conv=dejar_constancia(self.est, "pas2"))
         self.assertIn("Vuelve a consultar la disponibilidad", feedback)
 
     def test_la_confirmacion_dice_la_hora_en_doce_horas(self):
@@ -1173,9 +1182,8 @@ class AsistenteNoOfreceHorasPasadasTest(TestCase):
             "intencion": "agendar",
             "servicio_id": self.serv.id, "profesional_id": self.prof.id,
             "fecha": str(manana), "hora_inicio": "08:30",
-            "cliente": {"nombre": "Rosa", "telefono": "3112824151",
-                        "acepta_datos": True},
-        })
+            "cliente": {"nombre": "Rosa", "telefono": "3112824151"},
+        }, conv=dejar_constancia(self.est, "pas3"))
         self.assertIn("8:30 a. m.", final["respuesta"])
         self.assertNotIn("08:30", final["respuesta"])
 
@@ -2041,9 +2049,8 @@ class EnlacesDeCalendarioEnLaRespuestaTest(TestCase):
             "intencion": "agendar", "servicio_id": self.serv.id,
             "profesional_id": self.prof.id, "fecha": str(self.dia),
             "hora_inicio": "19:40",
-            "cliente": {"nombre": "Pedro", "telefono": "3243269172",
-                        "acepta_datos": True},
-        })
+            "cliente": {"nombre": "Pedro", "telefono": "3243269172"},
+        }, conv=dejar_constancia(self.est, "cal1"))
         return final
 
     def test_la_cita_creada_trae_los_dos_enlaces(self):
@@ -2069,3 +2076,253 @@ class EnlacesDeCalendarioEnLaRespuestaTest(TestCase):
         final, _ = IAService._ejecutar_intencion(self.est, {
             "intencion": "consultar_cita", "telefono": "3243269172"})
         self.assertIsNone(final)
+
+
+class ConsentimientoLoDisponeElBackendTest(TestCase):
+    """La IA deja de poder conceder el consentimiento (RN-07, Ley 1581).
+
+    Antes la única prueba de la autorización era `acepta_datos: true` dentro
+    del JSON que emitía el modelo. Es decir: la constancia decía que el
+    titular aceptó, cuando lo único que constaba era que **la IA entendió
+    que dijo que sí**. La ley exige que la autorización sea demostrable por
+    el responsable, y una inferencia no lo es.
+
+    Y no era un tecnicismo de papel: esa misma marca decidía el origen
+    AUTOSERVICIO, que es el que habilita el envío automático de
+    recordatorios. Un consentimiento mal inferido no manchaba solo el
+    registro, autorizaba un envío hacia alguien que quizá nunca dio opt-in.
+
+    Ahora lo escribe el backend cuando el titular pulsa el botón, con
+    instante y versión del aviso. Es el mismo principio de siempre —la IA
+    propone, el backend dispone— aplicado a la pieza donde más importaba.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.api = APIClient()
+        u = Usuario.objects.create_user(email="co@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="Mi Barbería", slug="co",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Carlos")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Corte", duracion_min=30)
+        self.dia = proximo_dia_semana(0)
+        HorarioBase.objects.create(
+            profesional=self.prof, dia_semana=self.dia.weekday(),
+            hora_inicio=time(8, 0), hora_fin=time(18, 0))
+
+    def _agendar(self, conv=None):
+        return IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar", "servicio_id": self.serv.id,
+            "profesional_id": self.prof.id, "fecha": str(self.dia),
+            "hora_inicio": "09:00",
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
+        }, conv=conv)
+
+    # ── La puerta ─────────────────────────────────────────────────
+
+    def test_sin_constancia_no_hay_cita(self):
+        final, feedback = self._agendar(
+            conv=IAService._conversacion_viva(self.est, "sin"))
+        self.assertIsNone(final)
+        self.assertIn("no consta", feedback.lower())
+        self.assertEqual(Cita.objects.count(), 0)
+
+    def test_la_ia_ya_no_puede_concederlo_desde_su_json(self):
+        """El caso que motiva todo: el modelo manda `acepta_datos: true` y no
+        le sirve de nada, porque el campo ya no se mira."""
+        final, feedback = IAService._ejecutar_intencion(self.est, {
+            "intencion": "agendar", "servicio_id": self.serv.id,
+            "profesional_id": self.prof.id, "fecha": str(self.dia),
+            "hora_inicio": "09:00",
+            "cliente": {"nombre": "Juan", "telefono": "3001112233",
+                        "acepta_datos": True},
+        }, conv=IAService._conversacion_viva(self.est, "falso"))
+        self.assertIsNone(final)
+        self.assertEqual(Cita.objects.count(), 0)
+
+    def test_con_constancia_la_cita_se_crea(self):
+        conv = dejar_constancia(self.est, "ok")
+        final, _ = self._agendar(conv=conv)
+        self.assertEqual(final["accion"], "cita_creada")
+
+    # ── El endpoint que registra ──────────────────────────────────
+
+    def test_el_boton_deja_instante_y_version(self):
+        IAService._conversacion_viva(self.est, "b1")
+        r = self.api.post("/api/v1/p/co/consentimiento",
+                          {"session_id": "b1"}, format="json")
+        self.assertEqual(r.status_code, 200)
+        conv = ConversacionIA.objects.get(session_id="b1")
+        self.assertIsNotNone(conv.consentimiento_en)
+        self.assertTrue(conv.version_aviso)
+
+    def test_pulsar_dos_veces_no_reescribe_la_primera_vez(self):
+        """La primera aceptación es la que vale como prueba; reescribir el
+        instante borraría cuándo ocurrió de verdad."""
+        IAService._conversacion_viva(self.est, "b2")
+        self.api.post("/api/v1/p/co/consentimiento",
+                      {"session_id": "b2"}, format="json")
+        primero = ConversacionIA.objects.get(session_id="b2").consentimiento_en
+        self.api.post("/api/v1/p/co/consentimiento",
+                      {"session_id": "b2"}, format="json")
+        self.assertEqual(
+            ConversacionIA.objects.get(session_id="b2").consentimiento_en, primero)
+
+    def test_sin_sesion_no_se_registra_nada(self):
+        r = self.api.post("/api/v1/p/co/consentimiento", {}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_un_slug_inexistente_no_registra(self):
+        r = self.api.post("/api/v1/p/no-existe/consentimiento",
+                          {"session_id": "b3"}, format="json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_la_constancia_es_de_una_sola_conversacion(self):
+        """Aislamiento entre sesiones: que uno acepte no habilita a otro."""
+        dejar_constancia(self.est, "mia")
+        otra = IAService._conversacion_viva(self.est, "ajena")
+        final, _ = self._agendar(conv=otra)
+        self.assertIsNone(final)
+
+    # ── La versión del aviso ──────────────────────────────────────
+
+    def test_se_guarda_la_version_que_el_titular_vio(self):
+        """Y no la vigente al confirmar: si el aviso cambia a mitad de
+        conversación, lo que aceptó fue la anterior."""
+        conv = dejar_constancia(self.est, "ver", version="2025-01")
+        self._agendar(conv=conv)
+        cliente = ClienteFinal.objects.get(telefono="3001112233")
+        self.assertEqual(cliente.version_aviso, "2025-01")
+
+    # ── La petición ───────────────────────────────────────────────
+
+    def test_el_texto_de_la_peticion_lo_escribe_el_backend(self):
+        """En un consentimiento la redacción exacta es parte de la prueba: no
+        puede variar según cómo le dé al modelo ese día."""
+        final, _ = IAService._ejecutar_intencion(
+            self.est, {"intencion": "solicitar_consentimiento"})
+        self.assertEqual(final["accion"], "pedir_consentimiento")
+        self.assertIn("Mi Barbería", final["respuesta"])
+        self.assertIn("/p/co/privacidad", final["respuesta"])
+        self.assertIn("nombre y tu teléfono", final["respuesta"])
+
+    def test_el_texto_del_modelo_se_descarta_en_ese_turno(self):
+        """Se devuelve como `final`, que en este protocolo termina el turno."""
+        with patch(RUTA_LLAMAR, side_effect=[
+            (json.dumps({"intencion": "solicitar_consentimiento"}), 10, 5)
+        ]):
+            r = IAService.procesar_mensaje(self.est, "sp", "quiero un corte")
+        self.assertEqual(r["accion"], "pedir_consentimiento")
+        self.assertIn("aviso de privacidad", r["respuesta"])
+
+    def test_el_flujo_completo_por_el_chat_crea_la_cita(self):
+        """El recorrido de verdad: la constancia queda en la conversación y
+        el orquestador se la entrega al ejecutor. Probar solo la llamada
+        directa dejaría pasar que `procesar_mensaje` no pase la conversación,
+        y entonces nadie podría agendar por el chat."""
+        dejar_constancia(self.est, "flujo")
+        intencion = json.dumps({
+            "intencion": "agendar", "servicio_id": self.serv.id,
+            "profesional_id": self.prof.id, "fecha": str(self.dia),
+            "hora_inicio": "09:00",
+            "cliente": {"nombre": "Juan", "telefono": "3001112233"},
+        })
+        with patch(RUTA_LLAMAR, side_effect=[(intencion, 10, 5)]):
+            r = IAService.procesar_mensaje(self.est, "flujo", "Confirmo")
+        self.assertEqual(r["accion"], "cita_creada")
+
+    def test_el_prompt_le_prohibe_interpretar_la_aceptacion(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        # El fragmento se busca en una sola línea: la regla va envuelta en
+        # el prompt y buscar la frase entera dependería de dónde caiga el
+        # salto de línea, no de que la regla esté.
+        self.assertIn("boton vale como aceptacion", prompt.lower())
+        self.assertNotIn("acepta_datos\":true", prompt)
+
+    # ── La sesión compartida ──────────────────────────────────────
+
+    def test_empezar_de_nuevo_borra_la_constancia(self):
+        """El consentimiento pertenece a la conversación, así que caduca con
+        ella. En la tablet del mostrador, el siguiente cliente acepta por sí
+        mismo sin que haya que hacer nada extra."""
+        from datetime import timedelta as _td
+        from django.utils import timezone as _tz
+        conv = dejar_constancia(self.est, "vieja")
+        ConversacionIA.objects.filter(pk=conv.pk).update(
+            actualizado_en=_tz.now() - _td(hours=13))
+        nueva = IAService._conversacion_viva(self.est, "vieja")
+        self.assertIsNone(nueva.consentimiento_en)
+
+
+class ElModeloVeElConsentimientoTest(TestCase):
+    """El modelo tiene que poder LEER si el titular pulsó (RN-07).
+
+    Fallo de campo, y de diseño mío: la constancia se escribía bien en la
+    base —lo confirmamos con `consentimiento_en` poblado— pero el asistente
+    seguía respondiendo «necesito que pulses el botón» una y otra vez.
+
+    La causa era la regla 5, que le pedía comprobar si «consta» la
+    aceptación. El bloque [SISTEMA] solo hablaba de citas, y encima solo se
+    inyectaba cuando ya había teléfono, que es DESPUÉS del consentimiento.
+    Le pedí que decidiera sobre un dato que no podía ver, y ante la duda hizo
+    lo que le dije: insistir.
+
+    Es el mismo error que llevábamos toda la sesión corrigiendo en la
+    disponibilidad, cometido dentro del paquete que lo corregía.
+    """
+
+    def setUp(self):
+        u = Usuario.objects.create_user(email="vc@b.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=u, nombre="B", slug="vc",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="300")
+
+    def _enviado_al_modelo(self, session_id, mensaje="hola"):
+        with patch(RUTA_LLAMAR, side_effect=[("¿Qué servicio?", 10, 5)]) as m:
+            IAService.procesar_mensaje(self.est, session_id, mensaje)
+        return "\n".join(x["content"] for x in m.call_args_list[0].args[1])
+
+    def test_cuando_esta_registrado_el_modelo_lo_ve(self):
+        dejar_constancia(self.est, "si")
+        enviado = self._enviado_al_modelo("si")
+        self.assertIn("REGISTRADO", enviado)
+        self.assertNotIn("NO REGISTRADO", enviado)
+
+    def test_cuando_no_lo_esta_tambien_lo_ve(self):
+        enviado = self._enviado_al_modelo("no")
+        self.assertIn("NO REGISTRADO", enviado)
+
+    def test_la_linea_llega_antes_de_que_haya_telefono(self):
+        """El resumen de citas solo se inyecta con teléfono, y el
+        consentimiento se pide antes de pedirlo. Compartir la condición
+        dejaba al modelo sin el dato justo en el tramo donde lo necesita."""
+        conv = IAService._conversacion_viva(self.est, "sin_tel")
+        self.assertEqual(conv.telefono_cliente, "")
+        self.assertIn("Consentimiento de esta conversacion",
+                      self._enviado_al_modelo("sin_tel"))
+
+    def test_la_linea_no_se_persiste_en_el_historial(self):
+        """Se recalcula fresca cada turno; guardarla dejaría una versión
+        vieja contradiciendo a la base en cuanto el titular pulse."""
+        self._enviado_al_modelo("frescura")
+        conv = ConversacionIA.objects.get(session_id="frescura")
+        guardado = "\n".join(m["content"] for m in conv.mensajes)
+        self.assertNotIn("Consentimiento de esta conversacion", guardado)
+
+    def test_pulsar_cambia_lo_que_el_modelo_lee(self):
+        """El recorrido del fallo real: antes de pulsar dice NO REGISTRADO,
+        después dice REGISTRADO. Sin esto el asistente se quedaba en bucle
+        pidiendo un botón que el cliente ya había usado."""
+        self.assertIn("NO REGISTRADO", self._enviado_al_modelo("antes"))
+        dejar_constancia(self.est, "antes")
+        despues = self._enviado_al_modelo("antes")
+        self.assertIn("REGISTRADO", despues)
+        self.assertNotIn("NO REGISTRADO", despues)
+
+    def test_el_prompt_le_manda_leer_la_linea_y_no_deducir(self):
+        prompt = IAService.construir_prompt_sistema(self.est)
+        self.assertIn("unica fuente valida", prompt.lower())
+        self.assertIn("no lo deduzcas", prompt.lower())

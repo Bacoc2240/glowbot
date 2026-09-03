@@ -203,3 +203,46 @@ class CancelarCitaPublicaView(APIView):
             cita=cita, tipo=Notificacion.Tipo.CANCELACION_A_PROFESIONAL,
         )
         return Response({"cancelada": True, "cita_id": cita.id})
+
+
+class ConsentimientoPublicoView(APIView):
+    """POST /api/v1/p/{slug}/consentimiento — {"session_id": "..."} (RN-07).
+
+    Registra que el TITULAR pulso el boton de aceptacion, con instante y
+    version del aviso. Es la unica via por la que se puede otorgar el
+    consentimiento en el autoservicio: el modelo ya no puede concederlo
+    escribiendo `acepta_datos: true` en su JSON.
+
+    Sin autenticacion, como el resto de la zona publica; ver la nota de
+    ConsultarCitaPublicaView sobre por que authentication_classes va vacio.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, slug):
+        from django.utils import timezone
+
+        from web.legal import VERSION_AVISO
+
+        est = _establecimiento_por_slug(slug)
+        if not est:
+            return Response({"error": "Establecimiento no encontrado."},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        session_id = (request.data.get("session_id") or "").strip()
+        conv = IAService._conversacion_viva(est, session_id) if session_id else None
+        if conv is None:
+            return Response({"error": "Falta la sesión."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Si ya constaba, no se pisa. La primera aceptacion es la que vale
+        # como prueba; reescribir el instante en cada pulsacion borraria
+        # cuando ocurrio de verdad.
+        if conv.consentimiento_en is None:
+            conv.consentimiento_en = timezone.now()
+            conv.version_aviso = VERSION_AVISO
+            conv.save(update_fields=["consentimiento_en", "version_aviso",
+                                     "actualizado_en"])
+        return Response({"aceptado": True,
+                         "version": conv.version_aviso,
+                         "fecha": conv.consentimiento_en})
