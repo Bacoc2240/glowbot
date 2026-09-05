@@ -15,7 +15,7 @@ from negocios.models import (ClienteFinal, Profesional, Servicio,
                              TelefonoBloqueado)
 from .models import Cita, Notificacion
 from .recordatorios import RecordatorioService
-from .fechas import hora_texto
+from .fechas import fecha_corta, hora_texto
 from .services import (AgendaService, CitaEnElPasado, SlotNoDisponible,
                        TelefonoVetado, TopeCitasAlcanzado)
 
@@ -109,9 +109,12 @@ class CitaSerializer(serializers.ModelSerializer):
             "id", "fecha", "hora_inicio", "hora_fin", "estado", "canal",
             "profesional", "profesional_nombre",
             "servicio", "servicio_nombre",
-            "cliente", "cliente_nombre", "hora_texto",
+            "cliente", "cliente_nombre", "hora_texto", "serie",
         ]
-        read_only_fields = ["hora_fin", "estado"]
+        # `serie` es de solo lectura: la asigna el servicio al repetir, y
+        # dejar que llegue por POST permitiria colar una cita en la tanda de
+        # otro cliente y cancelarsela desde "Cancelar la tanda".
+        read_only_fields = ["hora_fin", "estado", "serie"]
 
 
 class CitaViewSet(viewsets.ModelViewSet):
@@ -206,6 +209,50 @@ class CitaViewSet(viewsets.ModelViewSet):
         cita = self.get_queryset().get(pk=pk)
         AgendaService.cancelar(cita, por_cliente=False)
         return Response(CitaSerializer(cita).data)
+
+    @action(detail=True, methods=["post"])
+    def repetir(self, request, pk=None):
+        """POST /citas/{id}/repetir — {"semanas": N} (RF-14).
+
+        Nunca falla entera por una fecha que no cabe: crea las que pueda y
+        devuelve el parte de lo saltado con el motivo. Abortarlo todo
+        significaria que un festivo dentro de dos meses impide programar las
+        ocho semanas; y saltar en silencio le dejaria al cliente huecos que
+        nadie sabe que existen hasta que se presenta.
+        """
+        cita = self.get_queryset().get(pk=pk)
+        try:
+            semanas = int(request.data.get("semanas", 0))
+        except (TypeError, ValueError):
+            semanas = 0
+        try:
+            parte = AgendaService.repetir_semanal(cita, semanas)
+        except ValueError as e:
+            return Response({"error": "semanas_invalidas", "detalle": str(e)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "serie": str(parte["serie"]),
+            "creadas": len(parte["creadas"]),
+            "saltadas": [{"fecha": str(x["fecha"]),
+                          "fecha_texto": fecha_corta(x["fecha"]),
+                          "motivo": x["motivo"]} for x in parte["saltadas"]],
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["patch"], url_path="cancelar-serie")
+    def cancelar_serie(self, request, pk=None):
+        """PATCH /citas/{id}/cancelar-serie — cancela la tanda entera.
+
+        Solo las futuras: lo que ya se atendio es historia, y cancelarlo
+        retroactivamente borraria una posible inasistencia antes de que el
+        dueno la registre.
+        """
+        cita = self.get_queryset().get(pk=pk)
+        if cita.serie is None:
+            return Response({"error": "sin_serie",
+                             "detalle": "Esta cita no pertenece a una tanda."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        n = AgendaService.cancelar_serie(cita.establecimiento, cita.serie)
+        return Response({"canceladas": n})
 
     @action(detail=True, methods=["patch"], url_path="no-asistio")
     def no_asistio(self, request, pk=None):

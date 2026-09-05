@@ -36,6 +36,14 @@ class Cita(models.Model):
         max_length=25, choices=Estado.choices, default=Estado.CONFIRMADA,
     )
     canal = models.CharField(max_length=10, choices=Canal.choices, default=Canal.IA)
+    # Identificador de la tanda cuando la cita nace de "repetir semanalmente"
+    # (RF-14). Nulo en las citas sueltas, que son la inmensa mayoria.
+    #
+    # Existe porque agrupar por (cliente, profesional, dia de la semana,
+    # hora) es fragil: en cuanto el dueno mueve una cita de sitio, deja de
+    # pertenecer al grupo y ya no se puede cancelar con las demas. Un
+    # identificador explicito sobrevive a que la serie deje de ser regular.
+    serie = models.UUIDField(null=True, blank=True, db_index=True)
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:

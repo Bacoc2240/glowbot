@@ -218,6 +218,14 @@
         <button class="btn btn-borde" style="width:auto;padding:6px 10px;font-size:13px"
                 x-show="c.estado === 'confirmada' && yaEmpezo(c)"
                 @click="noAsistio(c.id)">No asistió</button>
+        <!-- Citas fijas: solo tiene sentido en lo que aun no ha pasado. -->
+        <button class="btn btn-borde" style="width:auto;padding:6px 10px;font-size:13px;margin-top:4px"
+                x-show="c.estado === 'confirmada' && !yaEmpezo(c) && !c.serie"
+                @click="repetir(c.id)">Repetir semanal</button>
+        <button class="btn btn-borde" style="width:auto;padding:6px 10px;font-size:13px;margin-top:4px"
+                x-show="c.estado === 'confirmada' && c.serie"
+                @click="cancelarSerie(c.id)">Cancelar la tanda</button>
+        <span class="chip" x-show="c.serie" title="Cita fija semanal">Fija</span>
       </div>
     </div>
   </template>
@@ -430,6 +438,39 @@ function panel() {
       // Se puede marcar desde que EMPIEZA, no desde que termina: si el de
       // las 9:00 no llego, a las 9:10 el barbero ya lo sabe.
       return new Date(`${c.fecha}T${c.hora_inicio}`) <= new Date();
+    },
+    async repetir(id) {
+      const txt = prompt("¿Cuántas semanas más quieres repetirla?\n"
+                       + "(entre 1 y 12; se crea una por semana a la misma hora)", "8");
+      if (txt === null) return;
+      const semanas = parseInt(txt, 10);
+      if (!(semanas >= 1 && semanas <= 12)) {
+        alert("Escribe un número entre 1 y 12.");
+        return;
+      }
+      const r = await api(`/citas/${id}/repetir`, {
+        method: "POST", body: JSON.stringify({ semanas }),
+      });
+      if (!r || !r.ok) { alert("No se pudo repetir la cita."); return; }
+      const d = await r.json();
+      // Las fechas saltadas se dicen SIEMPRE, con su motivo. Saltarlas en
+      // silencio dejaria huecos que nadie sabe que existen hasta que el
+      // cliente se presenta.
+      let aviso = `Se crearon ${d.creadas} cita(s).`;
+      if (d.saltadas.length) {
+        aviso += "\n\nNo se pudieron crear estas fechas:\n"
+               + d.saltadas.map(x => `· ${x.fecha_texto} — ${x.motivo}`).join("\n")
+               + "\n\nRevísalas y agéndalas a mano si hace falta.";
+      }
+      alert(aviso);
+      await this.cargar();
+    },
+    async cancelarSerie(id) {
+      if (!confirm("¿Cancelar TODAS las citas futuras de esta tanda?\n"
+                 + "Las que ya se atendieron no se tocan.")) return;
+      const r = await api(`/citas/${id}/cancelar-serie`, { method: "PATCH" });
+      if (r && r.ok) alert(`Se cancelaron ${(await r.json()).canceladas} cita(s).`);
+      await this.cargar();
     },
     async noAsistio(id) {
       if (!confirm("¿Marcar que el cliente no asistió?")) return;

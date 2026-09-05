@@ -10,6 +10,7 @@ Implementa:
 Ninguna vista contiene esta lógica: toda pasa por aquí (arquitectura
 de capa de negocio, Service Layer).
 """
+import uuid
 from datetime import date, datetime, time, timedelta
 
 from django.db import transaction
@@ -59,6 +60,17 @@ class CitaEnElPasado(Exception):
     """
 
 
+class DiaNoAtendido(Exception):
+    """Ese dia y a esa hora el profesional no atiende, o esta bloqueado.
+
+    `reservar` NO comprueba el horario ni los bloqueos, y no es un descuido:
+    la puerta del panel existe justamente para que el dueno pueda meter una
+    cita fuera de su horario si le da la gana. Pero al repetir ocho semanas
+    de golpe nadie esta mirando cada fecha, asi que ahi si hay que validar,
+    o la tanda plantaria citas en las vacaciones del profesional.
+    """
+
+
 class SlotNoDisponible(Exception):
     """Se intentó reservar un slot que no está libre (se traduce a HTTP 409)."""
 
@@ -81,6 +93,112 @@ class AgendaService:
         """Dos intervalos [ini, fin) se solapan si cada uno empieza antes
         de que el otro termine."""
         return ini_a < fin_b and ini_b < fin_a
+
+    # ──────────────────────────────────────────────────────────────
+    #  Citas fijas: repetir una cita varias semanas (RF-14)
+    # ──────────────────────────────────────────────────────────────
+    SEMANAS_MAX = 12
+
+    @classmethod
+    def repetir_semanal(cls, cita, semanas: int) -> dict:
+        """Crea copias semanales de una cita y devuelve el parte de lo ocurrido.
+
+        Viene del piloto real: Eduardo tiene cuatro clientes que van siempre
+        el mismo dia a la misma hora. Pedro, todos los viernes a las 7:40 de
+        la tarde para la barba.
+
+        NO falla entera si una fecha no cabe. Alguna caera en dia bloqueado,
+        en festivo o sobre un hueco que otro cliente ya tomo, y abortarlo
+        todo por eso significaria que un festivo dentro de dos meses impide
+        programar las ocho semanas. Se crea lo que se pueda y se devuelve el
+        detalle de lo saltado, con el motivo.
+
+        Eso ultimo es la parte importante: **saltarse una fecha en silencio
+        le dejaria a Pedro un hueco que nadie sabe que existe hasta que Pedro
+        se presenta**. Es la misma leccion que la negativa inventada del
+        asistente: lo que falla callado es lo que hace dano.
+
+        El tope de citas abiertas NO se aplica, igual que en el alta manual:
+        ocho semanas de Pedro son ocho citas futuras y cualquier tope
+        razonable las frenaria. Aqui no hay abuso que contener, porque quien
+        programa es el dueno sobre un cliente que ya conoce.
+
+        Todo lo demas se hereda de `reservar` sin duplicar nada: el doble
+        blindaje contra el solape, el veto por inasistencias y el rechazo de
+        fechas pasadas.
+        """
+        if not 1 <= semanas <= cls.SEMANAS_MAX:
+            raise ValueError(
+                f"Las semanas deben estar entre 1 y {cls.SEMANAS_MAX}.")
+
+        # La serie incluye a la cita original, para que cancelarla luego se
+        # las lleve todas. Si ya pertenecia a una tanda, se reutiliza: repetir
+        # dos veces desde la misma cita no debe partir el grupo en dos.
+        serie = cita.serie or uuid.uuid4()
+        if cita.serie is None:
+            cita.serie = serie
+            cita.save(update_fields=["serie"])
+
+        creadas, saltadas = [], []
+        for n in range(1, semanas + 1):
+            dia = cita.fecha + timedelta(weeks=n)
+            try:
+                cls._exigir_dia_atendido(cita, dia)
+                creadas.append(cls.reservar(
+                    establecimiento=cita.establecimiento,
+                    profesional=cita.profesional,
+                    servicio=cita.servicio,
+                    cliente=cita.cliente,
+                    dia=dia,
+                    hora_inicio=cita.hora_inicio,
+                    canal=Cita.Canal.MANUAL,
+                    respetar_tope=False,
+                    serie=serie,
+                ))
+            except (SlotNoDisponible, DiaNoAtendido, CitaEnElPasado,
+                    TelefonoVetado) as e:
+                saltadas.append({"fecha": dia, "motivo": str(e)})
+        return {"serie": serie, "creadas": creadas, "saltadas": saltadas}
+
+    @classmethod
+    def _exigir_dia_atendido(cls, cita, dia: date) -> None:
+        """La copia tiene que caber en la jornada y fuera de los bloqueos.
+
+        No se comprueba pidiendo `calcular_slots` y mirando si la hora esta
+        en la lista: esa lista viene troquelada en pasos de quince minutos
+        desde el inicio de la franja, y la cita de Pedro es a las 7:40 de la
+        tarde. Con ese criterio, la serie del cliente que motivo la funcion
+        se habria saltado TODAS las semanas.
+
+        Se reutilizan en cambio las mismas capas que alimentan a
+        `calcular_slots` --franjas del dia y bloqueos-- comprobando que el
+        intervalo exacto de la cita entra donde tiene que entrar. La
+        ocupacion no se mira aqui: de eso ya se encarga `reservar` con el
+        cerrojo y la restriccion de la base, y duplicar la comprobacion seria
+        crear una segunda definicion de "ocupado".
+        """
+        ini = cls._a_minutos(cita.hora_inicio)
+        fin = ini + cita.servicio.duracion_min
+        franjas = cls._franjas_del_dia(cita.profesional, dia)
+        if not any(f_ini <= ini and fin <= f_fin for f_ini, f_fin in franjas):
+            raise DiaNoAtendido(
+                f"{cita.profesional.nombre} no atiende a esa hora ese día.")
+        for b_ini, b_fin in cls._bloqueos_del_dia(cita.profesional, dia):
+            if cls._solapan(ini, fin, b_ini, b_fin):
+                raise DiaNoAtendido("Ese día está bloqueado.")
+
+    @classmethod
+    def cancelar_serie(cls, establecimiento, serie) -> int:
+        """Cancela las citas FUTURAS de una tanda. Devuelve cuantas.
+
+        Solo las futuras, con la misma definicion que el resto del sistema:
+        lo que ya se atendio es historia y cancelarlo retroactivamente
+        borraria una posible inasistencia antes de que el dueno la registre.
+        """
+        return cls.solo_futuras(Cita.objects.filter(
+            establecimiento=establecimiento, serie=serie,
+            estado=Cita.Estado.CONFIRMADA,
+        )).update(estado=Cita.Estado.CANCELADA_PROFESIONAL)
 
     # ──────────────────────────────────────────────────────────────
     #  Que significa "futura": una sola definicion para todo el sistema
@@ -263,7 +381,8 @@ class AgendaService:
                  dia: date, hora_inicio: time, canal=Cita.Canal.IA,
                  respetar_bloqueo: bool = True,
                  respetar_tope: bool = True,
-                 antelacion_min: int = ANTELACION_MINIMA_MIN) -> Cita:
+                 antelacion_min: int = ANTELACION_MINIMA_MIN,
+                 serie=None) -> Cita:
         """Crea una cita de forma atómica.
 
         Doble blindaje contra el double-booking (RN-01):
@@ -397,6 +516,7 @@ class AgendaService:
             hora_fin=hora_fin,
             estado=Cita.Estado.CONFIRMADA,
             canal=canal,
+            serie=serie,
         )
 
     # ──────────────────────────────────────────────────────────────

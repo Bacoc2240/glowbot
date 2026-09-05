@@ -2077,3 +2077,223 @@ class CalendarioDescargableTest(TestCase):
         url = enlace_google(self.cita)
         self.assertIn("dates=20261010T004000Z/20261010T011000Z", url)
         self.assertIn("calendar.google.com", url)
+
+
+class CitasFijasSemanalesTest(TestCase):
+    """Repetir una cita varias semanas (RF-14).
+
+    Viene del piloto real: Eduardo tiene cuatro clientes que van siempre el
+    mismo día a la misma hora. Pedro, todos los viernes a las 7:40 de la
+    tarde para la barba.
+
+    Es la versión mínima acordada: ninguna entidad nueva, solo un
+    identificador de tanda. La versión que se mantiene sola —ventana rodante
+    en el cron y protección del hueco frente a la zona pública— queda para la
+    v1.1, y a Eduardo se le dice tal cual.
+    """
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.api = APIClient()
+        self.duenio = Usuario.objects.create_user(
+            email="fj@a.com", password="clave12345")
+        self.est = Establecimiento.objects.create(
+            propietario=self.duenio, nombre="Mi Barbería", slug="fj",
+            tipo=Establecimiento.Tipo.BARBERIA, telefono="3001112222",
+            max_citas_abiertas=2)
+        self.prof = Profesional.objects.create(
+            establecimiento=self.est, nombre="Eduardo")
+        self.serv = Servicio.objects.create(
+            establecimiento=self.est, nombre="Barba", duracion_min=30)
+        self.cli = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Pedro", telefono="3243269172",
+            acepta_datos=True)
+        # Viernes de 8 a. m. a 9 p. m., para que quepa la cita de las 19:40.
+        self.viernes = proximo_dia_semana(4)
+        HorarioBase.objects.create(
+            profesional=self.prof, dia_semana=4,
+            hora_inicio=time(8, 0), hora_fin=time(21, 0))
+        self.cita = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli, fecha=self.viernes,
+            hora_inicio=time(19, 40), hora_fin=time(20, 10),
+            estado=Cita.Estado.CONFIRMADA, canal=Cita.Canal.MANUAL)
+
+    # ── El servicio ───────────────────────────────────────────────
+
+    def test_crea_las_semanas_pedidas(self):
+        parte = AgendaService.repetir_semanal(self.cita, 4)
+        self.assertEqual(len(parte["creadas"]), 4)
+        self.assertEqual(len(parte["saltadas"]), 0)
+        fechas = sorted(c.fecha for c in parte["creadas"])
+        self.assertEqual(fechas[0], self.viernes + timedelta(weeks=1))
+        self.assertEqual(fechas[-1], self.viernes + timedelta(weeks=4))
+
+    def test_la_original_entra_en_la_tanda(self):
+        """Para que cancelar la serie después se las lleve todas."""
+        parte = AgendaService.repetir_semanal(self.cita, 2)
+        self.cita.refresh_from_db()
+        self.assertEqual(self.cita.serie, parte["serie"])
+
+    def test_repetir_dos_veces_no_parte_el_grupo_en_dos(self):
+        primera = AgendaService.repetir_semanal(self.cita, 2)
+        segunda = AgendaService.repetir_semanal(self.cita, 4)
+        self.assertEqual(primera["serie"], segunda["serie"])
+
+    def test_el_tope_no_frena_la_tanda(self):
+        """Ocho semanas de Pedro son ocho citas futuras, y el tope está en 2.
+        Aquí no hay abuso que contener: quien programa es el dueño sobre un
+        cliente que ya conoce."""
+        parte = AgendaService.repetir_semanal(self.cita, 6)
+        self.assertEqual(len(parte["creadas"]), 6)
+
+    def test_conserva_hora_servicio_y_profesional(self):
+        creada = AgendaService.repetir_semanal(self.cita, 1)["creadas"][0]
+        self.assertEqual(creada.hora_inicio, time(19, 40))
+        self.assertEqual(creada.hora_fin, time(20, 10))
+        self.assertEqual(creada.profesional, self.prof)
+        self.assertEqual(creada.servicio, self.serv)
+
+    # ── Lo que no cabe: se salta, pero se cuenta ──────────────────
+
+    def test_un_hueco_ocupado_se_salta_y_se_informa(self):
+        """Nunca falla entera: un festivo dentro de dos meses no puede
+        impedir programar las ocho semanas."""
+        otro = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3009998888",
+            acepta_datos=True)
+        Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=otro,
+            fecha=self.viernes + timedelta(weeks=2),
+            hora_inicio=time(19, 40), hora_fin=time(20, 10),
+            estado=Cita.Estado.CONFIRMADA)
+        parte = AgendaService.repetir_semanal(self.cita, 3)
+        self.assertEqual(len(parte["creadas"]), 2)
+        self.assertEqual(len(parte["saltadas"]), 1)
+        self.assertEqual(parte["saltadas"][0]["fecha"],
+                         self.viernes + timedelta(weeks=2))
+
+    def test_un_dia_bloqueado_se_salta(self):
+        Bloqueo.objects.create(
+            profesional=self.prof, fecha=self.viernes + timedelta(weeks=1),
+            recurrente=False, motivo="Vacaciones")
+        parte = AgendaService.repetir_semanal(self.cita, 2)
+        self.assertEqual(len(parte["creadas"]), 1)
+        self.assertIn("bloqueado", parte["saltadas"][0]["motivo"].lower())
+
+    def test_no_planta_citas_fuera_de_la_jornada(self):
+        """`reservar` no mira el horario a propósito —la puerta del panel
+        existe para que el dueño pueda saltárselo—, pero al repetir ocho
+        semanas nadie está mirando cada fecha. Sin esta validación, la tanda
+        seguiría plantando citas después de un cambio de horario."""
+        HorarioBase.objects.filter(profesional=self.prof).update(
+            hora_fin=time(18, 0))
+        parte = AgendaService.repetir_semanal(self.cita, 2)
+        self.assertEqual(len(parte["creadas"]), 0)
+        self.assertEqual(len(parte["saltadas"]), 2)
+
+    def test_el_motivo_del_salto_llega_escrito(self):
+        """Saltar en silencio le dejaría a Pedro un hueco que nadie sabe que
+        existe hasta que se presenta."""
+        Bloqueo.objects.create(
+            profesional=self.prof, fecha=self.viernes + timedelta(weeks=1),
+            recurrente=False, motivo="Vacaciones")
+        parte = AgendaService.repetir_semanal(self.cita, 1)
+        self.assertTrue(parte["saltadas"][0]["motivo"].strip())
+
+    def test_semanas_fuera_de_rango_se_rechazan(self):
+        for n in (0, -1, 13):
+            with self.subTest(n=n):
+                with self.assertRaises(ValueError):
+                    AgendaService.repetir_semanal(self.cita, n)
+
+    # ── Cancelar la tanda ─────────────────────────────────────────
+
+    def test_cancelar_la_serie_se_lleva_las_futuras(self):
+        AgendaService.repetir_semanal(self.cita, 3)
+        n = AgendaService.cancelar_serie(self.est, self.cita.serie)
+        self.assertEqual(n, 4)          # la original más las tres copias
+        self.assertEqual(
+            Cita.objects.filter(serie=self.cita.serie,
+                                estado=Cita.Estado.CONFIRMADA).count(), 0)
+
+    def test_cancelar_la_serie_no_toca_lo_ya_atendido(self):
+        """Misma definición de futuro que el resto del sistema: cancelar
+        retroactivamente borraría una posible inasistencia antes de que el
+        dueño la registre."""
+        AgendaService.repetir_semanal(self.cita, 2)
+        pasada = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli,
+            fecha=self.viernes - timedelta(weeks=1),
+            hora_inicio=time(19, 40), hora_fin=time(20, 10),
+            estado=Cita.Estado.CONFIRMADA, serie=self.cita.serie)
+        AgendaService.cancelar_serie(self.est, self.cita.serie)
+        pasada.refresh_from_db()
+        self.assertEqual(pasada.estado, Cita.Estado.CONFIRMADA)
+
+    def test_cancelar_una_serie_no_toca_otra(self):
+        AgendaService.repetir_semanal(self.cita, 2)
+        otra = Cita.objects.create(
+            establecimiento=self.est, profesional=self.prof,
+            servicio=self.serv, cliente=self.cli,
+            fecha=self.viernes + timedelta(days=1),
+            hora_inicio=time(10, 0), hora_fin=time(10, 30),
+            estado=Cita.Estado.CONFIRMADA)
+        AgendaService.repetir_semanal(otra, 1)
+        AgendaService.cancelar_serie(self.est, self.cita.serie)
+        otra.refresh_from_db()
+        self.assertEqual(otra.estado, Cita.Estado.CONFIRMADA)
+
+    # ── El endpoint ───────────────────────────────────────────────
+
+    def test_el_endpoint_devuelve_el_parte(self):
+        self.api.force_authenticate(user=self.duenio)
+        r = self.api.post(f"/api/v1/citas/{self.cita.id}/repetir",
+                          {"semanas": 3}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["creadas"], 3)
+        self.assertEqual(r.json()["saltadas"], [])
+
+    def test_el_endpoint_nombra_las_fechas_saltadas(self):
+        self.api.force_authenticate(user=self.duenio)
+        Bloqueo.objects.create(
+            profesional=self.prof, fecha=self.viernes + timedelta(weeks=1),
+            recurrente=False, motivo="Vacaciones")
+        r = self.api.post(f"/api/v1/citas/{self.cita.id}/repetir",
+                          {"semanas": 2}, format="json")
+        saltada = r.json()["saltadas"][0]
+        self.assertTrue(saltada["fecha_texto"])
+        self.assertTrue(saltada["motivo"])
+
+    def test_semanas_invalidas_dan_400(self):
+        self.api.force_authenticate(user=self.duenio)
+        r = self.api.post(f"/api/v1/citas/{self.cita.id}/repetir",
+                          {"semanas": 99}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_no_se_repite_la_cita_de_otro_establecimiento(self):
+        """Aislamiento multi-inquilino con un registro real del otro lado."""
+        ajeno = Usuario.objects.create_user(
+            email="fj2@a.com", password="clave12345")
+        Establecimiento.objects.create(
+            propietario=ajeno, nombre="Ajeno", slug="fj2",
+            tipo=Establecimiento.Tipo.SALON, telefono="301")
+        self.api.force_authenticate(user=ajeno)
+        with self.assertRaises(Cita.DoesNotExist):
+            self.api.post(f"/api/v1/citas/{self.cita.id}/repetir",
+                          {"semanas": 2}, format="json")
+
+    def test_cancelar_serie_por_el_endpoint(self):
+        self.api.force_authenticate(user=self.duenio)
+        self.api.post(f"/api/v1/citas/{self.cita.id}/repetir",
+                      {"semanas": 3}, format="json")
+        r = self.api.patch(f"/api/v1/citas/{self.cita.id}/cancelar-serie")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["canceladas"], 4)
+
+    def test_una_cita_suelta_no_tiene_serie_que_cancelar(self):
+        self.api.force_authenticate(user=self.duenio)
+        r = self.api.patch(f"/api/v1/citas/{self.cita.id}/cancelar-serie")
+        self.assertEqual(r.status_code, 400)
