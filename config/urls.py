@@ -30,7 +30,8 @@ from facturacion.views import (
 # Alias: web.RegistroView es la PAGINA; cuentas.api.RegistroView es el ENDPOINT.
 # Sin el alias, el segundo import sombrea al primero (colision de nombres).
 from web.views import (
-    AvisoEstablecimientoView, chat_publico, cita_ics, HorariosView, LoginView,
+    AvisoEstablecimientoView, chat_publico, cita_ics, demo_panel,
+    HorariosView, LoginView,
     PagosView, PanelClientesView, PanelView, PortadaView, PrivacidadView,
     RecuperarView, RegistroView as RegistroPaginaView, salud, ServiciosView,
     SuscripcionView,
@@ -130,6 +131,10 @@ urlpatterns = [
     path("p/<slug:slug>", chat_publico, name="web-chat"),
     path("p/<slug:slug>/cita/<int:cita_id>/<str:firma>.ics", cita_ics,
          name="cita-ics"),
+    # Panel espejo del demo. Va DESPUES de la ruta del chat y con un
+    # segmento fijo, de modo que no puede capturar el enlace publico de
+    # ningun negocio real. Para cualquier slug que no sea demo devuelve 404.
+    path("p/<slug:slug>/panel", demo_panel, name="demo-panel"),
 ]
 
 # Comprobantes de pago en desarrollo (en produccion los sirve Cloudinary)

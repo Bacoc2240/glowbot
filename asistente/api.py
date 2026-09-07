@@ -12,6 +12,8 @@ pagado; penalizarlo seria trasladarle un problema ajeno.
 """
 import uuid
 
+from django.db.models import Sum
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -22,6 +24,7 @@ from negocios.models import Establecimiento, Profesional, Servicio
 from agenda.fechas import fecha_larga, hora_texto
 from agenda.services import AgendaService
 from facturacion.services import SuscripcionService
+from .models import ConversacionIA
 from .services import IAService
 
 
@@ -43,6 +46,62 @@ def _respuesta_suspendido():
                   "establecimiento."},
         status=status.HTTP_403_FORBIDDEN,
     )
+
+
+# ── Topes de costo del demo publico (RF-23) ──
+#
+# El demo es la unica puerta de la plataforma que quema tokens sin que
+# nadie pague por ellos, asi que necesita frenos propios. El throttle
+# general (20/min por IP) limita el RITMO; esto limita el TOTAL, que es
+# otra cosa: veinte personas a ritmo legitimo durante todo un dia suman
+# una factura que ningun limite por minuto detiene.
+#
+# Son dos topes porque atajan dos abusos distintos:
+#
+#   - Por sesion, contra quien se instala a conversar por deporte. Una
+#     demostracion honesta se resuelve en diez o quince turnos; cincuenta
+#     mensajes es holgado y aun asi corta al que se queda.
+#   - Por dia y tenant, como techo duro del gasto. Se cuenta en TOKENS y no
+#     en mensajes porque el token es lo que se factura: un mensaje puede
+#     costar diez veces mas que otro segun el historial que arrastre, de
+#     modo que contar mensajes seria contar la unidad equivocada.
+#
+# El conteo diario va contra la base y no contra la cache de proceso: sin
+# CACHES configurado, Django usa memoria local y cada worker de gunicorn
+# llevaria su propia cuenta, con lo que el tope real seria el numero de
+# workers multiplicado por el tope. Un agregado en base de datos es una
+# consulta por turno y es la unica cifra que todos los procesos comparten.
+LIMITE_MENSAJES_SESION_DEMO = 50   # 25 turnos de ida y vuelta
+TOPE_TOKENS_DIA_DEMO = 400_000
+
+
+def _demo_agotado(est, session_id):
+    """Motivo por el que este turno del demo no se atiende, o None.
+
+    Devolver el motivo en vez de un booleano permite que la respuesta le
+    diga al visitante que le pasa. "No se pudo procesar" en un demo es
+    peor que no tener demo: el prospecto se lleva la impresion de que el
+    producto falla.
+    """
+    if not est.es_demo:
+        return None
+
+    conv = ConversacionIA.objects.filter(
+        establecimiento=est, session_id=session_id).first()
+    if conv and len(conv.mensajes) >= LIMITE_MENSAJES_SESION_DEMO:
+        return ("Esta demostracion llego a su limite de mensajes. Pulsa "
+                "\u00abEmpezar de nuevo\u00bb para probar otra vez, o "
+                "escribenos si quieres verlo con los datos de tu negocio.")
+
+    consumo = ConversacionIA.objects.filter(
+        establecimiento=est,
+        actualizado_en__date=timezone.localdate(),
+    ).aggregate(entrada=Sum("tokens_entrada"), salida=Sum("tokens_salida"))
+    gastados = (consumo["entrada"] or 0) + (consumo["salida"] or 0)
+    if gastados >= TOPE_TOKENS_DIA_DEMO:
+        return ("La demostracion tuvo mucho movimiento hoy y quedo en pausa "
+                "hasta manana. Escribenos y te la mostramos en vivo.")
+    return None
 
 
 class ChatThrottle(AnonRateThrottle):
@@ -109,6 +168,14 @@ class ChatView(APIView):
             return Response({"error": "El mensaje supera los 500 caracteres."},
                             status=status.HTTP_400_BAD_REQUEST)
         session_id = request.data.get("session_id") or uuid.uuid4().hex
+
+        # Los topes del demo se comprueban DESPUES de validar el mensaje y
+        # de resolver la sesion, y ANTES de llamar al modelo: es el ultimo
+        # punto en el que todavia no se ha gastado nada.
+        agotado = _demo_agotado(est, session_id)
+        if agotado:
+            return Response({"error": agotado, "session_id": session_id},
+                            status=status.HTTP_429_TOO_MANY_REQUESTS)
 
         resultado = IAService.procesar_mensaje(est, session_id, mensaje)
         return Response({"session_id": session_id, **resultado})

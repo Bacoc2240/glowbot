@@ -14,8 +14,12 @@ from django.views.generic import TemplateView
 
 from django.shortcuts import get_object_or_404
 
+from django.utils import timezone
+
+from agenda.models import Cita
+from agenda.services import AgendaService
 from facturacion.services import DIAS_PRUEBA, planes_publicos
-from negocios.models import Establecimiento
+from negocios.models import Establecimiento, Profesional
 
 from . import legal
 
@@ -156,6 +160,54 @@ def chat_publico(request, slug):
     if not Establecimiento.objects.filter(slug=slug, activo=True).exists():
         raise Http404("No existe un establecimiento con ese enlace.")
     return render(request, "web/chat.html", {"slug": slug})
+
+
+def demo_panel(request, slug):
+    """Panel ESPEJO de un establecimiento de demostracion (RF-23).
+
+    Existe por una razon comercial concreta: lo que convence al prospecto
+    no es conversar con el asistente, es ver su cita aparecer del otro
+    lado. Sin esto el demo ensena media pelicula.
+
+    ── Por que esta vista es la mas peligrosa del proyecto ──
+
+    Es una agenda completa servida en una URL publica sin login. Tiene
+    exactamente la forma de la fuga entre tenants que este proyecto lleva
+    corrigiendo desde el principio: un queryset sin `establecimiento_id`
+    aqui no produce un error, produce la agenda de un negocio real
+    expuesta a cualquiera. De ahi los tres candados:
+
+      1. `es_demo=True` en el propio `get`, no comprobado despues. Para
+         cualquier otro slug la ruta es un 404 indistinguible de una que no
+         existe: un 403 confirmaria que el establecimiento esta ahi.
+      2. Toda consulta pasa por `del_establecimiento(est)`. Ningun
+         `objects.all()`, que es el defecto que ya nos mordio antes.
+      3. NO se expone el telefono del cliente. Aunque los del demo sean
+         ficticios, una plantilla que sabe pintar telefonos es una
+         plantilla que los pintara el dia que alguien la reutilice para el
+         panel real. El dato que no viaja no se puede filtrar.
+    """
+    est = get_object_or_404(
+        Establecimiento, slug=slug, activo=True, es_demo=True)
+
+    hoy = timezone.localdate()
+    citas = (
+        AgendaService.solo_futuras(
+            Cita.objects
+            .del_establecimiento(est)
+            .filter(estado=Cita.Estado.CONFIRMADA)
+        )
+        .select_related("servicio", "profesional", "cliente")
+        .order_by("fecha", "hora_inicio")[:40]
+    )
+    return render(request, "web/demo_panel.html", {
+        "establecimiento": est,
+        "citas": citas,
+        "hoy": hoy,
+        "profesionales": Profesional.objects.del_establecimiento(est)
+                                            .filter(activo=True)
+                                            .order_by("nombre"),
+    })
 
 
 def salud(request):

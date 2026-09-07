@@ -1,0 +1,94 @@
+{% comment %}
+Panel espejo del demo — RF-23.
+
+Es SOLO LECTURA y lo sabe: no hay ningún formulario, ningún botón que
+escriba y ninguna llamada a la API. Lo que el prospecto tiene que
+entender en cinco segundos es «así lo veo yo, el dueño», y para eso basta
+con enseñar la agenda.
+
+Deliberadamente NO muestra el teléfono del cliente. Ver la explicación en
+web.views.demo_panel: el dato que no llega a la plantilla no se puede
+filtrar por descuido cuando alguien reutilice este archivo.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agenda de {{ establecimiento.nombre }} — demostración GlowBot</title>
+  <style>
+    :root { --azul:#24598E; --azul-claro:#3B82C4; --dorado:#D4AF37;
+            --fondo:#F7F9FB; --texto:#1F2937; --gris:#6B7280; --borde:#E5E7EB; }
+    * { box-sizing:border-box; margin:0; }
+    body { font-family:system-ui,-apple-system,sans-serif; background:var(--fondo);
+           color:var(--texto); }
+    header { background:var(--azul); color:#fff; padding:16px; }
+    header b { font-size:18px; }
+    header .sub { font-size:13px; opacity:.9; margin-top:2px; }
+    main { max-width:760px; margin:0 auto; padding:16px; }
+    .aviso { background:#FFF8E1; border:1px solid var(--dorado); border-radius:10px;
+             padding:12px; font-size:13px; color:#6B5200; margin-bottom:16px; }
+    .aviso a { color:#6B5200; }
+    .tarjeta { background:#fff; border:1px solid var(--borde); border-radius:12px;
+               padding:14px; margin-bottom:10px; display:flex; gap:14px;
+               align-items:flex-start; }
+    .cuando { min-width:104px; }
+    .cuando .dia { font-weight:600; font-size:14px; }
+    .cuando .hora { color:var(--azul-claro); font-size:20px; font-weight:600; }
+    .que .servicio { font-weight:600; }
+    .que .meta { color:var(--gris); font-size:13px; margin-top:2px; }
+    .vacio { background:#fff; border:1px dashed var(--borde); border-radius:12px;
+             padding:28px; text-align:center; color:var(--gris); }
+    .equipo { font-size:13px; color:var(--gris); margin:18px 0 8px; }
+    .volver { display:inline-block; margin-top:20px; background:var(--azul);
+              color:#fff; text-decoration:none; padding:11px 18px;
+              border-radius:8px; font-size:14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <b>{{ establecimiento.nombre }}</b>
+    <div class="sub">Vista del dueño · agenda de los próximos días</div>
+  </header>
+
+  <main>
+    <div class="aviso">
+      <b>Esto es una demostración.</b> El negocio y las personas que ves aquí
+      son ficticios, y los datos se borran solos cada cierto tiempo. Puedes
+      agendar desde
+      <a href="/p/{{ establecimiento.slug }}">el chat del cliente</a>
+      y volver aquí para ver tu cita entrar en la agenda.
+    </div>
+
+    <div class="equipo">
+      Equipo:
+      {% for p in profesionales %}{{ p.nombre }}{% if not forloop.last %} · {% endif %}{% endfor %}
+    </div>
+
+    {% for cita in citas %}
+      <div class="tarjeta">
+        <div class="cuando">
+          <div class="dia">
+            {% if cita.fecha == hoy %}Hoy{% else %}{{ cita.fecha|date:"D j M" }}{% endif %}
+          </div>
+          <div class="hora">{{ cita.hora_inicio|time:"g:i a" }}</div>
+        </div>
+        <div class="que">
+          <div class="servicio">{{ cita.servicio.nombre }}</div>
+          <div class="meta">
+            {{ cita.cliente.nombre }} · con {{ cita.profesional.nombre }}
+            · {{ cita.servicio.duracion_min }} min
+          </div>
+        </div>
+      </div>
+    {% empty %}
+      <div class="vacio">
+        No hay citas próximas en esta demostración todavía.<br>
+        Agenda una desde el chat y vuelve a esta página.
+      </div>
+    {% endfor %}
+
+    <a class="volver" href="/p/{{ establecimiento.slug }}">Ir al chat del cliente</a>
+  </main>
+</body>
+</html>

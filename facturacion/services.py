@@ -120,6 +120,14 @@ class SuscripcionService:
         Ojo: esto NO debe bloquear los endpoints de pago; un establecimiento
         suspendido tiene que poder subir un comprobante para reactivarse.
         """
+        # El demo público no caduca. Se comprueba ANTES que nada y de forma
+        # explícita, en vez de dejarlo caer por la rama de "sin suscripción":
+        # esa rama existe por compatibilidad con los establecimientos previos
+        # al módulo y algún día se retirará. Si el demo dependiera de ella,
+        # retirarla lo apagaría en silencio, que es justo la clase de fallo
+        # callado que este proyecto persigue.
+        if establecimiento.es_demo:
+            return True
         try:
             s = establecimiento.suscripcion
         except Suscripcion.DoesNotExist:
@@ -157,6 +165,13 @@ class SuscripcionService:
                 estado__in=[Suscripcion.Estado.PRUEBA, Suscripcion.Estado.ACTIVA],
                 fecha_vencimiento_actual__lt=limite,
             )
+            # Los demos quedan fuera por la misma razón que en acceso_activo:
+            # no hay nadie a quien cobrarle. Se excluyen AQUÍ y no solo en la
+            # comprobación de acceso porque este método ESCRIBE: sin el
+            # exclude, la fila del demo quedaría marcada como suspendida en
+            # base de datos aunque acceso_activo siguiera dejándolo pasar, y
+            # el panel del superadmin mostraría una suspensión falsa.
+            .exclude(establecimiento__es_demo=True)
             .update(estado=Suscripcion.Estado.SUSPENDIDA)
         )
 

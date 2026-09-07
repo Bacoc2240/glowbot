@@ -56,6 +56,19 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
     button { background:var(--azul); color:#fff; border:none; width:46px; height:46px;
              border-radius:50%; font-size:18px; cursor:pointer; }
     button:disabled { opacity:.5; }
+    [x-cloak] { display:none !important; }
+    .consulta { background:#fff; border-bottom:1px solid var(--borde);
+                padding:12px 14px; font-size:13px; }
+    .consulta label { display:block; margin-bottom:6px; color:var(--gris); }
+    .consulta .fila { display:flex; gap:8px; flex-wrap:wrap; }
+    .consulta input { flex:1; min-width:150px; }
+    /* Los botones de esta fila son <button>, y la regla `button` de arriba
+       les impondria 46x46 y forma de circulo. Se neutraliza con un selector
+       de clase, que gana en especificidad, igual que se hizo con .accion. */
+    .consulta button.accion { width:auto; height:auto; border-radius:8px;
+                              font-size:14px; }
+    .consulta button.secundaria { background:transparent; color:var(--gris);
+                                  border:1px solid var(--borde); }
   </style>
 </head>
 <body x-data="chat('{{ slug }}')" x-init="iniciar()">
@@ -64,11 +77,35 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
       <b x-text="negocio.nombre || (fallo ? 'No disponible' : 'Cargando…')"></b>
       <div class="sub">Asistente GlowBot · agenda tu cita aquí</div>
     </div>
+    <button type="button" class="reiniciar" @click="abrirConsulta()"
+            x-show="!fallo" title="Consulta las citas de un teléfono">
+      Mis citas
+    </button>
     <button type="button" class="reiniciar" @click="reiniciar()"
             x-show="!fallo" title="Borra esta conversación de este dispositivo">
       Empezar de nuevo
     </button>
   </header>
+
+  <!-- Consulta de citas sin pasar por el asistente.
+
+       El backend ya exponia /citas/consultar desde el Sprint 3, pero la
+       unica forma de llegar era escribirle al modelo y confiar en que
+       dedujera la intencion. Eso tenia dos costos: el cliente que solo
+       quiere recordar su hora no sabia que podia, y cada consulta gastaba
+       una llamada a la API. Este panel no consume ni un token. -->
+  <div class="consulta" x-show="consultando" x-cloak>
+    <label for="tel-consulta">Escribe el teléfono con el que agendaste</label>
+    <div class="fila">
+      <input id="tel-consulta" x-model="telConsulta" type="tel"
+             inputmode="numeric" placeholder="3001234567"
+             @keydown.enter.prevent="consultarCitas()">
+      <button type="button" class="accion" @click="consultarCitas()"
+              :disabled="consultaCargando">Consultar</button>
+      <button type="button" class="accion secundaria"
+              @click="consultando = false">Cerrar</button>
+    </div>
+  </div>
 
   <div id="hilo" x-ref="hilo">
     <div class="aviso" x-show="!fallo">
@@ -90,9 +127,14 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
           <div class="nota">Al pulsar dejas constancia de tu autorización.</div>
         </div>
         <div class="acciones" x-show="m.cita">
-          <a class="accion" :href="m.cita ? m.cita.ics : '#'">Agregar a mi calendario</a>
+          <!-- El enlace de Google va PRIMERO porque cubre a la mayoria en
+               Colombia. El .ics es el que abre el Calendario de iPhone de
+               un toque; en Android tambien funciona, pero cae en Descargas
+               y hay que ir a buscarlo, asi que se etiqueta por el aparato
+               donde es la mejor opcion, no por el unico donde sirve. -->
           <a class="accion" :href="m.cita ? m.cita.google : '#'"
-             target="_blank" rel="noopener">Google Calendar</a>
+             target="_blank" rel="noopener">Guardar en Google Calendar (Android)</a>
+          <a class="accion" :href="m.cita ? m.cita.ics : '#'">Guardar en Calendario (iPhone)</a>
           <div class="nota">El calendario no se actualiza solo. Si cambias o
             cancelas la cita, consúltalo aquí.</div>
         </div>
@@ -111,6 +153,7 @@ function chat(slug) {
   return {
     slug, negocio: {}, mensajes: [], texto: "", cargando: false, fallo: false,
     consentido: false,
+    consultando: false, telConsulta: "", consultaCargando: false,
     sessionId: localStorage.getItem("glowbot_sesion_" + slug) || null,
 
     async iniciar() {
@@ -206,6 +249,48 @@ function chat(slug) {
       await this.enviar();
     },
 
+    abrirConsulta() {
+      this.consultando = true;
+      this.$nextTick(() => document.getElementById("tel-consulta")?.focus());
+    },
+
+    async consultarCitas() {
+      const telefono = this.telConsulta.trim();
+      if (!telefono || this.consultaCargando) return;
+      this.consultaCargando = true;
+      try {
+        const r = await fetch(`/api/v1/p/${this.slug}/citas/consultar`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ telefono }),
+        });
+        if (!r.ok) throw new Error("consulta fallida");
+        const d = await r.json();
+        const citas = d.citas || [];
+        // El resultado se inyecta como mensaje del bot y NO se manda al
+        // modelo: el historial de la conversacion no debe crecer con texto
+        // que la IA no genero. Si creciera, cada turno posterior pagaria
+        // por reenviarlo.
+        if (!citas.length) {
+          this.mensajes.push({ rol: "bot", texto:
+            "No encontramos citas confirmadas para ese número. Revisa que "
+            + "sea el mismo con el que agendaste." });
+        } else {
+          const lista = citas
+            .map(c => `• ${c.servicio} — ${c.fecha_texto} a las ${c.hora_texto} con ${c.profesional}`)
+            .join("\n");
+          this.mensajes.push({ rol: "bot", texto:
+            `Estas son tus citas confirmadas:\n${lista}\n\nSi necesitas cancelar alguna, escríbemelo aquí abajo.` });
+        }
+        this.consultando = false;
+        this.telConsulta = "";
+      } catch (e) {
+        this.mensajes.push({ rol: "bot", texto:
+          "No pudimos consultar tus citas en este momento. Intenta de nuevo." });
+      }
+      this.consultaCargando = false;
+      this.abajo();
+    },
+
     reiniciar() {
       // Olvida la sesion en ESTE dispositivo y arranca de cero.
       //
@@ -225,6 +310,8 @@ function chat(slug) {
       // aceptar por si mismo.
       this.consentido = false;
       this.texto = "";
+      this.consultando = false;
+      this.telConsulta = "";
       this.iniciar();
     },
 

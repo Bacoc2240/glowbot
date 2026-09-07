@@ -110,10 +110,49 @@ class Establecimiento(models.Model):
         ),
     )
     activo = models.BooleanField(default=True)
+    # ── Tenant de demostración pública ──
+    # Marca un establecimiento FICTICIO, expuesto sin registro para que un
+    # prospecto pruebe el asistente antes de decidir. No es una bandera
+    # cosmética: gobierna cuatro comportamientos que, si se dejaran al
+    # criterio de cada llamador, acabarían divergiendo.
+    #
+    #   1. Queda exento de la suspensión por vencimiento (RN-10). Sin esto
+    #      el propio demo se apaga solo a los 17 días y nadie se entera
+    #      hasta que un prospecto abre el enlace y lee que el negocio «no
+    #      está recibiendo reservas».
+    #   2. Habilita el panel espejo público. Es la ÚNICA condición que lo
+    #      abre: en cualquier otro establecimiento la ruta devuelve 404.
+    #   3. Autoriza al comando de reseteo a borrar sus citas y
+    #      conversaciones. El borrado se filtra por esta bandera, nunca por
+    #      slug: un slug se puede teclear mal, y equivocarse aquí significa
+    #      vaciarle la agenda a un negocio real.
+    #   4. Somete el chat a topes de costo propios, porque es la única
+    #      puerta de la plataforma que consume tokens sin que nadie pague.
+    es_demo = models.BooleanField(
+        default=False,
+        help_text=(
+            "Establecimiento ficticio de demostración pública. Exento de "
+            "suspensión, con panel espejo abierto y datos borrados "
+            "periódicamente."
+        ),
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "establecimiento"
+        indexes = [
+            # Índice PARCIAL. Los demos son dos filas entre todas las del
+            # sistema, así que un índice completo sobre un booleano casi
+            # siempre falso ocuparía espacio para no descartar nada. La
+            # condición hace que el índice contenga SOLO los demos, que es
+            # exactamente el conjunto que recorren el reseteo y la exclusión
+            # de la suspensión.
+            models.Index(
+                fields=["es_demo"],
+                condition=models.Q(es_demo=True),
+                name="idx_establecimiento_demo",
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.slug:
