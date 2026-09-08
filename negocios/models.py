@@ -6,6 +6,7 @@ from django.db import models
 from django.utils.text import slugify
 
 from .managers import TenantManager
+from .telefonos import normalizar_si_puede
 
 DIAS_SEMANA = [
     (0, "Lunes"), (1, "Martes"), (2, "Miércoles"), (3, "Jueves"),
@@ -84,6 +85,15 @@ class Establecimiento(models.Model):
     # de lo que la norma requiere.
     direccion = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20)
+    # Marca las filas cuyo telefono no se pudo llevar a la forma canonica
+    # durante la migracion 0013. No se borran ni se inventan: quedan
+    # senaladas para que alguien las corrija con el dato real en la mano.
+    # Mientras existan filas marcadas NO se puede anadir la restriccion de
+    # base de datos, porque las rechazaria a todas.
+    telefono_revisar = models.BooleanField(
+        default=False,
+        help_text="El teléfono no tiene 10 dígitos y necesita corrección manual.",
+    )
     plan = models.CharField(max_length=20, choices=Plan.choices, default=Plan.BASICO)
     max_citas_abiertas = models.PositiveSmallIntegerField(
         default=3,
@@ -360,6 +370,15 @@ class ClienteFinal(models.Model):
     )
     nombre = models.CharField(max_length=80)
     telefono = models.CharField(max_length=20)
+    # Marca las filas cuyo telefono no se pudo llevar a la forma canonica
+    # durante la migracion 0013. No se borran ni se inventan: quedan
+    # senaladas para que alguien las corrija con el dato real en la mano.
+    # Mientras existan filas marcadas NO se puede anadir la restriccion de
+    # base de datos, porque las rechazaria a todas.
+    telefono_revisar = models.BooleanField(
+        default=False,
+        help_text="El teléfono no tiene 10 dígitos y necesita corrección manual.",
+    )
     acepta_datos = models.BooleanField(
         help_text="Constancia de aceptación del aviso de privacidad (Ley 1581/2012).",
     )
@@ -421,6 +440,16 @@ class ClienteFinal(models.Model):
 
     def save(self, *args, **kwargs):
         self.nombre = self.normalizar_nombre(self.nombre)
+        # El telefono se limpia si se puede, y si no se deja como esta.
+        # Deliberadamente NO se lanza aqui: `save()` tambien lo ejecutan las
+        # filas heredadas al actualizar cualquier otro campo, y un cliente
+        # antiguo con telefono raro debe poder seguir renovando su
+        # consentimiento. La regla se EXIGE en los servicios, que son las
+        # puertas por donde entra un dato nuevo.
+        canonico = normalizar_si_puede(self.telefono)
+        if canonico:
+            self.telefono = canonico
+            self.telefono_revisar = False
         return super().save(*args, **kwargs)
 
     class Meta:

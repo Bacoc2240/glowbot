@@ -37,6 +37,18 @@ Alpine.js por CDN (<15 KB) para interactividad sin SPA (SDLC §5.1).
     label { font-size: 13px; color: var(--gris); display: block; margin: 8px 0 3px; }
     input, select { width: 100%; padding: 10px; border: 1px solid var(--borde);
                     border-radius: 8px; font-size: 15px; }
+    /* Campo de contrasena con boton de ver/ocultar.
+       El boton se posiciona ENCIMA del input en vez de meterlo en un flex,
+       para que el input conserve su width:100% y no haya que duplicar los
+       estilos base en cada plantilla. El padding derecho reserva el hueco. */
+    .clave { position: relative; }
+    .clave input { padding-right: 44px; }
+    .clave .ojo { position: absolute; right: 1px; top: 1px; bottom: 1px;
+                  width: 42px; background: transparent; border: none;
+                  padding: 0; cursor: pointer; font-size: 17px; line-height: 1;
+                  color: var(--gris); display: flex; align-items: center;
+                  justify-content: center; }
+    .clave .ojo:active { background: transparent; }
     button, .btn { background: var(--azul); color: #fff; border: none; padding: 11px 16px;
              border-radius: 8px; font-size: 15px; cursor: pointer; width: 100%;
              text-align: center; text-decoration: none; display: inline-block; }

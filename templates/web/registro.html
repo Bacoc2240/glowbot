@@ -42,8 +42,14 @@
       <input type="email" x-model="email" placeholder="tu@correo.com">
 
       <label>Contraseña</label>
-      <input type="password" x-model="password" placeholder="Mínimo 8 caracteres"
-             @keyup.enter="crear">
+      <div class="clave">
+        <input :type="verClave ? 'text' : 'password'" x-model="password"
+               placeholder="Mínimo 8 caracteres" @keyup.enter="crear">
+        <button type="button" class="ojo" @click="verClave = !verClave"
+                :aria-label="verClave ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+                :aria-pressed="verClave"
+                x-text="verClave ? '🙈' : '👁'"></button>
+      </div>
 
       
   
@@ -95,7 +101,7 @@
 function registro() {
   return {
     nombre_negocio: "", tipo: "barberia", plan: "basico",
-    telefono: "", municipio: "", email: "", password: "",
+    telefono: "", municipio: "", email: "", password: "", verClave: false,
     acepta_politica: false, acepta_encargo: false,
     error: "", cargando: false, listo: false, enlace: "", dias: 0,
 

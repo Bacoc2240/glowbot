@@ -100,6 +100,22 @@ class RegistroSerializer(serializers.Serializer):
             raise serializers.ValidationError("Ya existe una cuenta con este correo.")
         return value.lower()
 
+    def validate_telefono(self, value):
+        """Deja el telefono en forma canonica antes de crear nada.
+
+        Se hace en el serializer y no solo en `RegistroService` para que el
+        formulario reciba un 400 con el mensaje en el campo correcto. Si se
+        dejara subir la excepcion del servicio, el registro publico
+        respondería un 500 y quien se esta dando de alta veria un fallo del
+        sistema en vez de "revisa tu numero".
+        """
+        from negocios.telefonos import TelefonoInvalido, normalizar
+        try:
+            return normalizar(value)
+        except TelefonoInvalido:
+            raise serializers.ValidationError(
+                "Escribe un celular colombiano de 10 dígitos, sin espacios.")
+
     def create(self, validated):
         return RegistroService.registrar(
             email=validated["email"],

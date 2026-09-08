@@ -30,7 +30,12 @@ VERSION_AVISO = os.getenv("VERSION_AVISO", "2026-10")
 RESPONSABLE = {
     "nombre": os.getenv("LEGAL_RESPONSABLE", "Wilson Vergara Duarte"),
     "marca": "GlowBot",
-    "domicilio": os.getenv("LEGAL_DOMICILIO", "Saravena, Arauca, Colombia"),
+    # El domicilio se publica porque la Ley 1581 obliga a identificar al
+    # Responsable. Se declara a nivel de departamento y no de municipio:
+    # cumple igual el deber de identificacion y evita que la primera
+    # linea del aviso sea un dato que, en la practica comercial, cierra
+    # puertas antes de que nadie lea el producto.
+    "domicilio": os.getenv("LEGAL_DOMICILIO", "Arauca, Colombia"),
     "correo": os.getenv("LEGAL_CORREO", "privacidad@glowbot.com.co"),
     "telefono": os.getenv("LEGAL_TELEFONO", "305 897 2145"),
 }

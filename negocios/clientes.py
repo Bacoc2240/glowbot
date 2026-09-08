@@ -13,6 +13,7 @@ from agenda.models import Cita
 from web.legal import VERSION_AVISO
 
 from .models import ClienteFinal, TelefonoBloqueado
+from .telefonos import normalizar
 
 
 class ClienteService:
@@ -44,6 +45,14 @@ class ClienteService:
         if origen == Origen.AUTOSERVICIO and registrado_por is not None:
             raise ValueError(
                 "En el autoservicio no hay intermediario: el titular acepta solo.")
+
+        # La forma canonica se fija ANTES del get_or_create, no despues.
+        # Si se normalizara al guardar, la BUSQUEDA se haria con el texto
+        # crudo: "310 123 4567" no encontraria al cliente guardado como
+        # "3101234567" y se crearia un duplicado en cada reserva. Aqui si
+        # se lanza —a diferencia de `save()`— porque esta es la puerta por
+        # la que entra un dato NUEVO, y un dato nuevo no tiene excusa.
+        telefono = normalizar(telefono)
 
         cliente, creado = ClienteFinal.objects.get_or_create(
             establecimiento=establecimiento,

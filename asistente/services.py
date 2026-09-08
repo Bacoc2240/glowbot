@@ -33,6 +33,7 @@ from agenda.services import (
 )
 from negocios.clientes import ClienteService
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
+from negocios.telefonos import normalizar_si_puede
 from .models import ConversacionIA
 
 logger = logging.getLogger(__name__)
@@ -206,9 +207,17 @@ class IAService:
         ahora = timezone.localtime()
         fecha_txt = f"{fecha_larga(ahora.date())}, {hora_texto(ahora.time())}"
         calendario = cls._calendario(ahora.date())
+        # El municipio venia FIJO en el codigo como "Saravena, Arauca".
+        # Mientras el unico mercado fue Arauca no se noto; con
+        # establecimientos de otras ciudades, el asistente le habria
+        # dicho a una clienta de Cucuta que el local queda en Saravena.
+        # Se toma del propio establecimiento, y si esta vacio no se
+        # menciona ninguna ubicacion: inventar uno es peor que omitirlo.
+        ubicacion = (f" en {establecimiento.municipio}"
+                     if establecimiento.municipio else "")
 
         return f"""Eres el asistente de agendamiento de {establecimiento.nombre}, \
-un(a) {establecimiento.get_tipo_display()} en Saravena, Arauca.
+un(a) {establecimiento.get_tipo_display()}{ubicacion}.
 Tu única función es ayudar a los clientes a agendar, consultar o cancelar citas.
 
 SERVICIOS DISPONIBLES (única fuente válida):
@@ -451,6 +460,16 @@ REGLAS OBLIGATORIAS:
                 datos_cli = intencion.get("cliente") or {}
                 if not datos_cli.get("nombre") or not datos_cli.get("telefono"):
                     return None, "Faltan nombre o teléfono del cliente (RN-06). Solicítalos."
+                # El telefono se valida ANTES de tocar la agenda, y el fallo
+                # se le devuelve al modelo como instruccion en vez de dejar
+                # que `ClienteService` lance. Si lanzara, la clienta veria un
+                # error generico y la conversacion se romperia; asi el
+                # asistente le pide el numero de nuevo y sigue.
+                if normalizar_si_puede(datos_cli["telefono"]) is None:
+                    return None, (
+                        "El teléfono debe tener 10 dígitos (celular "
+                        "colombiano). Pídeselo de nuevo al cliente."
+                    )
                 # El consentimiento se lee del REGISTRO de la conversación,
                 # no del JSON. Antes bastaba con que el modelo escribiera
                 # `acepta_datos: true`, o sea que la prueba de la
@@ -705,6 +724,10 @@ REGLAS OBLIGATORIAS:
         poder registrarle la inasistencia. El control de faltas tenia una
         puerta trasera abierta por un filtro de una linea.
         """
+        # La BUSQUEDA se normaliza igual que el alta. Si no, un cliente que
+        # escribe su numero con espacios no encuentra las citas que el mismo
+        # creo, porque en base estan bajo la forma canonica.
+        telefono = normalizar_si_puede(telefono)
         if not telefono:
             return Cita.objects.none()
         return AgendaService.solo_futuras(
@@ -768,6 +791,7 @@ REGLAS OBLIGATORIAS:
         """
         hoy = timezone.localdate()
         ahora = timezone.localtime()
+        telefono = normalizar_si_puede(telefono) or telefono
         citas = (
             Cita.objects.filter(
                 establecimiento=establecimiento,

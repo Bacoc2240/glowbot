@@ -6,7 +6,14 @@
   <label>Correo electrónico</label>
   <input type="email" x-model="email" placeholder="tu@correo.com">
   <label>Contraseña</label>
-  <input type="password" x-model="password" @keyup.enter="entrar">
+  <div class="clave">
+    <input :type="verClave ? 'text' : 'password'" x-model="password"
+           @keyup.enter="entrar">
+    <button type="button" class="ojo" @click="verClave = !verClave"
+            :aria-label="verClave ? 'Ocultar contraseña' : 'Mostrar contraseña'"
+            :aria-pressed="verClave"
+            x-text="verClave ? '🙈' : '👁'"></button>
+  </div>
   <p class="error" x-text="error" x-show="error"></p>
   <br>
   <button @click="entrar" x-text="cargando ? 'Ingresando…' : 'Ingresar'"></button>
@@ -20,7 +27,7 @@
 <script>
 function login() {
   return {
-    email: "", password: "", error: "", cargando: false,
+    email: "", password: "", error: "", cargando: false, verClave: false,
     async entrar() {
       this.cargando = true; this.error = "";
       const r = await fetch("/api/v1/auth/login", {

@@ -413,6 +413,13 @@ class RegistroService:
         no queda nada a medias.
         """
         from cuentas.models import Usuario
+        from negocios.telefonos import normalizar
+
+        # Se valida antes de crear el usuario. El metodo es atomico, asi que
+        # tambien serviria lanzar despues; pero fallar antes de tocar nada
+        # deja el traceback apuntando al dato malo en vez de a una
+        # transaccion revertida.
+        telefono = normalizar(telefono)
 
         usuario = Usuario.objects.create_user(
             email=email, password=password, rol=Usuario.Rol.ADMIN,
