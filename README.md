@@ -6,7 +6,7 @@ para barberías, salones de belleza, estudios de uñas, centros de estética y s
 En producción: **https://glowbot.com.co**
 
 Proyecto productivo SENA — Tecnología en Análisis y Desarrollo de Software.
-Wilson Vergara Duarte · Ficha 2834885 · Saravena, Arauca · 2026.
+Wilson Vergara Duarte · Ficha 2834885 · Colombia · 2026.
 
 ---
 
@@ -23,9 +23,11 @@ y a cualquier hora.
 |                           |                                      |
 | ------------------------- | ------------------------------------ |
 | Despliegue                | En producción (Railway + Cloudflare) |
-| Pruebas                   | **170**, todas pasando               |
+| Pruebas                   | **609**, todas pasando               |
+| Arneses de mutación       | 13                                   |
 | Base de datos             | PostgreSQL 18.6                      |
-| Última versión etiquetada | `v0.4.1`                             |
+| Última versión etiquetada | `v0.5.0`                             |
+| Demo público              | `/p/demo-unas` y `/p/demo-estetica`  |
 
 ---
 
@@ -39,7 +41,8 @@ ni dependencias de Node: el navegador recibe HTML y un script por CDN.
 
 **IA** — Claude API (`claude-haiku-4-5`).
 
-**Infraestructura** — Railway (servicios `web`, `Postgres` y `cron`),
+**Infraestructura** — Railway (servicios `web`, `Postgres`, `cron`, `recordatorios`
+y `demo-reset`),
 Cloudflare para el dominio, Cloudinary para los comprobantes de pago, Resend
 vía django-anymail para el correo transaccional.
 
@@ -141,6 +144,47 @@ verificación. Si el pago se rechaza, la reversión devuelve la suscripción al
 estado exacto guardado en el propio pago. Con frenos anti-abuso: una sola
 extensión optimista sin resolver a la vez.
 
+### Demo público en vivo
+
+Dos establecimientos ficticios —`/p/demo-unas` y `/p/demo-estetica`— abiertos
+sin registro para que un prospecto pruebe el asistente antes de decidir. Un
+campo `es_demo` en `Establecimiento` gobierna cuatro comportamientos: exención
+de la suspensión por vencimiento, apertura del panel espejo en
+`/p/{slug}/panel`, autorización del borrado periódico y topes de costo propios.
+
+El reseteo borra **por antigüedad y no por reloj**: elimina lo que lleva más de
+dos horas sin tocarse, de modo que nunca interrumpe una demostración en curso.
+Y filtra siempre por `es_demo`, nunca por slug: un slug se teclea mal, y
+equivocarse ahí significa vaciarle la agenda a un negocio real.
+
+El panel espejo es la vista más delicada del proyecto —una agenda en URL
+pública sin sesión— y lleva tres candados: `es_demo=True` dentro del propio
+`get_object_or_404` (404 y no 403, porque un 403 confirmaría que el
+establecimiento existe), todas las consultas por `del_establecimiento()`, y el
+teléfono del cliente no viaja a la plantilla.
+
+### Forma canónica del teléfono
+
+Diez dígitos. Se acepta `+57`, espacios, guiones y paréntesis, y se rechaza el
+fijo de siete cifras sin completarlo: el indicativo depende de la ciudad y
+adivinarlo produciría un número que marca a otra persona.
+
+Importa porque la identidad del cliente es la tripleta
+`(establecimiento, teléfono, nombre)`: sin forma canónica, `310 123 4567` y
+`3101234567` son dos personas distintas para la base de datos. La validación
+estricta vive en los servicios y **no** en `save()`, para que una fila heredada
+con teléfono raro pueda seguir actualizando su consentimiento. Las filas que la
+migración no pudo normalizar quedan marcadas con `telefono_revisar`.
+
+### Citas fijas semanales
+
+`AgendaService.repetir_semanal()` y `cancelar_serie()`, con un campo `serie`
+(UUID) que agrupa la tanda. **Solo el dueño puede crearlas**, desde el botón
+que aparece dentro de una cita confirmada y futura en el panel: dejar que un
+cliente se autoasigne ocho semanas de agenda le entregaría el control de la
+capacidad del negocio a un desconocido. Las semanas ocupadas se saltan y se
+informan, en vez de fallar entera.
+
 ### Corte de servicio selectivo
 
 Al suspenderse se bloquean la zona pública y el chat con IA, pero **consultar y
@@ -162,6 +206,9 @@ castiga a quien no tiene la culpa.
 | `/panel/horarios`    | Horario semanal, excepciones y bloqueos                |
 | `/panel/suscripcion` | Estado, carga de comprobante e historial de pagos      |
 | `/p/{slug}`          | Chat público del cliente final                         |
+| `/p/{slug}/panel`    | Panel espejo — solo demos; 404 para el resto           |
+| `/panel/pagos`       | Verificación de pagos (superadmin)                     |
+| `/panel/clientes`    | Clientes, inasistencias y bloqueos                     |
 | `/salud`             | Sonda de estado del servicio y de la base              |
 
 ## API
@@ -217,15 +264,17 @@ python manage.py runserver
 python manage.py test
 ```
 
-**170 pruebas.** Desglose por aplicación:
+**609 pruebas.** Desglose por aplicación:
 
 | App           | Pruebas |
 | ------------- | ------- |
-| `facturacion` | 66      |
-| `web`         | 43      |
-| `asistente`   | 31      |
-| `agenda`      | 28      |
-| `negocios`    | 2       |
+| `agenda`      | 155     |
+| `asistente`   | 135     |
+| `web`         | 120     |
+| `negocios`    | 115     |
+| `facturacion` | 84      |
+
+La suite suma 8.853 líneas frente a 7.467 de código de producción.
 
 Las pruebas documentan la regla de negocio, no solo comprueban valores: cada
 clase lleva el porqué en su docstring, y varias fallan deliberadamente si se
@@ -242,6 +291,8 @@ motor distinto al de producción no demuestra lo que parece.
 | `verificar_suscripciones` | Suspende las vencidas fuera del período de gracia |
 | `revisar_pagos`           | Detecta y repara estados inconsistentes de pago   |
 | `generar_recordatorios`   | Prepara los recordatorios de cita del día         |
+| `sembrar_demo`            | Crea o actualiza los establecimientos de demo     |
+| `resetear_demo`           | Limpia los datos caducos del demo y los repone    |
 
 ---
 
@@ -249,13 +300,22 @@ motor distinto al de producción no demuestra lo que parece.
 
 Procedimiento completo en [DESPLIEGUE.md](DESPLIEGUE.md).
 
-Tres servicios en Railway:
+Cinco servicios en Railway:
 
-| Servicio   | Función                          | Configuración                         |
-| ---------- | -------------------------------- | ------------------------------------- |
-| `web`      | Django bajo gunicorn             | `railway.json`                        |
-| `Postgres` | Base de datos                    | volumen `postgres-volume`             |
-| `cron`     | `verificar_suscripciones` diario | `railway.cron.json`, `0 11 * * *` UTC |
+| Servicio        | Función                             | Configuración                                 |
+| --------------- | ----------------------------------- | --------------------------------------------- |
+| `web`           | Django bajo gunicorn                | `railway.json`                                |
+| `Postgres`      | Base de datos                       | volumen `postgres-volume`                     |
+| `cron`          | `verificar_suscripciones` diario    | `railway.cron.json`, `0 11 * * *` UTC         |
+| `recordatorios` | `generar_recordatorios` cada hora   | `railway.recordatorios.json`                  |
+| `demo-reset`    | `resetear_demo` cada 15 min         | **panel**, `*/15 * * * *` UTC — ver nota abajo |
+
+`demo-reset` no usa Config as Code: Railway lo declaró obsoleto y, desde el
+2026-08-28, los servicios nuevos no pueden acogerse. Su comando de arranque y
+su programación viven en Settings del propio servicio, y usa el constructor
+Railpack en lugar de Nixpacks. **Los archivos `railway*.json` existentes dejan
+de funcionar el 2026-12-01**; antes de esa fecha hay que migrar a
+Infrastructure as Code (`.railway/railway.ts`).
 
 Railway usa UTC: `0 11 * * *` son las 6:00 a.m. en Colombia.
 
@@ -307,9 +367,37 @@ restaurada.
 | 3      | 2026-07-13 | Asistente IA con Claude API, 5 capas anti-alucinación, zona pública |
 | 4      | 2026-07-25 | Frontend móvil, horarios flexibles, notificaciones `wa.me`          |
 | 4.1    | 2026-07-29 | Suscripciones, pagos manuales y preparación de despliegue           |
+| 4.2    | 2026-08-20 | Activación optimista con reversión exacta y período de gracia       |
+| —      | 2026-08-28 | Panel del superadmin, clientes, inasistencias y bloqueos            |
+| —      | 2026-09-02 | Consentimiento registrado por el backend, no inferido por la IA     |
+| —      | 2026-09-05 | Citas fijas semanales                                               |
+| —      | 2026-09-06 | Demo público en vivo con panel espejo y topes de costo              |
+| —      | 2026-09-08 | Forma canónica del teléfono con migración de datos                  |
 
 Después del Sprint 4.1 el sistema entró en producción; los commits posteriores
 son correcciones y mejoras sobre el sistema desplegado.
+
+---
+
+## Pruebas de mutación
+
+Una prueba que pasa no demuestra que proteja. Cada paquete de cambios se somete
+a un arnés `mutar_*.sh` que reintroduce deliberadamente el defecto que cada
+prueba dice cubrir y comprueba que la prueba **falle**. Si no falla, la prueba
+no servía.
+
+```bash
+./mutar_telefonos.sh    # OK: las 25 comprobaciones mordieron.
+```
+
+Trece arneses en el repositorio. La práctica ha encontrado defectos reales que
+la suite en verde no veía: pruebas que medían la cantidad de citas en lugar de
+su identidad —y por tanto no detectaban un borrado seguido de reposición—, y
+una migración de datos que reventaba al normalizar el registro superviviente
+antes de eliminar su duplicado.
+
+Los arneses invocan `python3`. En Git Bash sobre Windows ese nombre no existe;
+hay que apuntarlos a `.venv/Scripts/python.exe`.
 
 ---
 

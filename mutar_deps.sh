@@ -2,7 +2,15 @@
 # Arnes de mutacion del fijado de versiones.
 set -u
 W=web.tests.DependenciasFijadasTests
-PY=.venv/bin/python
+# Interprete del entorno virtual. En Linux y macOS esta en bin/; en
+# Windows (Git Bash) esta en Scripts/. Se detecta en vez de fijarse para
+# que el arnes corra igual en las dos maquinas del proyecto.
+if   [ -x .venv/bin/python ];         then PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe
+else
+  echo "ERROR: no encuentro el interprete de .venv. Activa el entorno." >&2
+  exit 1
+fi
 restaurar() { cp /tmp/limpio3/requirements.txt requirements.txt; }
 trap restaurar EXIT INT TERM
 
@@ -16,12 +24,18 @@ total=0; nomuerden=0
 for m in "${MUTACIONES[@]}"; do
   IFS='|' read -r titulo viejo nuevo prueba <<< "$m"
   restaurar
-  VIEJO="$viejo" NUEVO="$nuevo" python3 -c "
+  VIEJO="$viejo" NUEVO="$nuevo" $PY -c "
 import os, sys, pathlib
 p = pathlib.Path('requirements.txt'); t = p.read_text(encoding='utf-8')
 if os.environ['VIEJO'] not in t: print('NO_APLICABLE'); sys.exit(3)
 p.write_text(t.replace(os.environ['VIEJO'], os.environ['NUEVO'], 1), encoding='utf-8')"
-  if [ $? -eq 3 ]; then echo ""; echo "[$titulo]"; echo "   !! NO APLICABLE"; nomuerden=$((nomuerden+1)); continue; fi
+  rc=$?
+  if [ $rc -eq 3 ]; then echo ""; echo "[$titulo]"; echo "   !! NO APLICABLE"; nomuerden=$((nomuerden+1)); continue; fi
+  if [ $rc -ne 0 ]; then
+    echo ""; echo "ERROR: el aplicador de mutaciones fallo (codigo $rc)." >&2
+    echo "Ninguna mutacion se aplico. El resultado NO es valido." >&2
+    restaurar; exit 1
+  fi
   echo ""; echo "[$titulo]"
   total=$((total+1))
   if timeout 60 $PY manage.py test -v 0 --keepdb "$prueba" >/dev/null 2>&1; then

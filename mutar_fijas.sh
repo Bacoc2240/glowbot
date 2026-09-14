@@ -6,7 +6,15 @@
 #   cp agenda/services.py agenda/api.py /tmp/l13/agenda/
 set -u
 F=agenda.tests.CitasFijasSemanalesTest
-PY=.venv/bin/python
+# Interprete del entorno virtual. En Linux y macOS esta en bin/; en
+# Windows (Git Bash) esta en Scripts/. Se detecta en vez de fijarse para
+# que el arnes corra igual en las dos maquinas del proyecto.
+if   [ -x .venv/bin/python ];         then PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe
+else
+  echo "ERROR: no encuentro el interprete de .venv. Activa el entorno." >&2
+  exit 1
+fi
 restaurar() {
   cp /tmp/l13/agenda/services.py agenda/services.py
   cp /tmp/l13/agenda/api.py agenda/api.py
@@ -31,7 +39,7 @@ total=0; nomuerden=0
 for ((i=desde; i<hasta && i<${#MUTACIONES[@]}; i++)); do
   IFS='~' read -r titulo archivo viejo nuevo pruebas <<< "${MUTACIONES[$i]}"
   restaurar
-  VIEJO="$viejo" NUEVO="$nuevo" ARCHIVO="$archivo" python3 - <<'PYAP'
+  VIEJO="$viejo" NUEVO="$nuevo" ARCHIVO="$archivo" $PY - <<'PYAP'
 import os, sys, pathlib
 p = pathlib.Path(os.environ["ARCHIVO"]); b = p.read_bytes(); t = b.decode("utf-8")
 fin = "\r\n" if b"\r\n" in b else "\n"
@@ -41,8 +49,13 @@ if viejo not in t:
     print("NO_APLICABLE"); sys.exit(3)
 p.write_bytes(t.replace(viejo, nuevo, 1).encode("utf-8"))
 PYAP
-  if [ $? -eq 3 ]; then
+  rc=$?
+  if [ $rc -eq 3 ]; then
     echo ""; echo "[$i] $titulo"; echo "   !! NO APLICABLE"; nomuerden=$((nomuerden+1)); continue
+  elif [ $rc -ne 0 ]; then
+    echo ""; echo "ERROR: el aplicador de mutaciones fallo (codigo $rc)." >&2
+    echo "Ninguna mutacion se aplico. El resultado NO es valido." >&2
+    restaurar; exit 1
   fi
   echo ""; echo "[$i] $titulo"
   IFS=',' read -ra lista <<< "$pruebas"
