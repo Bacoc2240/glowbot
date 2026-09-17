@@ -37,6 +37,50 @@ from negocios.telefonos import normalizar_si_puede
 from .models import ConversacionIA
 
 logger = logging.getLogger(__name__)
+# ── Clasificacion de la realimentacion al modelo ──
+#
+# `_ejecutar_intencion` devuelve `(None, feedback)` en dos situaciones que
+# parecen la misma y NO lo son:
+#
+#   INFORMATIVA (por defecto)  el backend no ejecuto la accion, pero le
+#       entrego al modelo lo que necesita para contestarle al cliente: los
+#       horarios libres cuando el pedido estaba ocupado, el aviso de que su
+#       numero esta vetado, la peticion del dato que falta. El modelo debe
+#       redactar en prosa y cerrar el turno; eso es correcto y no miente.
+#
+#   RECHAZO (se marca)  el backend descarto la operacion y el modelo tiene
+#       que volver a emitirla corregida. Si contesta en prosa, le esta
+#       diciendo al cliente que algo paso cuando no paso.
+#
+# El defecto que esto corrige: la bandera `el_backend_hablo` no distinguia
+# los dos casos. Un cliente cancelo una cita, volvio a agendar el mismo
+# cupo y pidio cancelar de nuevo; el modelo reemitio el id de la PRIMERA
+# cita --seguia en su historial--, el backend lo rechazo con razon, y el
+# modelo respondio "tu cita fue cancelada". La cita siguio confirmada en la
+# agenda. Ninguna de las 609 pruebas lo veia: cada capa hacia bien su
+# trabajo por separado y el defecto vivia en la costura entre el rechazo y
+# el cierre del turno.
+#
+# El primer intento de arreglo invirtio este criterio --tratar TODO como
+# rechazo salvo lo marcado-- y rompio cuatro flujos legitimos: slot
+# ocupado, telefono vetado, falta de consentimiento y captura del telefono.
+# En todos ellos el backend rechaza la accion pero le da al modelo algo
+# cierto que decir. Lo que decide no es si la accion se ejecuto, sino si el
+# modelo puede cerrar el turno SIN afirmar algo falso.
+MARCA_RECHAZO = "[RECHAZO] "
+
+
+def _rechazo(texto: str) -> str:
+    """Marca una realimentacion como rechazo. Ver MARCA_RECHAZO."""
+    return MARCA_RECHAZO + texto
+
+
+AVISO_TRAS_RECHAZO = (
+    "ATENCION: la operacion anterior NO se ejecuto. No le digas al cliente "
+    "que se hizo algo que no se hizo. Vuelve a emitir la intencion corregida "
+    "segun la indicacion anterior."
+)
+
 MAX_ITERACIONES = 3     # llamadas al modelo por mensaje del usuario
 MAX_HISTORIAL = 20      # interacciones enviadas (control de costos, §8)
 
@@ -592,10 +636,36 @@ REGLAS OBLIGATORIAS:
                     # puede cancelar la cita de otra persona.
                     cita = next((c for c in citas if c.id == cita_id), None)
                     if cita is None:
-                        return None, (
+                        # Distinguir "ya estaba cancelada" de "no existe" NO es
+                        # cosmetico. El caso real que lo motivo: el cliente
+                        # cancela, vuelve a agendar el mismo cupo, y al pedir la
+                        # segunda cancelacion el modelo reemite el id de la
+                        # PRIMERA, que sigue en su historial. Con un "no
+                        # corresponde" generico el modelo tendia a concluir que
+                        # ya estaba hecho; nombrar el caso y listar las citas
+                        # vigentes le da la salida correcta.
+                        previa = (Cita.objects.del_establecimiento(establecimiento)
+                                  .filter(pk=cita_id, cliente__telefono=telefono)
+                                  .first())
+                        opciones = "; ".join(
+                            f"id {c.id}: {c.servicio.nombre} el "
+                            f"{fecha_larga(c.fecha)} a las {hora_texto(c.hora_inicio)}"
+                            for c in citas
+                        )
+                        if previa is not None:
+                            return None, _rechazo(
+                                f"La cita {cita_id} ya estaba cancelada; ese id "
+                                "es de una conversación anterior y NO sirve. "
+                                f"Las citas confirmadas ahora son: {opciones}. "
+                                "NO has cancelado nada todavía. Vuelve a emitir "
+                                "cancelar_cita con el cita_id correcto de esa "
+                                "lista."
+                            )
+                        return None, _rechazo(
                             "Ese cita_id no corresponde a ninguna cita "
-                            "confirmada de este teléfono. Vuelve a consultar "
-                            "sus citas antes de cancelar."
+                            f"confirmada de este teléfono. Las confirmadas son: "
+                            f"{opciones}. NO has cancelado nada. Vuelve a emitir "
+                            "cancelar_cita con un cita_id de esa lista."
                         )
                 AgendaService.cancelar(cita, por_cliente=True)
                 # RF-13: se encola la alerta al profesional (envío en Sprint 4)
@@ -1019,6 +1089,9 @@ REGLAS OBLIGATORIAS:
         # Se reinicia en cada mensaje: lo del turno anterior no autoriza nada
         # sobre este.
         el_backend_hablo = False
+        # Cierto cuando la ultima intencion fue RECHAZADA. Mientras lo este,
+        # el modelo no puede cerrar el turno en prosa.
+        intento_rechazado = False
 
         inicio = time.monotonic()
 
@@ -1067,7 +1140,17 @@ REGLAS OBLIGATORIAS:
             intencion = cls._extraer_intencion(texto)
             if intencion is None:  # respuesta conversacional normal
                 historial.append({"role": "assistant", "content": texto})
-                # Red: una negativa de disponibilidad que no viene del backend
+                # Red 1: tras un RECHAZO, una respuesta en prosa afirmaria ante
+                # el cliente algo que no ocurrio. Se devuelve al modelo para que
+                # reintente; si agota las iteraciones, la rama `else` responde
+                # con una frase honesta. Es preferible decir "no pude completar
+                # tu solicitud" a decir "cancelada" con la cita en pie.
+                if intento_rechazado:
+                    feedback = AVISO_TRAS_RECHAZO
+                    historial.append(
+                        {"role": "user", "content": f"[SISTEMA] {feedback}"})
+                    continue
+                # Red 2: una negativa de disponibilidad que no viene del backend
                 # no sale de aqui. Se le devuelve al modelo para que consulte.
                 if el_backend_hablo or not cls.responde_sin_haber_mirado(
                         mensaje, texto):
@@ -1094,6 +1177,11 @@ REGLAS OBLIGATORIAS:
                 historial.append({"role": "assistant", "content": final["respuesta"]})
                 resultado = {**final, "cita": final.get("cita")}
                 break
+            intento_rechazado = feedback.startswith(MARCA_RECHAZO)
+            if intento_rechazado:
+                # La marca clasifica para este bucle; no es texto que el
+                # modelo deba leer.
+                feedback = feedback[len(MARCA_RECHAZO):]
             # realimentación [SISTEMA] → el modelo reformula con datos reales
             historial.append({"role": "user", "content": f"[SISTEMA] {feedback}"})
         else:
