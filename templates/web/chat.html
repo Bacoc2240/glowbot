@@ -48,6 +48,12 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
            border-bottom-right-radius:4px; }
     .aviso { background:#FFF8E1; border:1px solid var(--dorado); border-radius:10px;
              padding:10px; font-size:12px; color:#6B5200; }
+    /* El cartel del descanso se distingue del aviso de privacidad: uno es
+       letra pequena que se acepta, el otro es informacion que cambia lo que
+       el cliente puede hacer hoy. Con el mismo estilo se leeria como mas
+       letra pequena y se saltaria. */
+    .descanso { background:#FDECEC; border:1px solid #C0392B; border-radius:10px;
+                padding:12px; font-size:14px; color:#7B241C; font-weight:600; }
     .escribiendo { color:var(--gris); font-size:13px; align-self:flex-start; }
     form { display:flex; gap:8px; padding:10px; background:#fff;
            border-top:1px solid var(--borde); }
@@ -108,6 +114,11 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
   </div>
 
   <div id="hilo" x-ref="hilo">
+    <!-- Se pinta ANTES del primer mensaje y sin gastar un token: el texto
+         viene ya redactado por el backend en /api/v1/p/<slug>. Es la parte
+         del aviso que sigue en pie aunque el modelo falle o se equivoque. -->
+    <div class="descanso" x-show="negocio.aviso_descanso"
+         x-text="negocio.aviso_descanso"></div>
     <div class="aviso" x-show="!fallo">
       Para agendar te pediremos aceptar que <b x-text="negocio.nombre"></b>
       trate tu nombre y teléfono para gestionar tu cita.

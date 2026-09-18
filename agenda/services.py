@@ -14,7 +14,7 @@ import uuid
 from datetime import date, datetime, time, timedelta
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from negocios.models import (
@@ -440,6 +440,119 @@ class AgendaService:
                 tramos = nuevos
             libres.extend(tramos)
         return sorted(libres)
+
+    # ──────────────────────────────────────────────────────────────
+    #  Descansos anunciados: que el cierre se DIGA, no se deduzca
+    # ──────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _dia_con_atencion(cls, profesional: Profesional, dia: date) -> bool:
+        """¿Ese día queda algún minuto de jornada en pie?
+
+        No mira la ocupación a proposito. Un dia lleno de citas es un dia en
+        el que el profesional TRABAJA, y decir "volvemos el lunes" sigue
+        siendo cierto aunque el lunes ya no queden huecos. Mezclar las dos
+        cosas convertiria una agenda apretada en un cierre anunciado.
+        """
+        base = cls._franjas_del_dia(profesional, dia)
+        if not base:
+            return False
+        return bool(cls._huecos_libres(base, cls._bloqueos_del_dia(profesional, dia)))
+
+    @classmethod
+    def primer_dia_con_atencion(cls, profesional: Profesional, desde: date,
+                                limite_dias: int = 14):
+        """El primer día, a partir de `desde`, en que ese profesional atiende.
+
+        Existe porque el regreso se CALCULA. "Volvemos el 28" dicho a ojo
+        manda a la clienta al local cerrado cuando el 28 es el descanso
+        semanal del dueno, o cuando el periodo termina un domingo: el dia
+        siguiente al bloqueo no es necesariamente un dia de trabajo.
+
+        Devuelve None si no encuentra ninguno dentro del limite, y entonces
+        el aviso simplemente no promete fecha de regreso. Es preferible
+        callarla a inventarla, y el limite acota un recorrido que de otro
+        modo podria pasearse por el calendario entero.
+        """
+        for n in range(limite_dias):
+            dia = desde + timedelta(days=n)
+            if cls._dia_con_atencion(profesional, dia):
+                return dia
+        return None
+
+    @classmethod
+    def avisos_de_descanso(cls, establecimiento, hoy=None,
+                           horizonte_dias: int = 30):
+        """Los periodos de descanso que vale la pena anunciar.
+
+        Anuncia PERIODOS de varios dias, no bloqueos sueltos. Un dia libre
+        es parte de la operacion normal --el domingo, la tarde del jueves--
+        y anunciarlo cada vez convertiria el aviso en ruido que nadie lee.
+        Lo que desconcierta al cliente es la semana entera en la que no
+        aparece ni un horario.
+
+        Devuelve una lista de avisos ya resueltos, uno por tramo de fechas:
+
+            {"desde", "hasta", "regreso", "profesional", "alternativas"}
+
+        `profesional` es None cuando el tramo cubre a TODO el equipo: ahi el
+        mensaje honesto es "estaremos sin servicio", y nombrar a cada persona
+        seria contarle al cliente la plantilla del negocio. Cuando solo
+        descansa una parte, `alternativas` trae a quienes si atienden: el
+        aviso util no es "Carlos no esta", es "Diana si".
+
+        El motivo del bloqueo NO sale de aqui, y no por olvido: el enlace
+        publico lo abre cualquiera, y "cirugia" o "viaje a Bogota" son cosas
+        que el dueno escribio para acordarse el.
+        """
+        hoy = hoy or timezone.localdate()
+        limite = hoy + timedelta(days=horizonte_dias)
+        activos = list(Profesional.objects.filter(
+            establecimiento=establecimiento, activo=True).order_by("id"))
+        if not activos:
+            return []
+
+        # `exclude(fecha=fecha_fin)` es lo que deja fuera los dias sueltos.
+        # No hace falta filtrar ademas por horas nulas: un periodo de varios
+        # dias con franja de horas no puede existir, lo impide la restriccion
+        # ck_bloqueo_periodo_dia_completo. Se comprobo intentando crear uno.
+        periodos = Bloqueo.objects.filter(
+            profesional__in=activos, recurrente=False,
+            fecha_fin__gte=hoy, fecha__lte=limite,
+        ).exclude(fecha=F("fecha_fin")).select_related("profesional")
+
+        # Se agrupa por tramo de fechas y no por profesional: el equipo que
+        # se va junto produce un solo aviso, aunque sean tres filas.
+        por_tramo = {}
+        for b in periodos:
+            por_tramo.setdefault((b.fecha, b.fecha_fin), []).append(b.profesional)
+
+        avisos = []
+        for (desde, hasta), descansan in sorted(por_tramo.items()):
+            ids = {p.id for p in descansan}
+            atienden = [p for p in activos if p.id not in ids]
+            if atienden:
+                # Descanso parcial: el regreso que importa es el de quien se
+                # va, porque el negocio no cierra.
+                regreso = cls.primer_dia_con_atencion(
+                    descansan[0], hasta + timedelta(days=1))
+                avisos.append({
+                    "desde": desde, "hasta": hasta, "regreso": regreso,
+                    "profesional": descansan[0].nombre,
+                    "alternativas": [p.nombre for p in atienden],
+                })
+            else:
+                # Cierre completo: el regreso es el primer dia en que
+                # CUALQUIERA atienda, porque basta uno para abrir.
+                vueltas = [d for d in (
+                    cls.primer_dia_con_atencion(p, hasta + timedelta(days=1))
+                    for p in descansan) if d is not None]
+                avisos.append({
+                    "desde": desde, "hasta": hasta,
+                    "regreso": min(vueltas) if vueltas else None,
+                    "profesional": None, "alternativas": [],
+                })
+        return avisos
 
     # ──────────────────────────────────────────────────────────────
     #  API pública: reservar (atómica, anti double-booking) — RF-11

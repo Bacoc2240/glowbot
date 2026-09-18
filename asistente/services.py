@@ -27,6 +27,7 @@ from django.utils import timezone
 from agenda.fechas import DIAS, MESES, fecha_larga, hora_texto  # noqa: F401
 from agenda.calendario import enlace_google, firma as firma_cita
 from agenda.models import Cita, Notificacion
+from agenda.avisos import linea_sistema
 from agenda.services import (
     AgendaService, CitaEnElPasado, DiaNoAtendido, SlotNoDisponible,
     TelefonoVetado, TopeCitasAlcanzado,
@@ -1079,6 +1080,24 @@ REGLAS OBLIGATORIAS:
             "role": "user",
             "content": "[SISTEMA] " + cls._estado_consentimiento(conv),
         })
+
+        # Y el descanso anunciado, si lo hay.
+        #
+        # Sin esta linea el modelo vive el periodo desde dentro: consulta la
+        # disponibilidad, recibe listas vacias un dia tras otro y lo unico
+        # que puede decir es "no hay horarios", que es justo lo que deja al
+        # cliente sin saber si el negocio esta cerrado, lleno o averiado.
+        # El bloqueo ya impedia agendar; lo que faltaba era explicarlo.
+        #
+        # Se inyecta en CADA turno y no solo cuando la consulta cae dentro
+        # del periodo, por la misma razon que el consentimiento: condicionar
+        # la inyeccion a que el modelo ya haya preguntado por esas fechas lo
+        # deja sin el dato en el tramo donde lo necesita.
+        aviso = linea_sistema(
+            AgendaService.avisos_de_descanso(establecimiento))
+        if aviso:
+            historial.append({"role": "user", "content": "[SISTEMA] " + aviso})
+
         historial.append({"role": "user", "content": mensaje})
 
         prompt_sistema = cls.construir_prompt_sistema(establecimiento)

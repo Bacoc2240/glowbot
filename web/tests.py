@@ -1543,3 +1543,48 @@ class PantallaPeriodoDescansoTests(TestCase):
         vivas = self._vivas()
         self.assertIn('x-show="citasAfectadas.length"', vivas)
         self.assertIn("citas_afectadas", vivas)
+
+
+class PantallaAvisoDescansoTests(TestCase):
+    """Los enganches del cartel en el chat y del atajo de equipo.
+
+    Mismo límite que las otras pruebas de pantalla: es JavaScript y Django no
+    lo ejecuta. Lo que de verdad protege el aviso son las pruebas del backend.
+    """
+
+    def setUp(self):
+        from cuentas.models import Usuario
+        from negocios.models import Establecimiento
+        usuario = Usuario.objects.create_user(email="av@a.com",
+                                              password="clave12345")
+        Establecimiento.objects.create(
+            propietario=usuario, nombre="Estudio", slug="av",
+            tipo=Establecimiento.Tipo.UNAS, telefono="3001112233")
+
+    def _vivas(self, ruta):
+        html = self.client.get(ruta).content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    def test_el_chat_pinta_el_cartel_del_descanso(self):
+        vivas = self._vivas("/p/av")
+        self.assertIn('x-text="negocio.aviso_descanso"', vivas)
+        self.assertIn('x-show="negocio.aviso_descanso"', vivas)
+
+    def test_el_cartel_no_se_confunde_con_la_letra_pequena(self):
+        """El aviso de privacidad es letra pequeña que se acepta; el cartel
+        cambia lo que el cliente puede hacer hoy. Con el mismo estilo se
+        leería como más letra pequeña y se saltaría."""
+        self.assertIn(".descanso {", self._vivas("/p/av"))
+
+    def test_el_panel_ofrece_bloquear_a_todo_el_equipo(self):
+        vivas = self._vivas("/panel/horarios")
+        self.assertIn('x-model="blo.todoElEquipo"', vivas)
+        self.assertIn("todo_el_equipo: !recurrente && this.blo.todoElEquipo",
+                      vivas)
+
+    def test_el_atajo_no_se_ofrece_para_el_recurrente(self):
+        """«Cerramos el local todos los domingos» ya se expresa con un
+        recurrente por persona; mezclarlo aquí multiplicaría filas eternas."""
+        self.assertIn("blo.tipo !== 'semana' && profesionales.length > 1",
+                      self._vivas("/panel/horarios"))

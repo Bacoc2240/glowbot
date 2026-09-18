@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 
 from negocios.models import Establecimiento, Profesional, Servicio
 from agenda.fechas import fecha_larga, hora_texto
+from agenda.avisos import texto_publico
 from agenda.services import AgendaService
 from facturacion.services import SuscripcionService
 from .models import ConversacionIA
@@ -137,6 +138,11 @@ class InfoPublicaView(APIView):
                 for s in servicios
             ],
             "profesionales": [{"id": p.id, "nombre": p.nombre} for p in profesionales],
+            # El cartel del descanso viaja aqui y no lo redacta el modelo:
+            # es lo unico del aviso que sigue funcionando aunque la IA falle,
+            # porque se pinta al abrir la pagina, antes de escribir nada.
+            "aviso_descanso": texto_publico(
+                AgendaService.avisos_de_descanso(est)),
         })
 
 

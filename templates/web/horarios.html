@@ -167,9 +167,16 @@
            x-text="textoFranja(blo.hora_inicio, blo.hora_fin)"></p>
       </div>
     </template>
+    <template x-if="blo.tipo !== 'semana' && profesionales.length > 1">
+      <label><input type="checkbox" x-model="blo.todoElEquipo" style="width:auto">
+        Aplicar a todo el equipo (cerramos el local)</label>
+    </template>
     <label>Motivo (opcional)</label><input x-model="blo.motivo" placeholder="Descanso, vacaciones…"><br>
     <button @click="crearBloqueo">Guardar bloqueo</button>
     <p class="muted" style="color:var(--rojo)" x-show="errorBloqueo" x-text="errorBloqueo"></p>
+    <p class="muted" style="font-size:13px" x-show="equipoBloqueado.length"
+       x-text="'Bloqueado para todo el equipo: ' + equipoBloqueado.join(', ') +
+               '. Cada uno queda en su propia ficha, por si alguno vuelve antes.'"></p>
     <!-- El bloqueo se guarda aunque haya citas dentro; lo que no se hace es
          callarlas. Cancelarlas el sistema seria peor: el cliente no se entera
          y se presenta ante un local cerrado. -->
@@ -217,8 +224,8 @@ function horarios() {
     // casillas independientes permiten marcarlas juntas.
     blo: { tipo: "dia", fecha: "", fecha_fin: "", dia_semana: 6,
            diaCompleto: true, hora_inicio: "12:00", hora_fin: "14:00",
-           motivo: "" },
-    errorBloqueo: "", citasAfectadas: [],
+           motivo: "", todoElEquipo: false },
+    errorBloqueo: "", citasAfectadas: [], equipoBloqueado: [],
     async cargarAjustes() {
       const r = await api("/mi-establecimiento/ajustes");
       if (r && r.ok) {
@@ -370,6 +377,10 @@ function horarios() {
         hora_inicio: porHoras ? this.blo.hora_inicio : null,
         hora_fin: porHoras ? this.blo.hora_fin : null,
         motivo: this.blo.motivo,
+        // El bloqueo sigue siendo de cada profesional; esto solo escribe la
+        // misma decision para todos. Si vuelve uno antes, se le acorta el
+        // suyo sin tocar los demas.
+        todo_el_equipo: !recurrente && this.blo.todoElEquipo,
       };
       const r = await api(`/profesionales/${this.profesionalId}/bloqueos`,
         { method: "POST", body: JSON.stringify(cuerpo) });
@@ -385,6 +396,8 @@ function horarios() {
         return;
       }
       this.citasAfectadas = (d && d.citas_afectadas) || [];
+      this.equipoBloqueado = (d && d.equipo && d.equipo.length > 1)
+                             ? d.equipo : [];
       await this.cargarTodo();
     },
     async borrarBloqueo(id) {

@@ -275,12 +275,19 @@ class BloqueoSerializer(serializers.ModelSerializer):
     franja_texto = serializers.SerializerMethodField()
     fecha_texto = serializers.SerializerMethodField()
     dias = serializers.IntegerField(read_only=True)
+    # Bandera de entrada, no campo del modelo: el bloqueo SIGUE siendo de un
+    # profesional. En un salon puede irse una manicurista y quedarse dos, y
+    # un bloqueo del establecimiento no sabria expresar eso. Cuando cierra
+    # todo el equipo, lo que ocurre es que la misma decision se repite para
+    # cada persona; el atajo evita teclearla tres veces, no cambia el modelo.
+    todo_el_equipo = serializers.BooleanField(
+        write_only=True, required=False, default=False)
 
     class Meta:
         model = Bloqueo
         fields = ["id", "recurrente", "fecha", "fecha_fin", "dia_semana",
                   "hora_inicio", "hora_fin", "motivo",
-                  "franja_texto", "fecha_texto", "dias"]
+                  "franja_texto", "fecha_texto", "dias", "todo_el_equipo"]
 
     def get_franja_texto(self, obj):
         if obj.hora_inicio is None or obj.hora_fin is None:
@@ -412,11 +419,33 @@ class BloqueosView(APIView):
         prof = _profesional_del_usuario(request, profesional_id)
         s = BloqueoSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        bloqueo = Bloqueo.objects.create(profesional=prof, **s.validated_data)
+        datos_bloqueo = dict(s.validated_data)
+        equipo_completo = datos_bloqueo.pop("todo_el_equipo", False)
+
+        # Con la bandera, la MISMA decision se escribe para cada profesional
+        # activo. Las filas son independientes: si despues vuelve uno antes,
+        # se le acorta o se le quita el suyo sin tocar los demas.
+        #
+        # El aviso publico reconoce el cierre completo comparando las fechas
+        # con la plantilla activa, no con una marca guardada aqui. Una marca
+        # mentiria en cuanto se contratara a alguien nuevo: el equipo habria
+        # cambiado y la fila seguiria diciendo "cerramos todos".
+        destinatarios = [prof]
+        if equipo_completo:
+            destinatarios = list(Profesional.objects.filter(
+                establecimiento=prof.establecimiento, activo=True))
+
+        creados = [Bloqueo.objects.create(profesional=p, **datos_bloqueo)
+                   for p in destinatarios]
+        suyo = next(b for b in creados if b.profesional_id == prof.id)
+
         # El bloqueo se guarda AUNQUE haya citas dentro, y la respuesta las
         # enumera para que el panel se lo diga al dueno. El porque de no
-        # cancelarlas esta en AgendaService.citas_bajo_bloqueo.
-        datos = BloqueoSerializer(bloqueo).data
+        # cancelarlas esta en AgendaService.citas_bajo_bloqueo. Con el equipo
+        # completo se enumeran las de TODOS: la clienta de Diana tambien se
+        # queda sin cita, y callarla porque el bloqueo se creo desde la ficha
+        # de Carlos seria esconder justo lo que hay que avisar.
+        datos = BloqueoSerializer(suyo).data
         datos["citas_afectadas"] = [{
             "id": c.id,
             "fecha_texto": fecha_corta(c.fecha),
@@ -424,7 +453,9 @@ class BloqueosView(APIView):
             "cliente": c.cliente.nombre,
             "telefono": c.cliente.telefono,
             "servicio": c.servicio.nombre,
-        } for c in AgendaService.citas_bajo_bloqueo(bloqueo)]
+            "profesional": c.profesional.nombre,
+        } for b in creados for c in AgendaService.citas_bajo_bloqueo(b)]
+        datos["equipo"] = [b.profesional.nombre for b in creados]
         return Response(datos, status=status.HTTP_201_CREATED)
 
 

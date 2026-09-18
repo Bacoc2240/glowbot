@@ -2413,3 +2413,64 @@ class ElAsistenteNoAgendaFueraDeLaAgendaTest(BaseIATest):
         self.assertIn("NO se creó", capturado["feedback"])
         self.assertNotIn("Vacaciones", capturado["feedback"])
         self.assertNotIn("bloquead", capturado["feedback"].lower())
+
+
+class ElChatAnunciaElDescansoTest(BaseIATest):
+    """El periodo de descanso se cuenta; no se deja deducir del vacío.
+
+    El bloqueo ya impedía agendar. El cliente que pedía cita para esa semana
+    recibía «no hay horarios» un día tras otro y no sabía si el negocio
+    estaba cerrado, lleno o averiado.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from negocios.models import Bloqueo
+        self.bloqueo = Bloqueo.objects.create(
+            profesional=self.carlos, recurrente=False, fecha=self.lunes,
+            fecha_fin=self.lunes + timedelta(days=6), motivo="Vacaciones")
+
+    def test_la_pagina_publica_trae_el_aviso_redactado(self):
+        """Va en el arranque de la página y no lo escribe el modelo: es la
+        parte del aviso que sigue en pie aunque la IA falle."""
+        r = self.client.get(f"/api/v1/p/{self.est.slug}")
+        self.assertIn("sin servicio", r.json()["aviso_descanso"])
+
+    def test_la_pagina_publica_no_filtra_el_motivo(self):
+        """El enlace lo abre cualquiera; el motivo lo escribió el dueño para
+        acordarse él."""
+        r = self.client.get(f"/api/v1/p/{self.est.slug}")
+        self.assertNotIn("Vacaciones", r.json()["aviso_descanso"])
+
+    def test_sin_descanso_el_aviso_va_vacio(self):
+        self.bloqueo.delete()
+        r = self.client.get(f"/api/v1/p/{self.est.slug}")
+        self.assertEqual(r.json()["aviso_descanso"], "")
+
+    def test_al_modelo_se_le_entrega_el_hecho_cada_turno(self):
+        """Como el consentimiento: condicionar la inyección a que el modelo ya
+        haya preguntado por esas fechas lo deja sin el dato justo donde lo
+        necesita."""
+        capturado = {}
+
+        def espia(prompt_sistema, mensajes):
+            capturado.setdefault("mensajes", mensajes)
+            return ("Claro, dime qué servicio quieres.", 10, 10)
+
+        with patch(RUTA_LLAMAR, side_effect=espia):
+            IAService.procesar_mensaje(self.est, "sd", "Hola")
+        sistema = [m["content"] for m in capturado["mensajes"]
+                   if m["content"].startswith("[SISTEMA]")]
+        self.assertTrue(any("Descanso anunciado" in s for s in sistema))
+
+    def test_al_modelo_no_se_le_entrega_el_motivo(self):
+        capturado = {}
+
+        def espia(prompt_sistema, mensajes):
+            capturado.setdefault("mensajes", mensajes)
+            return ("Hola.", 10, 10)
+
+        with patch(RUTA_LLAMAR, side_effect=espia):
+            IAService.procesar_mensaje(self.est, "sd2", "Hola")
+        todo = " ".join(m["content"] for m in capturado["mensajes"])
+        self.assertNotIn("Vacaciones", todo)

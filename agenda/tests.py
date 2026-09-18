@@ -22,6 +22,8 @@ from negocios.models import (
     Bloqueo, ClienteFinal, Establecimiento, ExcepcionHorario,
     HorarioBase, Profesional, Servicio,
 )
+from .avisos import linea_sistema, texto_publico
+from .fechas import fecha_corta
 from .models import Cita
 from .services import AgendaService, SlotNoDisponible
 
@@ -2556,3 +2558,251 @@ class PeriodoDeDescansoTest(BaseAgendaTest):
         with self.assertRaises(Profesional.DoesNotExist):
             self._crear(recurrente=False, fecha=str(self.lunes),
                         fecha_fin=str(self.viernes))
+
+
+class AvisoDeDescansoTest(BaseAgendaTest):
+    """Que el cierre se diga, no se deduzca.
+
+    El bloqueo ya impedía agendar. Lo que faltaba era explicarlo: el cliente
+    abría el chat, pedía cita para la semana siguiente, no encontraba ni un
+    horario y no sabía si el negocio estaba cerrado, lleno o averiado. Un
+    sistema que niega sin explicar parece roto aunque funcione exactamente
+    como se diseñó.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.viernes = self.lunes + timedelta(days=4)
+
+    def _periodo(self, prof=None, inicio=None, fin=None, **extra):
+        return Bloqueo.objects.create(
+            profesional=prof or self.carlos, recurrente=False,
+            fecha=inicio or self.lunes, fecha_fin=fin or self.viernes, **extra)
+
+    def _otro(self, nombre="Diana"):
+        prof = Profesional.objects.create(
+            establecimiento=self.est, nombre=nombre, activo=True)
+        for n in range(7):
+            HorarioBase.objects.create(profesional=prof, dia_semana=n,
+                                       hora_inicio=time(9, 0), hora_fin=time(12, 0))
+        return prof
+
+    # ── Qué se anuncia ────────────────────────────────────────────
+
+    def test_un_periodo_produce_aviso(self):
+        self._periodo()
+        avisos = AgendaService.avisos_de_descanso(self.est)
+        self.assertEqual(len(avisos), 1)
+        self.assertEqual(avisos[0]["desde"], self.lunes)
+        self.assertEqual(avisos[0]["hasta"], self.viernes)
+
+    def test_un_dia_suelto_no_se_anuncia(self):
+        """Un día libre es operación normal —el domingo, la tarde del
+        jueves—. Anunciarlo cada vez convertiría el cartel en ruido que nadie
+        lee, y lo que desconcierta al cliente es la semana entera sin
+        horarios."""
+        self._periodo(inicio=self.lunes, fin=self.lunes)
+        self.assertEqual(AgendaService.avisos_de_descanso(self.est), [])
+
+    def test_un_periodo_terminado_no_se_anuncia(self):
+        Bloqueo.objects.create(
+            profesional=self.carlos, recurrente=False,
+            fecha=timezone.localdate() - timedelta(days=20),
+            fecha_fin=timezone.localdate() - timedelta(days=10))
+        self.assertEqual(AgendaService.avisos_de_descanso(self.est), [])
+
+    def test_un_periodo_lejano_no_se_anuncia_todavia(self):
+        """Anunciar en septiembre el cierre de diciembre no ayuda a nadie a
+        agendar hoy, y ocupa el cartel que mañana hará falta."""
+        lejos = timezone.localdate() + timedelta(days=120)
+        self._periodo(inicio=lejos, fin=lejos + timedelta(days=5))
+        self.assertEqual(AgendaService.avisos_de_descanso(self.est), [])
+
+    # ── Quién descansa y quién no ─────────────────────────────────
+
+    def test_si_queda_alguien_el_aviso_nombra_la_alternativa(self):
+        """El aviso útil no es «Carlos no está», es «Diana sí». Nombrar solo
+        la ausencia hace que el cliente se vaya."""
+        diana = self._otro()
+        self._periodo()
+        aviso = AgendaService.avisos_de_descanso(self.est)[0]
+        self.assertEqual(aviso["profesional"], self.carlos.nombre)
+        self.assertEqual(aviso["alternativas"], [diana.nombre])
+        # El regreso que importa es el de quien se va: el negocio no cierra,
+        # y Carlos atiende de lunes a viernes, así que vuelve el lunes.
+        self.assertEqual(aviso["regreso"], self.lunes + timedelta(days=7))
+
+    def test_si_descansan_todos_el_aviso_es_de_cierre(self):
+        """Con todo el equipo fuera, nombrar a cada persona le contaría al
+        cliente la plantilla del negocio sin necesidad."""
+        diana = self._otro()
+        self._periodo()
+        self._periodo(prof=diana)
+        aviso = AgendaService.avisos_de_descanso(self.est)[0]
+        self.assertIsNone(aviso["profesional"])
+        self.assertEqual(aviso["alternativas"], [])
+
+    def test_el_equipo_que_se_va_junto_produce_un_solo_aviso(self):
+        self._periodo()
+        self._periodo(prof=self._otro())
+        self.assertEqual(len(AgendaService.avisos_de_descanso(self.est)), 1)
+
+    def test_un_profesional_inactivo_no_cuenta_como_alternativa(self):
+        """Estaría en la tabla pero no atiende: ofrecerlo mandaría al cliente
+        con alguien que ya no trabaja ahí."""
+        inactivo = self._otro("Sofía")
+        inactivo.activo = False
+        inactivo.save(update_fields=["activo"])
+        self._periodo()
+        self.assertIsNone(AgendaService.avisos_de_descanso(self.est)[0]["profesional"])
+
+    # ── El regreso se calcula ─────────────────────────────────────
+
+    def test_el_regreso_es_el_primer_dia_que_se_atiende(self):
+        """El día siguiente al periodo puede ser el descanso semanal: decir
+        «volvemos el sábado» mandaría a la clienta al local cerrado por
+        segunda vez. BaseAgendaTest atiende de lunes a viernes, así que un
+        periodo que termina el viernes se retoma el lunes."""
+        self._periodo()
+        aviso = AgendaService.avisos_de_descanso(self.est)[0]
+        self.assertEqual(aviso["regreso"], self.lunes + timedelta(days=7))
+
+    def test_sin_regreso_calculable_el_aviso_no_promete_fecha(self):
+        """Callar la fecha es mejor que estimarla. Aquí el periodo encadena
+        con otro, así que en las dos semanas siguientes no hay ni un día de
+        trabajo que prometer."""
+        self._periodo()
+        self._periodo(inicio=self.viernes + timedelta(days=1),
+                      fin=self.viernes + timedelta(days=30))
+        aviso = AgendaService.avisos_de_descanso(self.est)[0]
+        self.assertEqual(aviso["hasta"], self.viernes)
+        self.assertIsNone(aviso["regreso"])
+        self.assertNotIn("Volvemos", texto_publico([aviso]))
+
+    def test_el_regreso_salta_un_bloqueo_pegado_al_periodo(self):
+        """Dos bloqueos consecutivos no son un regreso: la agenda sigue
+        cerrada."""
+        self._periodo()
+        Bloqueo.objects.create(profesional=self.carlos,
+                               fecha=self.lunes + timedelta(days=7))
+        aviso = AgendaService.avisos_de_descanso(self.est)[0]
+        self.assertEqual(aviso["regreso"], self.lunes + timedelta(days=8))
+
+    def test_un_dia_lleno_de_citas_sigue_siendo_un_dia_de_regreso(self):
+        """Ocupado no es cerrado. Mezclarlos convertiría una agenda apretada
+        en un cierre anunciado."""
+        self._periodo()
+        regreso = self.lunes + timedelta(days=7)
+        for hora in (time(9, 0), time(9, 30), time(10, 0), time(10, 30),
+                     time(11, 0), time(11, 30)):
+            AgendaService.reservar(
+                establecimiento=self.est, profesional=self.carlos,
+                servicio=self.corte, cliente=self.cliente, dia=regreso,
+                hora_inicio=hora, canal=Cita.Canal.MANUAL, respetar_tope=False)
+        self.assertEqual(
+            AgendaService.calcular_slots(self.carlos, self.corte, regreso), [])
+        self.assertEqual(
+            AgendaService.avisos_de_descanso(self.est)[0]["regreso"], regreso)
+
+    # ── Cómo se redacta ───────────────────────────────────────────
+
+    def test_el_cartel_de_cierre_dice_fechas_y_regreso(self):
+        self._periodo()
+        texto = texto_publico(AgendaService.avisos_de_descanso(self.est))
+        self.assertIn("sin servicio", texto)
+        self.assertIn(fecha_corta(self.lunes), texto)
+        self.assertIn(fecha_corta(self.viernes), texto)
+        self.assertIn(fecha_corta(self.lunes + timedelta(days=7)), texto)
+
+    def test_el_cartel_nunca_dice_el_motivo(self):
+        """El enlace público lo abre cualquiera, y el motivo lo escribió el
+        dueño para acordarse él."""
+        self._periodo(motivo="Cirugía de mi mamá")
+        avisos = AgendaService.avisos_de_descanso(self.est)
+        self.assertNotIn("Cirugía", texto_publico(avisos))
+        self.assertNotIn("Cirugía", linea_sistema(avisos))
+        self.assertNotIn("mamá", texto_publico(avisos))
+
+    def test_la_linea_del_modelo_le_prohibe_inventar(self):
+        """El modelo no puede adivinar qué hacer con un dato suelto: ya pasó
+        en producción que tuviera delante el estado verdadero de una cita y
+        contestara otra cosa."""
+        self._periodo()
+        linea = linea_sistema(AgendaService.avisos_de_descanso(self.est))
+        self.assertIn("NO digas el motivo", linea)
+        self.assertIn(fecha_corta(self.lunes), linea)
+
+    def test_sin_descansos_no_hay_nada_que_decir(self):
+        self.assertEqual(texto_publico(AgendaService.avisos_de_descanso(self.est)), "")
+        self.assertEqual(linea_sistema(AgendaService.avisos_de_descanso(self.est)), "")
+
+    def test_varias_alternativas_se_enumeran_con_y(self):
+        self._otro("Diana")
+        self._otro("Sofía")
+        self._periodo()
+        texto = texto_publico(AgendaService.avisos_de_descanso(self.est))
+        self.assertIn("Diana y Sofía", texto)
+        self.assertIn("tienen agenda", texto)
+
+    # ── El atajo del equipo completo ──────────────────────────────
+
+    def test_todo_el_equipo_escribe_una_fila_por_profesional(self):
+        """El bloqueo sigue siendo de cada profesional: en un salón puede
+        irse una manicurista y quedarse dos, y un bloqueo del establecimiento
+        no sabría expresar eso. El atajo evita teclearlo tres veces."""
+        diana = self._otro()
+        api = APIClient()
+        api.force_authenticate(user=self.user)
+        r = api.post(f"/api/v1/profesionales/{self.carlos.id}/bloqueos", {
+            "recurrente": False, "fecha": str(self.lunes),
+            "fecha_fin": str(self.viernes), "todo_el_equipo": True},
+            format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(Bloqueo.objects.filter(profesional=diana).count(), 1)
+        self.assertEqual(sorted(r.json()["equipo"]),
+                         sorted([self.carlos.nombre, diana.nombre]))
+        self.assertIsNone(AgendaService.avisos_de_descanso(self.est)[0]["profesional"])
+
+    def test_sin_la_bandera_solo_se_bloquea_uno(self):
+        diana = self._otro()
+        api = APIClient()
+        api.force_authenticate(user=self.user)
+        api.post(f"/api/v1/profesionales/{self.carlos.id}/bloqueos", {
+            "recurrente": False, "fecha": str(self.lunes),
+            "fecha_fin": str(self.viernes)}, format="json")
+        self.assertEqual(Bloqueo.objects.filter(profesional=diana).count(), 0)
+
+    def test_el_aviso_del_equipo_enumera_las_citas_de_todos(self):
+        """La clienta de Diana también se queda sin cita: callarla porque el
+        bloqueo se creó desde la ficha de Carlos sería esconder justo lo que
+        hay que avisar."""
+        diana = self._otro()
+        cita = AgendaService.reservar(
+            establecimiento=self.est, profesional=diana, servicio=self.corte,
+            cliente=self.cliente, dia=self.lunes, hora_inicio=time(9, 0),
+            canal=Cita.Canal.MANUAL, respetar_tope=False)
+        api = APIClient()
+        api.force_authenticate(user=self.user)
+        r = api.post(f"/api/v1/profesionales/{self.carlos.id}/bloqueos", {
+            "recurrente": False, "fecha": str(self.lunes),
+            "fecha_fin": str(self.viernes), "todo_el_equipo": True},
+            format="json")
+        afectadas = r.json()["citas_afectadas"]
+        self.assertIn(cita.id, [c["id"] for c in afectadas])
+        self.assertIn(diana.nombre, [c["profesional"] for c in afectadas])
+
+    def test_el_equipo_no_alcanza_a_otro_establecimiento(self):
+        ajeno = Usuario.objects.create_user(email="aj2@b.com",
+                                            password="clave12345")
+        otro_est = Establecimiento.objects.create(
+            propietario=ajeno, nombre="Vecina", slug="vecina-equipo",
+            tipo=Establecimiento.Tipo.SALON, telefono="302")
+        vecina = Profesional.objects.create(establecimiento=otro_est,
+                                            nombre="Ajena", activo=True)
+        api = APIClient()
+        api.force_authenticate(user=self.user)
+        api.post(f"/api/v1/profesionales/{self.carlos.id}/bloqueos", {
+            "recurrente": False, "fecha": str(self.lunes),
+            "fecha_fin": str(self.viernes), "todo_el_equipo": True},
+            format="json")
+        self.assertEqual(Bloqueo.objects.filter(profesional=vecina).count(), 0)
