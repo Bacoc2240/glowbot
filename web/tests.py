@@ -1489,3 +1489,57 @@ class PanelNoAgendaEnElPasadoTests(TestCase):
         ahora = timezone.localtime().strftime("%H:%M")
         pasados = [s["valor"] for s in d["slots"] if s["valor"] < ahora]
         self.assertFalse(pasados, f"Ofrece horas ya pasadas: {pasados}")
+
+
+class PantallaPeriodoDescansoTests(TestCase):
+    """La tarjeta de bloqueos con la opción de varios días.
+
+    Mismo límite conocido que las otras pruebas de pantalla: es JavaScript y
+    una prueba de Django no lo ejecuta. Solo puede verificar que el enganche
+    existe y no está comentado. Lo que de verdad protege el periodo son las
+    pruebas del motor y del endpoint.
+    """
+
+    def _vivas(self):
+        html = self.client.get("/panel/horarios").content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    def test_se_puede_elegir_un_periodo_de_varios_dias(self):
+        vivas = self._vivas()
+        self.assertIn('x-model="blo.tipo"', vivas)
+        self.assertIn('value="periodo"', vivas)
+        self.assertIn('x-model="blo.fecha_fin"', vivas)
+
+    def test_un_desplegable_y_no_dos_casillas(self):
+        """«Cada semana» y «varios días seguidos» se excluyen. Con dos
+        casillas independientes se pueden marcar las dos, y entonces la
+        pantalla tiene que decidir cuál gana: una ambigüedad que el
+        desplegable no deja existir."""
+        self.assertNotIn('x-model="blo.recurrente"', self._vivas())
+
+    def test_el_periodo_viaja_con_fecha_fin_al_guardar(self):
+        """Que el campo exista en pantalla no significa que se envíe. Es el
+        defecto que el arnés de mutación encontró en la jornada partida: los
+        campos de la tarde estaban y no se mandaban."""
+        self.assertIn("fecha_fin: periodo ? this.blo.fecha_fin : null",
+                      self._vivas())
+
+    def test_la_pantalla_dice_cuantos_dias_cierra(self):
+        """El selector del celular convierte un toque en el año equivocado en
+        trece meses de agenda cerrada sin que se vea. «372 días» sí se ve."""
+        vivas = self._vivas()
+        self.assertIn("resumenPeriodo()", vivas)
+
+    def test_el_bloqueo_rechazado_se_dice(self):
+        """Antes la respuesta del POST se ignoraba: un bloqueo rechazado
+        desaparecía de la pantalla igual que uno guardado, y el dueño se iba
+        de vacaciones creyendo que su agenda estaba cerrada."""
+        self.assertIn('x-text="errorBloqueo"', self._vivas())
+
+    def test_las_citas_que_quedan_dentro_se_muestran(self):
+        """El sistema no las cancela —no puede avisarle al cliente— así que
+        lo mínimo es que el dueño las vea para llamarlas él."""
+        vivas = self._vivas()
+        self.assertIn('x-show="citasAfectadas.length"', vivas)
+        self.assertIn("citas_afectadas", vivas)

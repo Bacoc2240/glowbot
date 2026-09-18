@@ -4,6 +4,13 @@
 # Antes de ejecutarlo:
 #   mkdir -p /tmp/l13/agenda
 #   cp agenda/services.py agenda/api.py /tmp/l13/agenda/
+#
+# La mutacion de la jornada apunta a `if respetar_horario:` dentro de
+# `reservar`. Antes apuntaba a la llamada que las citas fijas hacian por su
+# cuenta justo antes de reservar; esa comprobacion se mudo a `reservar` con
+# el paquete de periodos de descanso, para que el asistente tampoco pudiera
+# saltarsela, y mantener las dos habria sido tener dos definiciones de "ese
+# dia se atiende".
 set -u
 F=agenda.tests.CitasFijasSemanalesTest
 # Interprete del entorno virtual. En Linux y macOS esta en bin/; en
@@ -24,7 +31,7 @@ MUTACIONES=(
 "La tanda falla entera si una fecha no cabe~agenda/services.py~            except (SlotNoDisponible, DiaNoAtendido, CitaEnElPasado,\n                    TelefonoVetado) as e:~            except ZeroDivisionError as e:~$F.test_un_hueco_ocupado_se_salta_y_se_informa,$F.test_un_dia_bloqueado_se_salta"
 "Las fechas saltadas se callan~agenda/services.py~                saltadas.append({\"fecha\": dia, \"motivo\": str(e)})~                pass~$F.test_un_hueco_ocupado_se_salta_y_se_informa,$F.test_el_motivo_del_salto_llega_escrito"
 "El tope vuelve a frenar la tanda~agenda/services.py~                    respetar_tope=False,~                    respetar_tope=True,~$F.test_el_tope_no_frena_la_tanda"
-"Deja de validarse la jornada y planta citas fuera de horario~agenda/services.py~                cls._exigir_dia_atendido(cita, dia)~                pass~$F.test_no_planta_citas_fuera_de_la_jornada,$F.test_un_dia_bloqueado_se_salta"
+"Deja de validarse la jornada y planta citas fuera de horario~agenda/services.py~        if respetar_horario:~        if False:~$F.test_no_planta_citas_fuera_de_la_jornada,$F.test_un_dia_bloqueado_se_salta"
 "Los bloqueos dejan de mirarse~agenda/services.py~            if cls._solapan(ini, fin, b_ini, b_fin):~            if False:~$F.test_un_dia_bloqueado_se_salta"
 "La cita original se queda fuera de la tanda~agenda/services.py~        if cita.serie is None:\n            cita.serie = serie\n            cita.save(update_fields=[\"serie\"])~        if False:\n            pass~$F.test_la_original_entra_en_la_tanda,$F.test_cancelar_la_serie_se_lleva_las_futuras"
 "Repetir dos veces parte el grupo en dos~agenda/services.py~        serie = cita.serie or uuid.uuid4()~        serie = uuid.uuid4()~$F.test_repetir_dos_veces_no_parte_el_grupo_en_dos"

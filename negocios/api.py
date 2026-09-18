@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 
 from .models import Establecimiento, HorarioBase, Profesional, Servicio
 from .qr import data_uri_del_enlace
-from agenda.fechas import fecha_corta, franja_texto
+from agenda.fechas import fecha_corta, franja_texto, hora_texto
 from agenda.services import AgendaService
 
 
@@ -210,7 +210,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Bloqueo, ExcepcionHorario
+from django.utils import timezone
+
+from .models import DIAS_MAX_PERIODO_BLOQUEO, Bloqueo, ExcepcionHorario
 
 
 class HorarioBaseSerializer(serializers.ModelSerializer):
@@ -261,14 +263,24 @@ class ExcepcionSerializer(serializers.ModelSerializer):
 
 
 class BloqueoSerializer(serializers.ModelSerializer):
+    """Bloqueo de un dia, periodo de descanso o recurrente.
+
+    Un periodo se pide igual que un dia suelto, anadiendo `fecha_fin`. Quien
+    no la manda --el panel de antes de este cambio, o cualquier cliente del
+    API escrito contra la version anterior-- sigue creando exactamente lo
+    mismo que creaba: un bloqueo de un dia. Por eso no hay endpoint aparte ni
+    campo `tipo`; el periodo no es otra cosa, es un dia con otro final.
+    """
+
     franja_texto = serializers.SerializerMethodField()
     fecha_texto = serializers.SerializerMethodField()
+    dias = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Bloqueo
-        fields = ["id", "recurrente", "fecha", "dia_semana",
+        fields = ["id", "recurrente", "fecha", "fecha_fin", "dia_semana",
                   "hora_inicio", "hora_fin", "motivo",
-                  "franja_texto", "fecha_texto"]
+                  "franja_texto", "fecha_texto", "dias"]
 
     def get_franja_texto(self, obj):
         if obj.hora_inicio is None or obj.hora_fin is None:
@@ -276,18 +288,57 @@ class BloqueoSerializer(serializers.ModelSerializer):
         return franja_texto(obj.hora_inicio, obj.hora_fin)
 
     def get_fecha_texto(self, obj):
-        return fecha_corta(obj.fecha) if obj.fecha else None
+        if not obj.fecha:
+            return None
+        if obj.es_periodo:
+            return f"{fecha_corta(obj.fecha)} al {fecha_corta(obj.fecha_fin)}"
+        return fecha_corta(obj.fecha)
 
     def validate(self, data):
         if data.get("recurrente") and data.get("dia_semana") is None:
             raise serializers.ValidationError(
                 "Un bloqueo recurrente requiere dia_semana.")
+        if data.get("recurrente") and data.get("fecha_fin") is not None:
+            # Se rechaza en vez de ignorarse. Descartar el campo en silencio
+            # le haria creer a quien lo mando que "todos los domingos hasta
+            # diciembre" quedo acotado, cuando bloquearia los domingos para
+            # siempre.
+            raise serializers.ValidationError(
+                "Un bloqueo recurrente no lleva fecha_fin: se repite cada "
+                "semana sin final.")
         if not data.get("recurrente") and data.get("fecha") is None:
             raise serializers.ValidationError(
                 "Un bloqueo puntual requiere fecha.")
         if (data.get("hora_inicio") is None) != (data.get("hora_fin") is None):
             raise serializers.ValidationError(
                 "Defina ambas horas o ninguna (día completo).")
+
+        if not data.get("recurrente"):
+            inicio = data["fecha"]
+            # Un dia suelto entra aqui como periodo de un dia. La forma la
+            # fija UNA linea, y no cada consulta que venga despues.
+            fin = data.get("fecha_fin") or inicio
+            data["fecha_fin"] = fin
+            if fin < inicio:
+                raise serializers.ValidationError(
+                    "La fecha final no puede ser anterior a la inicial.")
+            if fin > inicio and data.get("hora_inicio") is not None:
+                raise serializers.ValidationError(
+                    "Un periodo de varios días bloquea días completos. Para "
+                    "bloquear unas horas, crea un bloqueo de un solo día.")
+            dias = (fin - inicio).days + 1
+            if dias > DIAS_MAX_PERIODO_BLOQUEO:
+                raise serializers.ValidationError(
+                    f"El periodo cubre {dias} días y el máximo son "
+                    f"{DIAS_MAX_PERIODO_BLOQUEO}. Revisa las fechas; si de "
+                    f"verdad necesitas más, crea dos periodos seguidos.")
+            # Un periodo que termino ayer no protege nada, y aceptarlo le
+            # haria creer al dueno que sus vacaciones quedaron guardadas
+            # cuando lo que toco fue el ano equivocado del selector. El que
+            # empezo ayer y sigue vigente SI se acepta: cubre lo que queda.
+            if fin < timezone.localdate():
+                raise serializers.ValidationError(
+                    "Esas fechas ya pasaron. Revisa el año en el selector.")
         return data
 
 
@@ -362,7 +413,19 @@ class BloqueosView(APIView):
         s = BloqueoSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         bloqueo = Bloqueo.objects.create(profesional=prof, **s.validated_data)
-        return Response(BloqueoSerializer(bloqueo).data, status=status.HTTP_201_CREATED)
+        # El bloqueo se guarda AUNQUE haya citas dentro, y la respuesta las
+        # enumera para que el panel se lo diga al dueno. El porque de no
+        # cancelarlas esta en AgendaService.citas_bajo_bloqueo.
+        datos = BloqueoSerializer(bloqueo).data
+        datos["citas_afectadas"] = [{
+            "id": c.id,
+            "fecha_texto": fecha_corta(c.fecha),
+            "hora_texto": hora_texto(c.hora_inicio),
+            "cliente": c.cliente.nombre,
+            "telefono": c.cliente.telefono,
+            "servicio": c.servicio.nombre,
+        } for c in AgendaService.citas_bajo_bloqueo(bloqueo)]
+        return Response(datos, status=status.HTTP_201_CREATED)
 
 
 class EliminarBloqueoView(APIView):

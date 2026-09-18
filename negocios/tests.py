@@ -919,3 +919,98 @@ class CitasPorAtenderMiranElRelojTest(TestCase):
             datos = self._borrar()
         self.assertEqual(datos["citas_futuras"], 1)
         self.assertIn("por atender", datos["detalle"])
+
+
+class MigracionPeriodoBloqueoTest(TestCase):
+    """La mitad peligrosa de la 0015: completar `fecha_fin` en lo ya guardado.
+
+    El motor pasa a preguntar `fecha <= dia <= fecha_fin`. Un bloqueo antiguo
+    con `fecha_fin` NULL no cumple esa condición NUNCA —en SQL, comparar con
+    NULL no da verdadero—, así que el domingo que el dueño bloqueó hace un
+    mes volvería a ofrecerse en el chat al desplegar. Nada fallaría: sin este
+    paso, simplemente empezarían a entrar citas en su día libre.
+
+    Para reproducir el estado anterior hay que quitar la restricción, que es
+    justo lo que impide dejar una fila a medias. Se hace dentro de la
+    transacción de la prueba, que PostgreSQL revierte al terminar.
+    """
+
+    def setUp(self):
+        from datetime import time
+        from agenda.fechas_de_prueba import proximo_dia_semana
+        from negocios.models import Bloqueo, Profesional
+        # La restricción se quita ANTES de insertar nada: PostgreSQL no deja
+        # alterar una tabla que tenga eventos de disparador pendientes en la
+        # misma transacción, y cada fila insertada deja uno.
+        self._quitar_restriccion()
+        usuario = Usuario.objects.create_user(
+            email="mig15@ejemplo.com", password="Clave12345")
+        est = Establecimiento.objects.create(
+            propietario=usuario, nombre="Estudio", slug="mig15",
+            tipo=Establecimiento.Tipo.UNAS, telefono="3101112233")
+        self.prof = Profesional.objects.create(establecimiento=est,
+                                               nombre="Daniela")
+        # Un miercoles y no "dentro de tres dias": el bloqueo recurrente de
+        # abajo es de los domingos, y una fecha movil cae en domingo una vez
+        # por semana. Ese dia el recurrente cerraria la agenda por su cuenta
+        # y la prueba pasaria sin que el periodo hiciera nada.
+        self.miercoles = proximo_dia_semana(2)
+        self.puntual = Bloqueo.objects.create(profesional=self.prof,
+                                              fecha=self.miercoles)
+        self.por_horas = Bloqueo.objects.create(
+            profesional=self.prof, fecha=self.miercoles,
+            hora_inicio=time(12, 0), hora_fin=time(14, 0))
+        self.recurrente = Bloqueo.objects.create(
+            profesional=self.prof, recurrente=True, dia_semana=6)
+        self._ensuciar()
+
+    def _quitar_restriccion(self):
+        from django.db import connection
+        with connection.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE bloqueo DROP CONSTRAINT ck_bloqueo_puntual_con_fin")
+
+    def _ensuciar(self):
+        """Devuelve las filas al estado anterior a la migración."""
+        from negocios.models import Bloqueo
+        Bloqueo.objects.all().update(fecha_fin=None)
+
+    def _correr(self):
+        import importlib
+        from django.apps import apps
+        modulo = importlib.import_module(
+            "negocios.migrations.0015_bloqueo_periodo")
+        modulo.completar_fecha_fin(apps, None)
+
+    def test_los_bloqueos_de_un_dia_quedan_con_su_fecha_fin(self):
+        from negocios.models import Bloqueo
+        self._correr()
+        self.assertEqual(Bloqueo.objects.get(pk=self.puntual.pk).fecha_fin,
+                         self.miercoles)
+        self.assertEqual(Bloqueo.objects.get(pk=self.por_horas.pk).fecha_fin,
+                         self.miercoles)
+
+    def test_el_bloqueo_recurrente_se_queda_sin_fecha_fin(self):
+        """Un recurrente no se acota por fechas: ponerle un fin lo convertiría
+        en un periodo que termina, y el día libre de cada semana dejaría de
+        existir a partir de esa fecha."""
+        from negocios.models import Bloqueo
+        self._correr()
+        self.assertIsNone(Bloqueo.objects.get(pk=self.recurrente.pk).fecha_fin)
+
+    def test_tras_la_migracion_el_dia_bloqueado_sigue_bloqueado(self):
+        """La prueba de la consecuencia, no del campo: lo que se protege es
+        que el día libre no vuelva a ofrecerse."""
+        from datetime import time
+        from agenda.services import AgendaService
+        from negocios.models import Servicio
+        servicio = Servicio.objects.create(
+            establecimiento=self.prof.establecimiento, nombre="Manicure",
+            duracion_min=60)
+        from negocios.models import HorarioBase
+        HorarioBase.objects.create(
+            profesional=self.prof, dia_semana=self.miercoles.weekday(),
+            hora_inicio=time(9, 0), hora_fin=time(17, 0))
+        self._correr()
+        self.assertEqual(
+            AgendaService.calcular_slots(self.prof, servicio, self.miercoles), [])

@@ -178,6 +178,10 @@ class CitaViewSet(viewsets.ModelViewSet):
                 canal=Cita.Canal.MANUAL,
                 respetar_bloqueo=not confirmado,
                 respetar_tope=False,
+                # El dueno puede meter una cita en su dia de descanso o
+                # fuera de horario: la esta viendo y la decide el. Lo que la
+                # jornada y los bloqueos le quitan es el AUTOSERVICIO.
+                respetar_horario=False,
                 antelacion_min=0,
             )
         except TelefonoVetado:

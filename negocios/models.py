@@ -288,15 +288,54 @@ class ExcepcionHorario(models.Model):
         ]
 
 
+# Tope de un periodo de descanso. No es una regla sobre cuanto puede
+# descansar alguien: es un freno contra el error de digitacion. En el selector
+# de fecha del celular, tocar el ano equivocado convierte "del 21 al 27 de
+# septiembre" en un ano y una semana de agenda cerrada, y nada lo delataria:
+# un dia sin horas libres se ve igual que un dia en que nadie reservo.
+# Sesenta dias cubren unas vacaciones largas; quien necesite mas encadena dos.
+# Vive en la validacion de entrada y no en la base porque es un freno, no un
+# invariante: un periodo de 61 dias no corrompe nada.
+DIAS_MAX_PERIODO_BLOQUEO = 60
+
+
 class Bloqueo(models.Model):
     """Capa 3 — Diccionario §2.8 (RF-14, RF-15). Se RESTA del horario vigente.
-    Puntual (fecha) o recurrente (dia_semana); franja u horas NULL = día completo."""
+
+    Tres formas, franja u horas NULL = dia completo:
+
+      * puntual de un dia    fecha = fecha_fin, con o sin franja de horas;
+      * periodo de descanso  fecha < fecha_fin, SIEMPRE dia completo;
+      * recurrente           dia_semana, con fecha_fin nula.
+
+    El periodo es UNA fila con dos fechas y no N filas de un dia, aunque lo
+    segundo no habria obligado a tocar el motor. Con N filas, "mis
+    vacaciones" dejaria de existir como cosa: quitarlas seria borrar siete
+    bloqueos uno por uno, adelantar el regreso seria adivinar cuales, y el
+    listado del panel se llenaria de lineas iguales que esconden el bloqueo
+    del domingo que si importa. Una decision del dueno, una fila.
+
+    Tampoco es un modelo aparte (`PeriodoDescanso`). Seria una segunda tabla
+    que el motor, las citas fijas y el asistente tendrian que acordarse de
+    consultar, y la que se olvidara dejaria entrar citas en las vacaciones.
+    El periodo no es otra cosa que un bloqueo: es un dia con otro final.
+
+    Un bloqueo puntual guarda SIEMPRE fecha_fin, aunque sea de un solo dia.
+    Si "un dia" pudiera escribirse como fecha_fin NULL o como fecha_fin =
+    fecha, cada consulta tendria que acordarse de las dos formas. `save()`
+    completa la que falte, de modo que el admin, las pruebas y cualquier
+    `objects.create(fecha=...)` escrito antes de este cambio producen la
+    misma forma; la restriccion `ck_bloqueo_puntual_con_fin` impide que un
+    `update()` --que no pasa por save()-- deje una fila a medias.
+    """
 
     profesional = models.ForeignKey(
         Profesional, on_delete=models.CASCADE, related_name="bloqueos", db_index=True,
     )
     recurrente = models.BooleanField(default=False)
     fecha = models.DateField(null=True, blank=True)
+    # Ultimo dia bloqueado, INCLUSIVE. Ver `AgendaService._q_bloqueo_aplica`.
+    fecha_fin = models.DateField(null=True, blank=True)
     dia_semana = models.PositiveSmallIntegerField(
         choices=DIAS_SEMANA, null=True, blank=True,
     )
@@ -306,6 +345,65 @@ class Bloqueo(models.Model):
 
     class Meta:
         db_table = "bloqueo"
+        constraints = [
+            # Un bloqueo puntual con fecha y sin fin no cubriria NINGUN dia:
+            # el motor pregunta `fecha <= dia <= fecha_fin`, y en SQL una
+            # comparacion con NULL no es verdadera. El dia libre del dueno
+            # volveria a ofrecerse en el chat sin que nada fallara.
+            #
+            # `fecha_fin__isnull=False` va escrito aunque parezca redundante
+            # con el `gte`: un CHECK de PostgreSQL deja pasar las filas en las
+            # que la condicion da NULL, asi que `fecha_fin >= fecha` a secas
+            # aceptaria justo la fila que se quiere impedir.
+            #
+            # Las filas puntuales sin fecha no se tocan: ya hoy no bloquean
+            # nada, el admin no las deja crear, y exigirlo aqui podria tumbar
+            # la migracion en produccion por un dato que nadie ve.
+            models.CheckConstraint(
+                check=(models.Q(recurrente=True)
+                       | models.Q(fecha__isnull=True)
+                       | models.Q(fecha_fin__isnull=False,
+                                  fecha_fin__gte=models.F("fecha"))),
+                name="ck_bloqueo_puntual_con_fin",
+            ),
+            # Un recurrente no se acota por fechas. Rechazarlo en la base, y
+            # no ignorar el campo, evita que "todos los domingos hasta
+            # diciembre" se guarde como "todos los domingos para siempre".
+            models.CheckConstraint(
+                check=(models.Q(recurrente=False)
+                       | models.Q(fecha_fin__isnull=True)),
+                name="ck_bloqueo_recurrente_sin_fin",
+            ),
+            # Un periodo de varios dias es de dia completo. "Del lunes al
+            # viernes de 2 a 4" es ambiguo --¿cada tarde, o del lunes a las 2
+            # al viernes a las 4?-- y nadie lo ha pedido. Si algun dia hace
+            # falta, lo que no tiene ambiguedad es un recurrente acotado, no
+            # reinterpretar este.
+            models.CheckConstraint(
+                check=(models.Q(fecha_fin__isnull=True)
+                       | models.Q(fecha_fin=models.F("fecha"))
+                       | models.Q(hora_inicio__isnull=True,
+                                  hora_fin__isnull=True)),
+                name="ck_bloqueo_periodo_dia_completo",
+            ),
+        ]
+
+    @property
+    def es_periodo(self) -> bool:
+        return (not self.recurrente and self.fecha is not None
+                and self.fecha_fin is not None and self.fecha_fin > self.fecha)
+
+    @property
+    def dias(self) -> int:
+        """Dias calendario que cubre, contando los dos extremos. 0 si recurrente."""
+        if self.recurrente or self.fecha is None:
+            return 0
+        return ((self.fecha_fin or self.fecha) - self.fecha).days + 1
+
+    def save(self, *args, **kwargs):
+        if not self.recurrente and self.fecha is not None and self.fecha_fin is None:
+            self.fecha_fin = self.fecha
+        super().save(*args, **kwargs)
 
     def clean(self):
         if self.recurrente and self.dia_semana is None:

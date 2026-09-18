@@ -18,8 +18,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from agenda.models import Cita
-from agenda.services import (AgendaService, CitaEnElPasado, SlotNoDisponible,
-                             TelefonoVetado)
+from agenda.services import (AgendaService, CitaEnElPasado, DiaNoAtendido,
+                             SlotNoDisponible, TelefonoVetado)
 from asistente.models import ConversacionIA
 
 from .demo import (CLIENTES_DEMO, DEMOS, DIAS_LABORALES, DIAS_SEMBRADOS,
@@ -181,7 +181,8 @@ def sembrar_ocupacion(est):
                         antelacion_min=0,
                     )
                     creadas += 1
-                except (SlotNoDisponible, CitaEnElPasado, TelefonoVetado):
+                except (SlotNoDisponible, CitaEnElPasado, TelefonoVetado,
+                        DiaNoAtendido):
                     pass
                 n += 1
     return creadas

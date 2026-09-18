@@ -642,11 +642,14 @@ class TopeCitasAbiertasTest(TestCase):
             telefono="3192846956", acepta_datos=True)
 
     def _reservar(self, dias_adelante, hora, cliente=None):
+        # Esta clase no monta jornada: lo que mide es el tope por telefono, y
+        # las citas son utileria. `respetar_horario=False` lo dice en vez de
+        # inventar un horario base que ninguna prueba de aqui consulta.
         return AgendaService.reservar(
             establecimiento=self.est, profesional=self.prof, servicio=self.serv,
             cliente=cliente or self.cliente,
             dia=timezone.localdate() + timedelta(days=dias_adelante),
-            hora_inicio=time(hora, 0),
+            hora_inicio=time(hora, 0), respetar_horario=False,
         )
 
     def test_permite_hasta_el_tope(self):
@@ -869,7 +872,9 @@ class BloqueoTelefonoTest(TestCase):
             establecimiento=self.est, profesional=self.prof, servicio=self.serv,
             cliente=cliente or self.cliente,
             dia=timezone.localdate() + timedelta(days=dias),
-            hora_inicio=time(9, 0), respetar_bloqueo=respetar_bloqueo)
+            hora_inicio=time(9, 0), respetar_bloqueo=respetar_bloqueo,
+            # Sin jornada montada: aqui el sujeto es el veto por telefono.
+            respetar_horario=False)
 
     def test_el_bloqueado_no_puede_reservar_en_linea(self):
         from negocios.clientes import ClienteService
@@ -917,7 +922,9 @@ class BloqueoTelefonoTest(TestCase):
         cita = AgendaService.reservar(
             establecimiento=vecina, profesional=prof2, servicio=serv2,
             cliente=cli2, dia=timezone.localdate() + timedelta(days=1),
-            hora_inicio=time(9, 0))
+            # La vecina tampoco tiene jornada montada: el sujeto es que el
+            # veto de una barberia no alcanza a la de al lado.
+            hora_inicio=time(9, 0), respetar_horario=False)
         self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
 
     def test_desbloquear_devuelve_el_autoservicio(self):
@@ -1828,7 +1835,8 @@ class QueCuentaComoCitaFuturaTest(TestCase):
             establecimiento=self.est, profesional=self.prof,
             servicio=self.serv, cliente=self.cli,
             dia=(self.AHORA + timedelta(days=dias)).date(),
-            hora_inicio=time(9, 0))
+            # Sin jornada montada: el sujeto es que cuenta como cita futura.
+            hora_inicio=time(9, 0), respetar_horario=False)
 
     # ── El tope ───────────────────────────────────────────────────
 
@@ -2226,7 +2234,13 @@ class CitasFijasSemanalesTest(TestCase):
         pasada = Cita.objects.create(
             establecimiento=self.est, profesional=self.prof,
             servicio=self.serv, cliente=self.cli,
-            fecha=self.viernes - timedelta(weeks=1),
+            # DOS semanas atrás, no una. `self.viernes` es el próximo viernes,
+            # que cuando hoy ES viernes cae dentro de siete días: restarle una
+            # semana daba HOY a las 19:40, que sigue siendo futuro hasta esa
+            # hora. La prueba fallaba los viernes por la mañana y pasaba por
+            # la noche. Restando dos semanas la fecha está en el pasado
+            # cualquier día y a cualquier hora.
+            fecha=self.viernes - timedelta(weeks=2),
             hora_inicio=time(19, 40), hora_fin=time(20, 10),
             estado=Cita.Estado.CONFIRMADA, serie=self.cita.serie)
         AgendaService.cancelar_serie(self.est, self.cita.serie)
@@ -2297,3 +2311,248 @@ class CitasFijasSemanalesTest(TestCase):
         self.api.force_authenticate(user=self.duenio)
         r = self.api.patch(f"/api/v1/citas/{self.cita.id}/cancelar-serie")
         self.assertEqual(r.status_code, 400)
+
+
+class PeriodoDeDescansoTest(BaseAgendaTest):
+    """Bloqueo de varios días seguidos: las vacaciones del dueño.
+
+    Petición del primer cliente real: se iba una semana y tenía que crear
+    siete bloqueos, uno por día. La capa 3 ya sabía restar un día; lo que
+    faltaba era que una decisión —«del 21 al 27 no trabajo»— fuera UNA fila,
+    para poder quitarla o acortarla después sin adivinar cuáles de las siete
+    borrar.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.api = APIClient()
+        self.api.force_authenticate(user=self.user)
+        self.viernes = self.lunes + timedelta(days=4)
+
+    def _periodo(self, inicio=None, fin=None, **extra):
+        return Bloqueo.objects.create(
+            profesional=self.carlos, recurrente=False,
+            fecha=inicio or self.lunes, fecha_fin=fin or self.viernes, **extra)
+
+    def _hay_slots(self, dia):
+        return bool(AgendaService.calcular_slots(self.carlos, self.corte, dia))
+
+    # ── El motor ──────────────────────────────────────────────────
+
+    def test_el_periodo_cierra_todos_sus_dias(self):
+        self._periodo()
+        for n in range(5):
+            self.assertFalse(self._hay_slots(self.lunes + timedelta(days=n)),
+                             f"el día {n} del periodo seguía ofreciendo horas")
+
+    def test_el_ultimo_dia_del_periodo_tambien_esta_cerrado(self):
+        """El borde que decide si el dueño encuentra clientas el día que
+        creía seguir de vacaciones.
+
+        El rango es inclusivo en los dos extremos porque así lo dice
+        cualquier persona («del lunes al viernes») y así lo pinta el selector
+        de fechas. Con un rango semiabierto —lo habitual para intervalos, y
+        lo que se usa para las horas— el viernes quedaría abierto.
+        """
+        self._periodo()
+        self.assertFalse(self._hay_slots(self.viernes))
+
+    def test_el_dia_siguiente_al_periodo_vuelve_a_atender(self):
+        """Un periodo que no termina cierra la agenda para siempre sin que
+        nada lo delate: un día sin horas libres se ve igual que un día en el
+        que nadie reservó."""
+        self._periodo()
+        self.assertTrue(self._hay_slots(self.lunes + timedelta(days=7)))
+
+    def test_un_bloqueo_de_un_dia_no_se_lleva_el_dia_siguiente(self):
+        self._periodo(inicio=self.lunes, fin=self.lunes)
+        self.assertFalse(self._hay_slots(self.lunes))
+        self.assertTrue(self._hay_slots(self.lunes + timedelta(days=1)))
+
+    def test_un_bloqueo_recurrente_sigue_aplicando_por_dia_de_semana(self):
+        """La rama del recurrente no puede caer con el cambio de consulta:
+        `fecha` y `fecha_fin` son nulas ahí, y una condición mal escrita las
+        dejaría fuera."""
+        Bloqueo.objects.create(profesional=self.carlos, recurrente=True,
+                               dia_semana=self.lunes.weekday())
+        self.assertFalse(self._hay_slots(self.lunes))
+        self.assertTrue(self._hay_slots(self.lunes + timedelta(days=1)))
+
+    # ── La forma guardada ─────────────────────────────────────────
+
+    def test_un_bloqueo_de_un_dia_guarda_fecha_fin(self):
+        """Si «un día» pudiera escribirse de dos formas —fecha_fin nula o
+        igual a fecha—, cada consulta tendría que acordarse de las dos, y la
+        que se olvidara dejaría entrar citas en un día bloqueado."""
+        b = Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        b.refresh_from_db()
+        self.assertEqual(b.fecha_fin, self.lunes)
+        self.assertFalse(b.es_periodo)
+        self.assertEqual(b.dias, 1)
+
+    def test_la_base_rechaza_un_bloqueo_puntual_sin_fecha_fin(self):
+        """`save()` completa la fecha, pero un `update()` no pasa por ahí.
+        La restricción es lo que impide que una fila quede a medias y deje
+        de bloquear nada, porque el motor pregunta `fecha <= dia <= fecha_fin`
+        y esa comparación contra NULL nunca es verdadera."""
+        from django.db import IntegrityError, transaction
+        b = Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Bloqueo.objects.filter(pk=b.pk).update(fecha_fin=None)
+
+    def test_los_dias_se_cuentan_con_los_dos_extremos(self):
+        self.assertEqual(self._periodo().dias, 5)
+
+    # ── Las citas que ya estaban dentro ───────────────────────────
+
+    def _cita(self, dia, hora=time(9, 0)):
+        return AgendaService.reservar(
+            establecimiento=self.est, profesional=self.carlos,
+            servicio=self.corte, cliente=self.cliente, dia=dia,
+            hora_inicio=hora, canal=Cita.Canal.MANUAL, respetar_tope=False)
+
+    def test_el_bloqueo_no_cancela_las_citas_que_ya_existian(self):
+        """Cancelarlas en silencio sería peor que no hacer nada: GlowBot no
+        puede avisarle al cliente —no automatiza WhatsApp— y el cliente se
+        presentaría ante un local cerrado sin saber por qué."""
+        cita = self._cita(self.lunes)
+        self._periodo()
+        cita.refresh_from_db()
+        self.assertEqual(cita.estado, Cita.Estado.CONFIRMADA)
+
+    def test_las_citas_dentro_del_periodo_se_enumeran(self):
+        dentro = self._cita(self.lunes)
+        tambien = self._cita(self.viernes, time(10, 0))
+        fuera = self._cita(self.lunes + timedelta(days=7))
+        afectadas = AgendaService.citas_bajo_bloqueo(self._periodo())
+        self.assertEqual([c.id for c in afectadas], [dentro.id, tambien.id])
+        self.assertNotIn(fuera.id, [c.id for c in afectadas])
+
+    def test_una_cita_cancelada_no_figura_como_afectada(self):
+        cita = self._cita(self.lunes)
+        cita.estado = Cita.Estado.CANCELADA_CLIENTE
+        cita.save(update_fields=["estado"])
+        self.assertEqual(AgendaService.citas_bajo_bloqueo(self._periodo()), [])
+
+    def test_un_bloqueo_por_horas_solo_alcanza_a_las_citas_que_solapa(self):
+        """El aviso usa la misma condición que el motor. Si dijera «todas las
+        del día», el dueño llamaría a clientas que no hacía falta mover."""
+        temprano = self._cita(self.lunes, time(9, 0))
+        tarde = self._cita(self.lunes, time(11, 0))
+        bloqueo = Bloqueo.objects.create(
+            profesional=self.carlos, fecha=self.lunes,
+            hora_inicio=time(8, 0), hora_fin=time(10, 0))
+        afectadas = AgendaService.citas_bajo_bloqueo(bloqueo)
+        self.assertEqual([c.id for c in afectadas], [temprano.id])
+        self.assertNotIn(tarde.id, [c.id for c in afectadas])
+
+    # ── Las otras puertas ─────────────────────────────────────────
+
+    def test_las_citas_fijas_saltan_los_dias_del_periodo(self):
+        """Al repetir doce semanas nadie mira cada fecha: sin esto, la tanda
+        plantaría citas dentro de las vacaciones."""
+        cita = self._cita(self.lunes)
+        self._periodo(inicio=self.lunes + timedelta(days=7),
+                      fin=self.lunes + timedelta(days=11))
+        parte = AgendaService.repetir_semanal(cita, semanas=2)
+        self.assertEqual(len(parte["creadas"]), 1)
+        self.assertEqual(parte["saltadas"][0]["fecha"],
+                         self.lunes + timedelta(days=7))
+        self.assertIn("bloqueado", parte["saltadas"][0]["motivo"].lower())
+
+    def test_el_dueno_si_puede_agendar_a_mano_dentro_del_periodo(self):
+        """El bloqueo le quita el AUTOSERVICIO, no la potestad sobre su
+        propia agenda: si una clienta insiste y él acepta atenderla, la
+        decisión es suya y la está viendo."""
+        self._periodo()
+        r = self.api.post("/api/v1/citas", {
+            "profesional": self.carlos.id, "servicio": self.corte.id,
+            "cliente": self.cliente.id, "fecha": str(self.lunes),
+            "hora_inicio": "09:00"}, format="json")
+        self.assertEqual(r.status_code, 201)
+
+    # ── El endpoint ───────────────────────────────────────────────
+
+    def _crear(self, **cuerpo):
+        return self.api.post(
+            f"/api/v1/profesionales/{self.carlos.id}/bloqueos",
+            cuerpo, format="json")
+
+    def test_el_endpoint_crea_un_periodo(self):
+        r = self._crear(recurrente=False, fecha=str(self.lunes),
+                        fecha_fin=str(self.viernes), motivo="Vacaciones")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["dias"], 5)
+        self.assertIn(" al ", r.json()["fecha_texto"])
+        self.assertFalse(self._hay_slots(self.viernes))
+
+    def test_el_endpoint_devuelve_las_citas_que_quedan_dentro(self):
+        """El bloqueo se guarda igual; lo que no se hace es callarlas."""
+        cita = self._cita(self.lunes)
+        r = self._crear(recurrente=False, fecha=str(self.lunes),
+                        fecha_fin=str(self.viernes))
+        afectadas = r.json()["citas_afectadas"]
+        self.assertEqual([c["id"] for c in afectadas], [cita.id])
+        self.assertEqual(afectadas[0]["telefono"], self.cliente.telefono)
+
+    def test_sin_fecha_fin_se_sigue_creando_un_bloqueo_de_un_dia(self):
+        """Compatibilidad: el panel anterior y cualquier cliente del API
+        escrito antes de este cambio mandan el mismo cuerpo de siempre."""
+        r = self._crear(recurrente=False, fecha=str(self.lunes))
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["fecha_fin"], str(self.lunes))
+        self.assertTrue(self._hay_slots(self.lunes + timedelta(days=1)))
+
+    def test_el_endpoint_rechaza_un_fin_anterior_al_inicio(self):
+        r = self._crear(recurrente=False, fecha=str(self.viernes),
+                        fecha_fin=str(self.lunes))
+        self.assertEqual(r.status_code, 400)
+
+    def test_el_endpoint_rechaza_un_periodo_con_horas(self):
+        """«Del lunes al viernes de 2 a 4» no significa lo mismo para dos
+        personas: ¿cada tarde, o desde el lunes a las 2 hasta el viernes a
+        las 4? Se rechaza en vez de elegir una interpretación."""
+        r = self._crear(recurrente=False, fecha=str(self.lunes),
+                        fecha_fin=str(self.viernes),
+                        hora_inicio="14:00", hora_fin="16:00")
+        self.assertEqual(r.status_code, 400)
+
+    def test_el_endpoint_rechaza_un_periodo_desmedido(self):
+        """El freno contra el dedo, no contra el descanso: un toque en el año
+        equivocado del selector cierra la agenda un año entero."""
+        r = self._crear(recurrente=False, fecha=str(self.lunes),
+                        fecha_fin=str(self.lunes + timedelta(days=400)))
+        self.assertEqual(r.status_code, 400)
+
+    def test_el_endpoint_rechaza_un_periodo_que_ya_termino(self):
+        ayer = timezone.localdate() - timedelta(days=1)
+        r = self._crear(recurrente=False,
+                        fecha=str(ayer - timedelta(days=3)), fecha_fin=str(ayer))
+        self.assertEqual(r.status_code, 400)
+
+    def test_el_endpoint_acepta_un_periodo_en_curso(self):
+        """Empezó ayer y termina el viernes: todavía protege los días que
+        quedan, así que rechazarlo obligaría a recortarlo a mano."""
+        r = self._crear(recurrente=False,
+                        fecha=str(timezone.localdate() - timedelta(days=1)),
+                        fecha_fin=str(self.viernes))
+        self.assertEqual(r.status_code, 201)
+
+    def test_el_endpoint_rechaza_un_recurrente_con_fecha_fin(self):
+        """Ignorar el campo en silencio le haría creer a quien lo mandó que
+        «todos los domingos hasta diciembre» quedó acotado, cuando bloquearía
+        los domingos para siempre."""
+        r = self._crear(recurrente=True, dia_semana=6,
+                        fecha_fin=str(self.viernes))
+        self.assertEqual(r.status_code, 400)
+
+    def test_el_periodo_de_otro_establecimiento_no_se_puede_crear(self):
+        ajeno = Usuario.objects.create_user(email="aj@b.com",
+                                            password="clave12345")
+        self.api.force_authenticate(user=ajeno)
+        Establecimiento.objects.create(
+            propietario=ajeno, nombre="Ajena", slug="ajena-periodo",
+            tipo=Establecimiento.Tipo.SALON, telefono="301")
+        with self.assertRaises(Profesional.DoesNotExist):
+            self._crear(recurrente=False, fecha=str(self.lunes),
+                        fecha_fin=str(self.viernes))

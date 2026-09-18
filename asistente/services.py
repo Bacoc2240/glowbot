@@ -28,8 +28,8 @@ from agenda.fechas import DIAS, MESES, fecha_larga, hora_texto  # noqa: F401
 from agenda.calendario import enlace_google, firma as firma_cita
 from agenda.models import Cita, Notificacion
 from agenda.services import (
-    AgendaService, CitaEnElPasado, SlotNoDisponible, TelefonoVetado,
-    TopeCitasAlcanzado,
+    AgendaService, CitaEnElPasado, DiaNoAtendido, SlotNoDisponible,
+    TelefonoVetado, TopeCitasAlcanzado,
 )
 from negocios.clientes import ClienteService
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
@@ -714,6 +714,20 @@ REGLAS OBLIGATORIAS:
                           "el sistema.")
         except SlotNoDisponible as e:
             return None, f"{e} Consulta la disponibilidad y ofrece alternativas."
+        except DiaNoAtendido:
+            # El modelo pidio un dia de descanso o una hora fuera de la
+            # jornada: algo que no se le ofrecio. Es INFORMATIVA y no rechazo,
+            # igual que el slot ocupado: "ese dia no hay atencion" es cierto y
+            # se puede decir cerrando el turno. Lo que no puede es inventarse
+            # otra hora, asi que se le manda a consultar.
+            #
+            # No se le da el motivo ni la fecha de regreso: son del dueno,
+            # no del chat publico.
+            return None, ("Ese profesional no atiende ese día a esa hora, "
+                          "así que la cita NO se creó. Consulta la "
+                          "disponibilidad de otra fecha u otro profesional y "
+                          "ofrece solo lo que devuelva el sistema. NO digas "
+                          "por qué no atiende.")
 
     @staticmethod
     def _profesionales_que_prestan(establecimiento, servicio):

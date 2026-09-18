@@ -63,11 +63,8 @@ class CitaEnElPasado(Exception):
 class DiaNoAtendido(Exception):
     """Ese dia y a esa hora el profesional no atiende, o esta bloqueado.
 
-    `reservar` NO comprueba el horario ni los bloqueos, y no es un descuido:
-    la puerta del panel existe justamente para que el dueno pueda meter una
-    cita fuera de su horario si le da la gana. Pero al repetir ocho semanas
-    de golpe nadie esta mirando cada fecha, asi que ahi si hay que validar,
-    o la tanda plantaria citas en las vacaciones del profesional.
+    La lanza `reservar` salvo con `respetar_horario=False`. Ver alli por que
+    el panel se la salta y el asistente y las citas fijas no.
     """
 
 
@@ -124,8 +121,12 @@ class AgendaService:
         programa es el dueno sobre un cliente que ya conoce.
 
         Todo lo demas se hereda de `reservar` sin duplicar nada: el doble
-        blindaje contra el solape, el veto por inasistencias y el rechazo de
-        fechas pasadas.
+        blindaje contra el solape, el veto por inasistencias, el rechazo de
+        fechas pasadas y --desde los periodos de descanso-- la jornada y los
+        bloqueos. Antes esto ultimo se comprobaba aqui con una funcion propia
+        justo antes de llamar a `reservar`; al pasar la comprobacion a
+        `reservar` para cerrarle la puerta al asistente, mantener las dos
+        habria sido tener dos definiciones de "ese dia se atiende".
         """
         if not 1 <= semanas <= cls.SEMANAS_MAX:
             raise ValueError(
@@ -143,7 +144,6 @@ class AgendaService:
         for n in range(1, semanas + 1):
             dia = cita.fecha + timedelta(weeks=n)
             try:
-                cls._exigir_dia_atendido(cita, dia)
                 creadas.append(cls.reservar(
                     establecimiento=cita.establecimiento,
                     profesional=cita.profesional,
@@ -161,29 +161,36 @@ class AgendaService:
         return {"serie": serie, "creadas": creadas, "saltadas": saltadas}
 
     @classmethod
-    def _exigir_dia_atendido(cls, cita, dia: date) -> None:
-        """La copia tiene que caber en la jornada y fuera de los bloqueos.
+    def _exigir_horario_atendido(cls, profesional, dia: date,
+                                 ini: int, fin: int) -> None:
+        """El intervalo [ini, fin) tiene que caber en la jornada y fuera de
+        los bloqueos. Lanza DiaNoAtendido si no.
 
         No se comprueba pidiendo `calcular_slots` y mirando si la hora esta
         en la lista: esa lista viene troquelada en pasos de quince minutos
         desde el inicio de la franja, y la cita de Pedro es a las 7:40 de la
-        tarde. Con ese criterio, la serie del cliente que motivo la funcion
-        se habria saltado TODAS las semanas.
+        tarde. Con ese criterio, la serie del cliente que motivo las citas
+        fijas se habria saltado TODAS las semanas. Y un modelo que pide las
+        9:10 dentro de una franja libre tampoco esta pidiendo nada invalido.
 
         Se reutilizan en cambio las mismas capas que alimentan a
         `calcular_slots` --franjas del dia y bloqueos-- comprobando que el
-        intervalo exacto de la cita entra donde tiene que entrar. La
-        ocupacion no se mira aqui: de eso ya se encarga `reservar` con el
-        cerrojo y la restriccion de la base, y duplicar la comprobacion seria
-        crear una segunda definicion de "ocupado".
+        intervalo exacto entra donde tiene que entrar. La ocupacion no se
+        mira aqui: de eso ya se encarga `reservar` con el cerrojo y la
+        restriccion de la base, y duplicar la comprobacion seria crear una
+        segunda definicion de "ocupado".
+
+        Los mensajes son para el DUENO --los lee en el parte de las citas
+        fijas saltadas-- y por eso dicen que el dia esta bloqueado. Al
+        cliente final no se le relatan: el asistente traduce la excepcion a
+        una frase neutra, porque "de vacaciones hasta el 27" es informacion
+        del negocio y no del chat publico.
         """
-        ini = cls._a_minutos(cita.hora_inicio)
-        fin = ini + cita.servicio.duracion_min
-        franjas = cls._franjas_del_dia(cita.profesional, dia)
+        franjas = cls._franjas_del_dia(profesional, dia)
         if not any(f_ini <= ini and fin <= f_fin for f_ini, f_fin in franjas):
             raise DiaNoAtendido(
-                f"{cita.profesional.nombre} no atiende a esa hora ese día.")
-        for b_ini, b_fin in cls._bloqueos_del_dia(cita.profesional, dia):
+                f"{profesional.nombre} no atiende a esa hora ese día.")
+        for b_ini, b_fin in cls._bloqueos_del_dia(profesional, dia):
             if cls._solapan(ini, fin, b_ini, b_fin):
                 raise DiaNoAtendido("Ese día está bloqueado.")
 
@@ -265,22 +272,84 @@ class AgendaService:
     # ──────────────────────────────────────────────────────────────
     #  Capa 3: bloqueos aplicables a la fecha
     # ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _q_bloqueo_aplica(dia: date) -> Q:
+        """LA definicion de "este bloqueo cubre esta fecha". Hay una sola.
+
+        La usan el motor de disponibilidad y el aviso de citas afectadas al
+        crear un bloqueo. Si cada uno escribiera su condicion, bastaria con
+        que divergieran en un borde --el ultimo dia del periodo, por
+        ejemplo-- para que el aviso callara una cita que el motor si
+        considera bloqueada, o al reves.
+
+        El periodo es INCLUSIVO en los dos extremos: "del lunes 21 al domingo
+        27" significa que el domingo tampoco se trabaja. Es como lo dice
+        cualquier persona y como lo pinta el selector de fechas. Un rango
+        semiabierto [inicio, fin) --lo habitual en intervalos, y lo que se
+        usa para las horas-- dejaria el domingo abierto, y el dueno lo
+        descubriria cuando llegue la primera clienta.
+
+        Un bloqueo de un solo dia es el caso fecha = fecha_fin (lo garantizan
+        `Bloqueo.save()`, la migracion 0015 y `ck_bloqueo_puntual_con_fin`),
+        asi que no necesita rama propia.
+        """
+        return (Q(recurrente=False, fecha__lte=dia, fecha_fin__gte=dia)
+                | Q(recurrente=True, dia_semana=dia.weekday()))
+
+    @classmethod
+    def _franja_del_bloqueo(cls, b):
+        """(ini_min, fin_min) que ocupa un bloqueo dentro de un dia."""
+        if b.hora_inicio is None or b.hora_fin is None:
+            return (0, 24 * 60)  # día completo
+        return (cls._a_minutos(b.hora_inicio), cls._a_minutos(b.hora_fin))
+
     @classmethod
     def _bloqueos_del_dia(cls, profesional: Profesional, dia: date):
         """Franjas bloqueadas [(ini_min, fin_min)] para esa fecha.
         Un bloqueo de día completo (horas NULL) devuelve la franja máxima."""
         qs = Bloqueo.objects.filter(profesional=profesional).filter(
-            # puntual por fecha O recurrente por día de la semana
-            Q(recurrente=False, fecha=dia)
-            | Q(recurrente=True, dia_semana=dia.weekday())
-        )
-        franjas = []
-        for b in qs:
-            if b.hora_inicio is None or b.hora_fin is None:
-                franjas.append((0, 24 * 60))  # día completo
-            else:
-                franjas.append((cls._a_minutos(b.hora_inicio), cls._a_minutos(b.hora_fin)))
-        return franjas
+            cls._q_bloqueo_aplica(dia))
+        return [cls._franja_del_bloqueo(b) for b in qs]
+
+    @classmethod
+    def citas_bajo_bloqueo(cls, bloqueo, ahora=None):
+        """Citas confirmadas y futuras que el bloqueo deja dentro.
+
+        Crear un bloqueo NO cancela las citas que ya existen, y es a
+        proposito. Cancelarlas en silencio seria peor que no hacer nada: el
+        cliente no se entera --GlowBot no puede escribirle por WhatsApp sin
+        que una persona pulse enviar-- y se presenta ante un local cerrado.
+        Rechazar el bloqueo tampoco sirve: el dueno ya decidio irse, y
+        obligarlo a cancelar cita por cita antes de poder guardar sus
+        vacaciones es un formulario que se abandona a medias.
+
+        Lo que se hace es DECIRLO. Es la misma leccion de las citas fijas
+        saltadas: lo que falla callado es lo que hace dano. El dueno recibe
+        la lista con nombre y telefono, y decide a quien llama.
+
+        Se acota primero por el rango de fechas --un atajo para no traer
+        todas las citas futuras-- y despues cada fecha se confirma con
+        `_q_bloqueo_aplica`, la misma condicion del motor. Solapar por horas
+        usa `_solapan`, la misma que la reserva.
+        """
+        citas = cls.solo_futuras(Cita.objects.filter(
+            profesional=bloqueo.profesional, estado=Cita.Estado.CONFIRMADA,
+        ), ahora=ahora).select_related("cliente", "servicio")
+        if not bloqueo.recurrente:
+            citas = citas.filter(fecha__gte=bloqueo.fecha,
+                                 fecha__lte=bloqueo.fecha_fin)
+
+        b_ini, b_fin = cls._franja_del_bloqueo(bloqueo)
+        cubre, afectadas = {}, []
+        for c in citas.order_by("fecha", "hora_inicio"):
+            if c.fecha not in cubre:
+                cubre[c.fecha] = Bloqueo.objects.filter(pk=bloqueo.pk).filter(
+                    cls._q_bloqueo_aplica(c.fecha)).exists()
+            if cubre[c.fecha] and cls._solapan(
+                    cls._a_minutos(c.hora_inicio), cls._a_minutos(c.hora_fin),
+                    b_ini, b_fin):
+                afectadas.append(c)
+        return afectadas
 
     # ──────────────────────────────────────────────────────────────
     #  Citas confirmadas del día (ocupación real)
@@ -381,6 +450,7 @@ class AgendaService:
                  dia: date, hora_inicio: time, canal=Cita.Canal.IA,
                  respetar_bloqueo: bool = True,
                  respetar_tope: bool = True,
+                 respetar_horario: bool = True,
                  antelacion_min: int = ANTELACION_MINIMA_MIN,
                  serie=None) -> Cita:
         """Crea una cita de forma atómica.
@@ -391,9 +461,10 @@ class AgendaService:
           2) la restricción EXCLUDE de PostgreSQL rechaza físicamente
              cualquier solape que sobreviva (nivel de base de datos).
 
-        Lanza SlotNoDisponible si el horario ya está tomado, y
+        Lanza SlotNoDisponible si el horario ya está tomado,
         TopeCitasAlcanzado si el teléfono ya llegó a su límite de citas
-        futuras.
+        futuras, y DiaNoAtendido si la cita cae fuera de la jornada o dentro
+        de un bloqueo.
         """
         fin_min = cls._a_minutos(hora_inicio) + servicio.duracion_min
         hora_fin = cls._a_time(fin_min)
@@ -489,6 +560,33 @@ class AgendaService:
                 f"es el máximo que permite el establecimiento. Cancela alguna "
                 f"antes de agendar otra."
             )
+
+        # 0c) Jornada y bloqueos.
+        #
+        #     Hasta los periodos de descanso, `reservar` no miraba el horario
+        #     y el asistente tampoco antes de llamarlo: confiaba en que el
+        #     modelo solo pidiera horas que se le habian ofrecido. Se
+        #     comprobo con una prueba: una intencion `agendar` para un dia
+        #     bloqueado, o para las 8 de la noche con jornada de 9 a 12,
+        #     creaba la cita. Con un domingo suelto el riesgo era pequeno;
+        #     con una semana de vacaciones es exactamente la promesa de la
+        #     funcion --"durante esos dias no se agenda"-- sostenida solo por
+        #     el prompt, que es la capa que menos garantiza. El cliente que
+        #     insiste en "el martes a las 10" es el caso normal, no el raro.
+        #
+        #     `respetar_horario=False` es la puerta del panel, por la misma
+        #     razon que respetar_bloqueo y respetar_tope: el dueno que agenda
+        #     a mano un dia de descanso lo esta viendo y lo decide el. Las
+        #     citas fijas NO la abren: al repetir doce semanas nadie mira
+        #     cada fecha, y la tanda plantaria citas en las vacaciones.
+        #     Es un parametro explicito y no una deduccion a partir del
+        #     canal, por el motivo ya escrito en el tope.
+        #
+        #     Va despues del veto y del tope: a un numero vetado no se le
+        #     cuenta que dias se atiende, y a quien llego al tope ofrecerle
+        #     otra fecha no le resuelve nada.
+        if respetar_horario:
+            cls._exigir_horario_atendido(profesional, dia, inicio_min, fin_min)
 
         # 1) Cerrojo pesimista sobre la agenda del profesional ese día.
         confirmadas = list(

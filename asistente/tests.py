@@ -336,8 +336,10 @@ class ConversacionTest(BaseIATest):
         AgendaService.reservar(
             establecimiento=self.est, profesional=self.carlos,
             servicio=self.corte, cliente=cliente,
-            dia=date(2099, 1, 4),  # lunes lejano (siempre futuro)
-            hora_inicio=time(9, 0),
+            dia=date(2099, 1, 4),  # domingo lejano (siempre futuro)
+            # Ese dia no hay jornada montada y da igual: la cita es utileria
+            # para cancelarla, no el sujeto de la prueba.
+            hora_inicio=time(9, 0), respetar_horario=False,
         )
         intencion = json.dumps({"intencion": "cancelar_cita",
                                 "telefono": "3001112233"})
@@ -408,6 +410,7 @@ class ZonaPublicaTest(BaseIATest):
             establecimiento=self.est, profesional=self.carlos,
             servicio=self.corte, cliente=cliente,
             dia=date(2099, 1, 4), hora_inicio=time(9, 0),
+            respetar_horario=False,  # utileria, como arriba
         )
         r = self.client.post(
             f"/api/v1/p/{self.est.slug}/citas/cancelar",
@@ -2040,9 +2043,13 @@ class EnlacesDeCalendarioEnLaRespuestaTest(TestCase):
         self.serv = Servicio.objects.create(
             establecimiento=self.est, nombre="Barba", duracion_min=30)
         self.dia = proximo_dia_semana(4)
+        # Hasta las 21:00 y no hasta las 20:00: la cita de la prueba es a las
+        # 19:40 y dura 30 minutos, asi que con cierre a las 20:00 se sale de
+        # la jornada. Antes pasaba igual porque `reservar` no miraba el
+        # horario; desde los periodos de descanso si lo mira.
         HorarioBase.objects.create(
             profesional=self.prof, dia_semana=self.dia.weekday(),
-            hora_inicio=time(8, 0), hora_fin=time(20, 0))
+            hora_inicio=time(8, 0), hora_fin=time(21, 0))
 
     def _agendar(self):
         final, _ = IAService._ejecutar_intencion(self.est, {
@@ -2326,3 +2333,83 @@ class ElModeloVeElConsentimientoTest(TestCase):
         prompt = IAService.construir_prompt_sistema(self.est)
         self.assertIn("unica fuente valida", prompt.lower())
         self.assertIn("no lo deduzcas", prompt.lower())
+
+
+class ElAsistenteNoAgendaFueraDeLaAgendaTest(BaseIATest):
+    """El chat público no puede crear citas que nunca se le ofrecieron.
+
+    Hasta el paquete de periodos de descanso, `reservar` no miraba la jornada
+    ni los bloqueos y el asistente tampoco antes de llamarlo: la única
+    defensa era que el modelo pidiera solo las horas que el backend le había
+    listado. Se comprobó con una prueba: una intención `agendar` para un día
+    bloqueado, o para las ocho de la noche con jornada de 9 a 12, CREABA la
+    cita.
+
+    Con un domingo suelto el daño era acotado. Con una semana de vacaciones
+    es la promesa entera de la función —«esos días no se agenda»— sostenida
+    solo por el prompt, que es la capa que menos garantiza. Y el caso no es
+    raro: basta una clienta que insista en «el martes a las 10».
+    """
+
+    def _agendar(self, fecha, hora, sesion="sh"):
+        dejar_constancia(self.est, sesion)
+        intencion = json.dumps({
+            "intencion": "agendar",
+            "servicio_id": self.corte.id, "profesional_id": self.carlos.id,
+            "fecha": str(fecha), "hora_inicio": hora,
+            "cliente": {"nombre": "Ana", "telefono": "3001112233"},
+        })
+        with patch(RUTA_LLAMAR,
+                   side_effect=self._mock(intencion, "Lo reviso", "Lo reviso")):
+            return IAService.procesar_mensaje(self.est, sesion, "Confirmo")
+
+    def test_no_agenda_dentro_de_un_periodo_de_descanso(self):
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(
+            profesional=self.carlos, fecha=self.lunes,
+            fecha_fin=self.lunes + timedelta(days=6), motivo="Vacaciones")
+        r = self._agendar(self.lunes, "09:00")
+        self.assertNotEqual(r.get("accion"), "cita_creada")
+        self.assertEqual(Cita.objects.count(), 0)
+
+    def test_no_agenda_fuera_de_la_jornada(self):
+        """La jornada es de 9 a 12; las 8 de la noche no se ofreció nunca."""
+        r = self._agendar(self.lunes, "20:00")
+        self.assertNotEqual(r.get("accion"), "cita_creada")
+        self.assertEqual(Cita.objects.count(), 0)
+
+    def test_no_agenda_una_cita_que_termina_despues_del_cierre(self):
+        """11:45 + 30 minutos son las 12:15, y se cierra a las 12:00. Mirar
+        solo la hora de inicio dejaría a la clienta en la puerta."""
+        r = self._agendar(self.lunes, "11:45")
+        self.assertNotEqual(r.get("accion"), "cita_creada")
+        self.assertEqual(Cita.objects.count(), 0)
+
+    def test_la_hora_valida_se_sigue_agendando(self):
+        """La contraparte: el cierre no puede quedarse tan apretado que
+        rechace lo que el propio backend acaba de ofrecer."""
+        r = self._agendar(self.lunes, "09:00")
+        self.assertEqual(r["accion"], "cita_creada")
+
+    def test_al_modelo_no_se_le_cuenta_por_que_no_atiende(self):
+        """«De vacaciones hasta el 27» es información del negocio, no del
+        chat público: quien pregunta es cualquiera que abra el enlace."""
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(
+            profesional=self.carlos, fecha=self.lunes,
+            fecha_fin=self.lunes + timedelta(days=6), motivo="Vacaciones")
+        capturado = {}
+        original = IAService._ejecutar_intencion.__func__
+
+        def espia(cls, est, intencion, conv=None):
+            final, feedback = original(cls, est, intencion, conv)
+            if feedback:
+                capturado.setdefault("feedback", feedback)
+            return final, feedback
+
+        with patch.object(IAService, "_ejecutar_intencion",
+                          classmethod(espia)):
+            self._agendar(self.lunes, "09:00")
+        self.assertIn("NO se creó", capturado["feedback"])
+        self.assertNotIn("Vacaciones", capturado["feedback"])
+        self.assertNotIn("bloquead", capturado["feedback"].lower())
