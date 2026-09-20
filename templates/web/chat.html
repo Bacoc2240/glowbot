@@ -198,8 +198,13 @@ function chat(slug) {
       const lista = this.negocio.servicios
         .map(s => `• ${s.nombre} — ${s.duracion_min} min`)
         .join("\n");
+      // El saludo pide DOS datos, no uno. Lo escribe el navegador, asi que
+      // no cuesta ni un token, y cada dato que llega en el primer mensaje
+      // es un turno que la conversacion no tiene que gastar despues: el
+      // costo de la API no esta en el tamano de cada llamada sino en
+      // cuantas se hacen.
       this.mensajes.push({ rol: "bot", texto:
-        `¡Hola! Soy el asistente de ${this.negocio.nombre}. Estos son nuestros servicios:\n${lista}\n\n¿Cuál deseas agendar?` });
+        `¡Hola! Soy el asistente de ${this.negocio.nombre}. Estos son nuestros servicios:\n${lista}\n\n¿Cuál deseas agendar? Si ya sabes qué día te sirve, dímelo en el mismo mensaje.` });
     },
 
     async enviar() {

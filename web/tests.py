@@ -1588,3 +1588,27 @@ class PantallaAvisoDescansoTests(TestCase):
         recurrente por persona; mezclarlo aquí multiplicaría filas eternas."""
         self.assertIn("blo.tipo !== 'semana' && profesionales.length > 1",
                       self._vivas("/panel/horarios"))
+
+
+class SaludoDelChatTests(TestCase):
+    """El saludo pide dos datos, no uno.
+
+    Lo escribe el navegador, así que no cuesta ni un token, y cada dato que
+    llega en el primer mensaje es un turno que la conversación no gasta
+    después. Medido en producción: doce llamadas al modelo por conversación,
+    y el costo estaba ahí, no en el tamaño de cada llamada.
+    """
+
+    def setUp(self):
+        from cuentas.models import Usuario
+        from negocios.models import Establecimiento
+        usuario = Usuario.objects.create_user(email="sal@a.com",
+                                              password="clave12345")
+        Establecimiento.objects.create(
+            propietario=usuario, nombre="Estudio", slug="sal",
+            tipo=Establecimiento.Tipo.UNAS, telefono="3001112233")
+
+    def test_el_saludo_invita_a_decir_tambien_el_dia(self):
+        html = self.client.get("/p/sal").content.decode()
+        self.assertIn("¿Cuál deseas agendar?", html)
+        self.assertIn("dímelo en el mismo mensaje", html)

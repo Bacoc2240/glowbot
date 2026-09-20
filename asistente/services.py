@@ -284,7 +284,13 @@ REGLAS OBLIGATORIAS:
 3. NUNCA ofrezcas horarios de memoria: para saber la disponibilidad de una fecha
    emite la intención consultar_disponibilidad y espera la respuesta del sistema.
 4. Antes de confirmar una cita debes tener: servicio, fecha, hora, profesional,
-   nombre del cliente y número de teléfono. Pide lo que falte, un dato a la vez.
+   nombre del cliente y número de teléfono. Pide en UN SOLO mensaje todo lo
+   que te falte de ese grupo, no de uno en uno: "¿Para qué día y a qué hora
+   te sirve?" o "Dime tu nombre y tu número". Nunca pidas un dato que el
+   cliente ya te dio, ni se lo repitas para que lo confirme: si ya lo
+   dijiste bien, volver a preguntarlo alarga la conversación sin añadir
+   nada. La excepción es la hora: esa NO la pidas suelta, ofrece las que
+   devuelva el sistema (regla 3).
 5. Antes de pedir nombre y telefono, emite la intencion
    solicitar_consentimiento. NO redactes tu la peticion ni interpretes la
    respuesta: el sistema muestra el texto del aviso y un boton, y solo el
@@ -347,6 +353,10 @@ REGLAS OBLIGATORIAS:
    nombrado a alguien. Elegir tu le esconde al resto del equipo, y si la
    persona que elegiste tiene el dia lleno le diras que no hay
    disponibilidad cuando si la hay.
+   Si el sistema devuelve UNA SOLA persona, no hay nada que elegir: no
+   preguntes con quien quiere atenderse, nombrala al ofrecer las horas y
+   sigue. Preguntar por una eleccion que no existe gasta un turno del
+   cliente y una llamada.
 16. Las citas marcadas HISTORIAL en los mensajes [SISTEMA] ya se atendieron:
    no se pueden cancelar ni cambiar, y no ocupan cupo. Puedes mencionarlas si
    el cliente pregunta por ellas, pero nunca las ofrezcas para cancelar ni las
@@ -364,7 +374,20 @@ REGLAS OBLIGATORIAS:
    vale dudar en voz alta -"podria estar ocupado", "es posible que no haya
    espacio", "no estoy seguro de que quede"-: dudar tambien es responder sin
    saber, y al cliente lo deja peor que un no claro. Si menciona un dia o una
-   hora, emite consultar_disponibilidad ANTES de escribir nada sobre huecos."""
+   hora, emite consultar_disponibilidad ANTES de escribir nada sobre huecos.
+19. Cuando ya tengas los seis datos de la regla 4, agenda: emite la intencion
+   agendar. NO pidas una confirmacion adicional del estilo "¿confirmo
+   entonces?" ni repitas el resumen para que el cliente diga que si. El
+   sistema responde con el resumen real de la cita creada y con los enlaces
+   de calendario, y una cita se cancela en un mensaje. Ese turno de mas no
+   protege de nada y es el mas caro de todos, porque llega cuando el cliente
+   ya decidio.
+20. Cada mensaje tuyo le cuesta un turno al cliente. Once idas y vueltas
+   para agendar un corte cansan a quien escribe desde el celular en la calle.
+   No saludes otra vez a mitad de conversacion, no anuncies lo que vas a
+   hacer -"permiteme consultar la disponibilidad"- y no comentes lo que
+   acaba de decir el cliente antes de responderle. Haz la pregunta o da la
+   informacion, y ya."""
 
 
     # ──────────────────────────────────────────────────────────────
@@ -1025,7 +1048,7 @@ REGLAS OBLIGATORIAS:
         que se pago, no lo que salio bien.
         """
         conv.save(update_fields=["tokens_entrada", "tokens_salida",
-                                 "actualizado_en"])
+                                 "llamadas_modelo", "actualizado_en"])
         return {"respuesta": respuesta, "accion": accion, "cita": None}
 
     @staticmethod
@@ -1169,6 +1192,7 @@ REGLAS OBLIGATORIAS:
                                              "error_interno")
             conv.tokens_entrada += tk_in
             conv.tokens_salida += tk_out
+            conv.llamadas_modelo += 1
 
             intencion = cls._extraer_intencion(texto)
             if intencion is None:  # respuesta conversacional normal
@@ -1247,5 +1271,6 @@ REGLAS OBLIGATORIAS:
         # mensaje: quien agendaba a las ocho perdia el hilo a las veinte
         # aunque estuviera escribiendo.
         conv.save(update_fields=["mensajes", "tokens_entrada", "tokens_salida",
-                                 "telefono_cliente", "actualizado_en"])
+                                 "llamadas_modelo", "telefono_cliente",
+                                 "actualizado_en"])
         return resultado

@@ -18,6 +18,21 @@ class ConversacionIA(models.Model):
     mensajes = models.JSONField(default=list)
     tokens_entrada = models.PositiveIntegerField(default=0)
     tokens_salida = models.PositiveIntegerField(default=0)
+    # Llamadas al modelo de esta conversacion.
+    #
+    # Los tokens dicen cuanto se gasto; esto dice POR QUE. La primera
+    # medicion del cliente real dio 2.504 tokens por llamada --barato-- y
+    # doce llamadas por conversacion --caro--: el costo no venia del tamano
+    # de cada llamada sino de la cantidad. Ese numero solo se pudo deducir
+    # dividiendo tokens entre una estimacion de turnos sacada de
+    # `len(mensajes)`, que cuenta lo que quedo guardado y no lo que se
+    # llamo: una sola frase del cliente puede provocar varias llamadas
+    # cuando el backend devuelve realimentacion y el modelo reformula.
+    #
+    # Contarlas de frente es lo que permite comprobar si un cambio de
+    # prompt sirvio. Sin esto, la unica forma de saberlo seria la factura,
+    # que llega un mes tarde y mezcla todos los establecimientos.
+    llamadas_modelo = models.PositiveIntegerField(default=0)
     creado_en = models.DateTimeField(auto_now_add=True)
     # Marca de la ultima actividad. Sin ella no hay forma de saber si una
     # conversacion sigue viva: el navegador guarda el session_id en

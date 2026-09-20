@@ -2474,3 +2474,140 @@ class ElChatAnunciaElDescansoTest(BaseIATest):
             IAService.procesar_mensaje(self.est, "sd2", "Hola")
         todo = " ".join(m["content"] for m in capturado["mensajes"])
         self.assertNotIn("Vacaciones", todo)
+
+
+class MenosTurnosPorConversacionTest(BaseIATest):
+    """Las reglas que existen para que la conversación sea más corta.
+
+    Medido en producción sobre el primer cliente real: 2.504 tokens de
+    entrada por llamada —una fracción de centavo— y doce llamadas por
+    conversación. El costo no estaba en el tamaño de cada llamada sino en
+    cuántas se hacían, y cada una es además un turno que el cliente escribe
+    desde el celular. Once idas y vueltas para agendar un corte.
+
+    Estas pruebas NO demuestran que la conversación se acorte: eso solo se
+    ve en producción, con el contador de llamadas y el comando `costos_ia`.
+    Lo que protegen es que las reglas no se borren por descuido en una
+    edición futura del prompt, que es exactamente lo que les pasaría en un
+    texto de veinte reglas.
+    """
+
+    def _prompt(self):
+        return IAService.construir_prompt_sistema(self.est)
+
+    def test_los_datos_que_faltan_se_piden_juntos(self):
+        """La regla decía literalmente «un dato a la vez», que es la
+        instrucción que producía las once idas y vueltas."""
+        prompt = self._prompt()
+        self.assertNotIn("un dato a la vez", prompt)
+        self.assertIn("UN SOLO mensaje", prompt)
+
+    def test_no_se_pide_una_confirmacion_de_mas(self):
+        """El turno más caro de todos: llega cuando el cliente ya decidió, y
+        una cita se cancela en un mensaje."""
+        self.assertIn("confirmacion adicional", self._prompt())
+
+    def test_no_se_pregunta_por_una_eleccion_que_no_existe(self):
+        """Con un solo profesional no hay nada que elegir. La regla 15 sigue
+        prohibiendo elegir por el cliente cuando sí hay varios."""
+        prompt = self._prompt()
+        self.assertIn("UNA SOLA persona", prompt)
+        self.assertIn("NUNCA elijas tu el profesional", prompt)
+
+    # ── El contador ───────────────────────────────────────────────
+
+    def test_cada_llamada_al_modelo_queda_contada(self):
+        with patch(RUTA_LLAMAR, side_effect=self._mock("¡Hola!")):
+            IAService.procesar_mensaje(self.est, "t1", "Hola")
+        conv = ConversacionIA.objects.get(session_id="t1")
+        self.assertEqual(conv.llamadas_modelo, 1)
+
+    def test_un_turno_con_intencion_cuenta_las_dos_llamadas(self):
+        """`len(mensajes)` no sirve para esto: una sola frase del cliente
+        provoca varias llamadas cuando el backend devuelve realimentación y
+        el modelo reformula. Contar de frente es lo que permite comprobar si
+        un cambio de prompt sirvió."""
+        intencion = json.dumps({"intencion": "consultar_disponibilidad",
+                                "servicio_id": self.corte.id,
+                                "fecha": str(self.lunes)})
+        with patch(RUTA_LLAMAR,
+                   side_effect=self._mock(intencion, "Tengo estas horas")):
+            IAService.procesar_mensaje(self.est, "t2", "¿Qué horas hay el lunes?")
+        self.assertEqual(
+            ConversacionIA.objects.get(session_id="t2").llamadas_modelo, 2)
+
+    def test_las_llamadas_de_un_turno_roto_tambien_cuentan(self):
+        """Se gastaron de verdad aunque la respuesta no llegara. Es la misma
+        razón por la que los tokens se guardan en la salida degradada: el
+        registro de costos refleja lo que se pagó, no lo que salió bien."""
+        import anthropic
+        fallo = anthropic.APIError("caida", request=None, body=None)
+        with patch(RUTA_LLAMAR, side_effect=[("texto", 100, 20), fallo]):
+            IAService.procesar_mensaje(self.est, "t3", "Hola")
+        conv = ConversacionIA.objects.get(session_id="t3")
+        self.assertGreaterEqual(conv.llamadas_modelo, 1)
+
+
+class ComandoCostosIaTest(BaseIATest):
+    """El informe que sustituye la cuenta a mano contra producción.
+
+    La consola de Anthropic da un total diario del proyecto entero: sirve
+    para saber que se gastaron dos dólares, no de quién fueron ni si el
+    precio de la suscripción los cubre.
+    """
+
+    def _correr(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        salida = StringIO()
+        call_command("costos_ia", *args, stdout=salida)
+        return salida.getvalue()
+
+    def test_informa_llamadas_tokens_y_costo_por_establecimiento(self):
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="c1",
+            tokens_entrada=1_000_000, tokens_salida=100_000,
+            llamadas_modelo=10)
+        salida = self._correr()
+        self.assertIn(self.est.nombre, salida)
+        self.assertIn("llamadas: 10", salida)
+        # 1M de entrada a USD 1 + 100k de salida a USD 5 = USD 1.50
+        self.assertIn("USD 1.50", salida)
+
+    def test_el_costo_por_cita_solo_cuenta_las_de_la_ia(self):
+        """El panel no gasta nada. Repartir el costo entre TODAS las citas
+        del negocio lo diluye y engaña: el primer cliente tenía 92 citas a
+        mano frente a 47 del asistente."""
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="c2",
+            tokens_entrada=1_000_000, tokens_salida=0, llamadas_modelo=4)
+        comunes = dict(establecimiento=self.est, profesional=self.carlos,
+                       servicio=self.corte, fecha=self.lunes)
+        cliente = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Ana", telefono="3001112233",
+            acepta_datos=True)
+        Cita.objects.create(cliente=cliente, hora_inicio=time(9, 0),
+                            hora_fin=time(9, 30), canal=Cita.Canal.IA,
+                            **comunes)
+        Cita.objects.create(cliente=cliente, hora_inicio=time(10, 0),
+                            hora_fin=time(10, 30), canal=Cita.Canal.MANUAL,
+                            **comunes)
+        salida = self._correr()
+        self.assertIn("citas por IA: 1", salida)
+        self.assertIn("por cita: USD 1.000", salida)
+
+    def test_sin_citas_de_ia_el_informe_no_revienta(self):
+        """Un establecimiento donde el dueño solo usa el panel es un caso
+        normal, no un error que deba cortar el informe de los demás."""
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="c3",
+            tokens_entrada=500, tokens_salida=50, llamadas_modelo=1)
+        self.assertIn("por cita: USD —", self._correr())
+
+    def test_las_tarifas_son_parametros(self):
+        """Un número fijo en el código envejece en silencio cuando cambia el
+        modelo o su precio."""
+        ConversacionIA.objects.create(
+            establecimiento=self.est, session_id="c4",
+            tokens_entrada=1_000_000, tokens_salida=0, llamadas_modelo=1)
+        self.assertIn("USD 3.00", self._correr("--usd-entrada", "3"))
