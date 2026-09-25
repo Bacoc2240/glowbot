@@ -20,6 +20,15 @@ class Cita(models.Model):
     class Canal(models.TextChoices):
         IA = "ia", "Asistente IA"
         MANUAL = "manual", "Manual (panel)"
+        # Autoservicio sin modelo: el cliente eligio servicio, profesional,
+        # dia y hora pulsando, y la cita se creo sin gastar un token.
+        #
+        # Canal propio y no IA, aunque las dos entren por el enlace publico,
+        # porque el costo de la API se reparte entre las citas que lo
+        # causaron. Contarlas juntas haria que el costo por cita cayera a
+        # medida que la gente deja de usar el chat, sugiriendo una mejora
+        # que no existe. Ademas dice cuanta gente prefiere botones.
+        WEB = "web", "Autoservicio web"
 
     establecimiento = models.ForeignKey(
         Establecimiento, on_delete=models.PROTECT, related_name="citas", db_index=True,

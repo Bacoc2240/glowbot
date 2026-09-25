@@ -426,10 +426,20 @@ class BotonesCalendarioTest(TestCase):
         las etiquetas mandaría a cada usuario a la vía peor para su
         aparato."""
         cuerpo = self.client.get(f"/p/{self.est.slug}").content.decode()
-        pos_ics = cuerpo.find("m.cita.ics")
-        pos_iphone = cuerpo.find("Calendario (iPhone)")
-        pos_google = cuerpo.find("m.cita.google")
-        pos_android = cuerpo.find("Google Calendar (Android)")
-        self.assertLess(abs(pos_ics - pos_iphone), abs(pos_ics - pos_android))
-        self.assertLess(abs(pos_google - pos_android),
-                        abs(pos_google - pos_iphone))
+        # Los dos enlaces salen AHORA en dos sitios: la confirmación del
+        # camino de botones y el hilo del asistente. Se comprueba cada
+        # bloque por separado; medir distancias sobre la página entera
+        # mezclaba el par de un bloque con la etiqueta del otro.
+        guiada, marca, asistente = cuerpo.partition('id="hilo"')
+        self.assertTrue(marca, "no se encontró el hilo del asistente")
+        for bloque in (guiada, asistente):
+            pos_ics = bloque.find("cita.ics")
+            pos_iphone = bloque.find("Calendario (iPhone)")
+            pos_google = bloque.find("cita.google")
+            pos_android = bloque.find("Google Calendar (Android)")
+            self.assertNotEqual(-1, min(pos_ics, pos_iphone, pos_google,
+                                        pos_android))
+            self.assertLess(abs(pos_ics - pos_iphone),
+                            abs(pos_ics - pos_android))
+            self.assertLess(abs(pos_google - pos_android),
+                            abs(pos_google - pos_iphone))

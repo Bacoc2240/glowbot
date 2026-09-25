@@ -1002,8 +1002,14 @@ class FranjaConsentimientoTests(TestCase):
             telefono="3001112222", slug="gina-style")
 
     def test_la_franja_anuncia_y_no_presupone(self):
+        """El aviso dice qué se va a guardar y para qué, y el botón está
+        justo debajo. Antes decía «al agendar aceptas», que daba por dado un
+        consentimiento que el sistema pedía tres mensajes después; ahora la
+        autorización se pide aquí, antes de recoger un solo dato, que es lo
+        que la Ley 1581 llama previa, expresa e informada."""
         html = self.client.get("/p/gina-style").content.decode()
-        self.assertIn("te pediremos aceptar", html)
+        self.assertIn("necesita guardar tu", html)
+        self.assertIn("Ley 1581", html)
         self.assertNotIn("Al agendar aceptas", html)
 
     def test_la_franja_enlaza_al_aviso(self):
@@ -1590,25 +1596,132 @@ class PantallaAvisoDescansoTests(TestCase):
                       self._vivas("/panel/horarios"))
 
 
-class SaludoDelChatTests(TestCase):
-    """El saludo pide dos datos, no uno.
+class PantallaGuiadaTests(TestCase):
+    """Los enganches del camino de botones en la página pública.
 
-    Lo escribe el navegador, así que no cuesta ni un token, y cada dato que
-    llega en el primer mensaje es un turno que la conversación no gasta
-    después. Medido en producción: doce llamadas al modelo por conversación,
-    y el costo estaba ahí, no en el tamaño de cada llamada.
+    Mismo límite conocido que las otras pruebas de pantalla: es JavaScript y
+    Django no lo ejecuta, así que solo pueden comprobar que el enganche
+    existe y no está comentado. Lo que de verdad protege este camino son las
+    34 pruebas de los dos endpoints.
     """
 
     def setUp(self):
         from cuentas.models import Usuario
         from negocios.models import Establecimiento
-        usuario = Usuario.objects.create_user(email="sal@a.com",
+        usuario = Usuario.objects.create_user(email="guia@a.com",
                                               password="clave12345")
         Establecimiento.objects.create(
-            propietario=usuario, nombre="Estudio", slug="sal",
+            propietario=usuario, nombre="Estudio", slug="guia",
             tipo=Establecimiento.Tipo.UNAS, telefono="3001112233")
 
-    def test_el_saludo_invita_a_decir_tambien_el_dia(self):
-        html = self.client.get("/p/sal").content.decode()
-        self.assertIn("¿Cuál deseas agendar?", html)
-        self.assertIn("dímelo en el mismo mensaje", html)
+    def _vivas(self):
+        html = self.client.get("/p/guia").content.decode()
+        return "\n".join(l for l in html.splitlines()
+                         if not l.strip().startswith("//"))
+
+    # ── El orden de los pasos ─────────────────────────────────────
+
+    def test_el_primer_paso_es_la_autorizacion(self):
+        """La Ley 1581 exige autorización previa: se pide antes de recoger un
+        solo dato, no a mitad de conversación."""
+        vivas = self._vivas()
+        self.assertIn('paso: "consentimiento"', vivas)
+        self.assertIn('paso === \'consentimiento\'', vivas)
+
+    def test_la_identidad_va_antes_de_elegir_la_hora(self):
+        """No es cosmético: con los datos ya en la mano, la cita se crea en el
+        mismo toque. Con la identidad al final, entre el toque y el envío del
+        formulario pasan treinta segundos con ese cupo libre para todos."""
+        vivas = self._vivas()
+        self.assertIn('this.paso = "identidad"', vivas)
+        self.assertIn("confirmarIdentidad()", vivas)
+
+    def test_los_datos_se_recuerdan_en_el_navegador(self):
+        """Para que la segunda visita del cliente habitual sea un botón."""
+        vivas = self._vivas()
+        self.assertIn('localStorage.setItem("glowbot_cliente_"', vivas)
+        self.assertIn("No soy yo", vivas)
+
+    # ── La agenda ────────────────────────────────────────────────
+
+    def test_las_horas_se_piden_al_endpoint_sin_tokens(self):
+        vivas = self._vivas()
+        self.assertIn("/disponibilidad", vivas)
+        self.assertIn("servicio_id=", vivas)
+
+    def test_la_tira_de_dias_dice_si_hay_cupo(self):
+        """Sin esa marca el cliente adivina: toca el jueves, no hay nada;
+        toca el viernes, no hay nada; se va.
+
+        Dice SI hay cupo y no cuánto: la tira mostraba «14 horas» y justo
+        debajo se listaban las horas de cada profesional, así que el número
+        se leía como si fuera de una sola persona."""
+        vivas = self._vivas()
+        self.assertIn("'Cupos disponibles' : 'Sin cupo'", vivas)
+        self.assertNotIn("+ ' horas'", vivas)
+        self.assertIn(':disabled="!d.libres"', vivas)
+
+    def test_la_pantalla_abre_en_el_primer_dia_con_cupo(self):
+        """Abrir en hoy le muestra una pantalla vacía a quien agenda de
+        noche, con el negocio ya cerrado."""
+        self.assertIn("this.diaSel = d.primer_dia_con_cupo", self._vivas())
+
+    def test_no_se_puede_pedir_un_dia_pasado_desde_la_pantalla(self):
+        self.assertIn(':min="hoy"', self._vivas())
+
+    def test_a_quien_no_tiene_horas_se_le_pinta_apagado(self):
+        self.assertIn("Sin horas libres ese día", self._vivas())
+
+    def test_el_filtro_de_profesional_solo_sale_si_hay_a_quien_elegir(self):
+        """Preguntar por una elección que no existe gasta un toque."""
+        self.assertIn('x-show="profesionales.length > 1"', self._vivas())
+
+    # ── La creación ──────────────────────────────────────────────
+
+    def test_la_hora_pulsada_crea_la_cita(self):
+        vivas = self._vivas()
+        self.assertIn("agendar(p, h)", vivas)
+        self.assertIn('/citas`', vivas)
+
+    def test_el_hueco_perdido_recarga_la_agenda(self):
+        """409 no es un error del cliente: alguien llegó antes. Si no se
+        recargara, volvería a pulsar un hueco que ya no existe."""
+        vivas = self._vivas()
+        self.assertIn("r.status === 409", vivas)
+        self.assertIn("acaban de tomar", vivas)
+
+    def test_la_confirmacion_trae_los_enlaces_de_calendario(self):
+        vivas = self._vivas()
+        # Se comprueban los de la tarjeta de confirmación y no los del hilo
+        # del asistente, que llevan el prefijo `m.` y seguirían ahí.
+        self.assertIn("cita ? cita.google", vivas)
+        self.assertIn("cita ? cita.ics", vivas)
+
+    # ── El asistente y la salida ─────────────────────────────────
+
+    def test_el_asistente_sigue_disponible_como_respaldo(self):
+        """Se queda con lo que un botón no sabe: «algo el jueves por la
+        tarde», una pregunta, una cancelación."""
+        vivas = self._vivas()
+        self.assertIn("Hablar con el asistente", vivas)
+        self.assertIn("/chat`", vivas)
+
+    def test_la_entrada_al_asistente_se_ve(self):
+        """Con estilo de botón secundario se leía como una salida de
+        emergencia. Es lo que distingue a GlowBot de una agenda cualquiera,
+        así que lleva el dorado de la marca: visible sin competir con el
+        azul, que es el color de elegir una hora."""
+        vivas = self._vivas()
+        self.assertIn('class="tarjeta asistente"', vivas)
+        self.assertIn('class="accion dorada"', vivas)
+        self.assertIn(".tarjeta.asistente { border-color:var(--dorado)", vivas)
+
+    def test_empezar_de_nuevo_borra_tambien_los_datos_del_cliente(self):
+        """Importa más que antes: en un celular prestado ya no queda solo la
+        sesión, quedan el nombre y el teléfono de la persona anterior."""
+        vivas = self._vivas()
+        # El borrado se busca DENTRO de reiniciar(), junto al de la sesión:
+        # la misma llamada aparece también en «No soy yo», que es otra cosa.
+        self.assertIn('localStorage.removeItem("glowbot_cliente_" + this.slug);\n'
+                      '      this.sessionId = null;', vivas)
+        self.assertIn('this.paso = "consentimiento"', vivas)

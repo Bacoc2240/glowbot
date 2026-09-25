@@ -441,6 +441,31 @@ class AgendaService:
             libres.extend(tramos)
         return sorted(libres)
 
+    @classmethod
+    def disponibilidad_por_profesional(cls, establecimiento, servicio, dia):
+        """[(profesional, [horas])] de quienes prestan ese servicio ese dia.
+
+        LA definicion de "que se le ofrece al cliente", y hay una sola. La
+        usan la rejilla de horas de la pagina publica y el asistente. Si cada
+        uno armara su lista, bastaria con que divergieran --uno filtrando por
+        asignacion y el otro no-- para que la rejilla ofreciera a alguien que
+        el chat niega, o al reves, en la misma pantalla.
+
+        Se devuelven TAMBIEN los que no tienen horas libres, con la lista
+        vacia. Callarlos obliga a deducir por que falta alguien que el cliente
+        acaba de ver en la lista de profesionales, y la deduccion sale mal:
+        "no presta el servicio" cuando lo que pasa es que libra ese dia.
+
+        Solo los ASIGNADOS al servicio, criterio mas estrecho que el de
+        `reservar`, nunca mas ancho: asi esta lista no puede proponer a nadie
+        a quien la reserva vaya a rechazar despues.
+        """
+        equipo = (Profesional.objects
+                  .filter(establecimiento=establecimiento, activo=True,
+                          servicios=servicio)
+                  .order_by("nombre"))
+        return [(p, cls.calcular_slots(p, servicio, dia)) for p in equipo]
+
     # ──────────────────────────────────────────────────────────────
     #  Descansos anunciados: que el cierre se DIGA, no se deduzca
     # ──────────────────────────────────────────────────────────────

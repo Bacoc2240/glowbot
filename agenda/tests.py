@@ -20,7 +20,7 @@ from agenda.fechas_de_prueba import manana, proximo_dia_semana
 from cuentas.models import Usuario
 from negocios.models import (
     Bloqueo, ClienteFinal, Establecimiento, ExcepcionHorario,
-    HorarioBase, Profesional, Servicio,
+    HorarioBase, Profesional, ProfesionalServicio, Servicio,
 )
 from .avisos import linea_sistema, texto_publico
 from .fechas import fecha_corta
@@ -2806,3 +2806,53 @@ class AvisoDeDescansoTest(BaseAgendaTest):
             "fecha_fin": str(self.viernes), "todo_el_equipo": True},
             format="json")
         self.assertEqual(Bloqueo.objects.filter(profesional=vecina).count(), 0)
+
+
+class OfertaUnicaTest(BaseAgendaTest):
+    """Una sola definición de «a quién se le ofrece».
+
+    La rejilla de horas de la página pública y el asistente leen la misma
+    lista. Si cada uno armara la suya, bastaría con que divergieran —uno
+    filtrando por asignación y el otro no— para que la rejilla ofreciera a
+    alguien que el chat niega, en la misma pantalla.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # BaseAgendaTest no asigna servicios: la oferta es deliberadamente
+        # más estrecha que `reservar`, que tolera un servicio sin nadie
+        # asignado. Ver el docstring del método, y el aviso del PASOS: un
+        # negocio sin asignaciones no se puede ofrecer ni por chat ni por
+        # rejilla, y eso ya era así antes de este paquete.
+        ProfesionalServicio.objects.create(profesional=self.carlos,
+                                           servicio=self.corte)
+
+    def test_devuelve_a_los_asignados_con_sus_horas(self):
+        equipo = AgendaService.disponibilidad_por_profesional(
+            self.est, self.corte, self.lunes)
+        self.assertEqual([p.nombre for p, _ in equipo], [self.carlos.nombre])
+        self.assertTrue(equipo[0][1])
+
+    def test_quien_no_tiene_horas_viene_con_la_lista_vacia(self):
+        """No se omite: omitirlo obliga a deducir por qué falta alguien que
+        el cliente acaba de ver, y la deducción sale mal."""
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        equipo = AgendaService.disponibilidad_por_profesional(
+            self.est, self.corte, self.lunes)
+        self.assertEqual(equipo[0][1], [])
+
+    def test_no_devuelve_a_quien_no_presta_el_servicio(self):
+        otro = Profesional.objects.create(
+            establecimiento=self.est, nombre="Zulema", activo=True)
+        HorarioBase.objects.create(
+            profesional=otro, dia_semana=self.lunes.weekday(),
+            hora_inicio=time(9, 0), hora_fin=time(12, 0))
+        equipo = AgendaService.disponibilidad_por_profesional(
+            self.est, self.corte, self.lunes)
+        self.assertNotIn("Zulema", [p.nombre for p, _ in equipo])
+
+    def test_no_devuelve_a_un_profesional_inactivo(self):
+        self.carlos.activo = False
+        self.carlos.save(update_fields=["activo"])
+        self.assertEqual(AgendaService.disponibilidad_por_profesional(
+            self.est, self.corte, self.lunes), [])

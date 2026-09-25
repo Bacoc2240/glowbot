@@ -10,6 +10,11 @@
 #   cp agenda/services.py    /tmp/l9/agenda/
 #   cp asistente/services.py /tmp/l9/asistente/
 #   cp negocios/api.py       /tmp/l9/negocios/
+#
+# Tres mutaciones apuntan ahora a agenda/services.py: la lista de quien
+# presta un servicio se mudo alli al crear la rejilla de horas publica, para
+# que el chat y la rejilla no acabaran con dos definiciones de "a quien se le
+# ofrece" contradiciendose en la misma pantalla.
 set -u
 A=agenda.tests.QueCuentaComoCitaFuturaTest
 C=asistente.tests.NoSeCancelaLoQueYaEmpezoTest
@@ -39,14 +44,14 @@ MUTACIONES=(
 "El tope deja de frenar (se desactiva el control de abuso)~agenda/services.py~        if respetar_tope and abiertas >= tope:~        if False:~$A.test_el_tope_sigue_frenando_lo_que_debe_frenar"
 "El tope vuelve a contar sin filtrar el pasado~agenda/services.py~        abiertas = cls.solo_futuras(Cita.objects.filter(~        abiertas = (Cita.objects.filter(fecha__gte=timezone.localdate(),~$A.test_la_cita_de_esta_manana_ya_no_ocupa_cupo"
 "El listado del asistente deja de filtrar el pasado~asistente/services.py~        return AgendaService.solo_futuras(\\n            Cita.objects.filter(~        return (Cita.objects.filter(fecha__gte=timezone.localdate(),~$C.test_el_chat_no_cancela_una_cita_que_ya_empezo,$C.test_la_puerta_publica_tampoco,$C.test_ni_pasandole_el_identificador_de_esa_cita,$C.test_la_consulta_tampoco_informa_de_las_ya_pasadas"
-"El resumen deja de marcar las citas ya pasadas~asistente/services.py~            marca = \" — YA PASO\" if ya_paso else \"\"~            marca = \"\"~$R.test_la_de_esta_manana_aparece_marcada"
-"El resumen marca tambien las futuras~asistente/services.py~            marca = \" — YA PASO\" if ya_paso else \"\"~            marca = \" — YA PASO\"~$R.test_la_de_esta_tarde_no_lleva_marca"
+"El resumen deja de marcar las citas ya pasadas~asistente/services.py~            marca = \" — HISTORIAL (ya se atendio, no ocupa cupo)\" if ya_paso else \"\"~            marca = \"\"~$R.test_la_de_esta_manana_aparece_marcada"
+"El resumen marca tambien las futuras~asistente/services.py~            marca = \" — HISTORIAL (ya se atendio, no ocupa cupo)\" if ya_paso else \"\"~            marca = \" — HISTORIAL (ya se atendio, no ocupa cupo)\"~$R.test_la_de_esta_tarde_no_lleva_marca"
 "El resumen vuelve a llamar cancelada a una inasistencia~asistente/services.py~f\"— {c.get_estado_display().upper()}{marca}\"~f\"— {'CONFIRMADA' if c.estado == Cita.Estado.CONFIRMADA else 'CANCELADA'}{marca}\"~$R.test_una_inasistencia_no_se_le_presenta_como_cancelada"
 "profesional_id vuelve a ser obligatorio~asistente/services.py~                if intencion.get(\"profesional_id\") is None:~                if False:~$E.test_sin_profesional_responde_por_todo_el_equipo,$E.test_si_nadie_lo_presta_no_ofrece_horarios"
-"El backend vuelve a elegir por el cliente (responde por uno solo)~asistente/services.py~        equipo = cls._profesionales_que_prestan(establecimiento, servicio)~        equipo = cls._profesionales_que_prestan(establecimiento, servicio)[:1]~$E.test_sin_profesional_responde_por_todo_el_equipo"
+"El backend vuelve a elegir por el cliente (responde por uno solo)~agenda/services.py~        return [(p, cls.calcular_slots(p, servicio, dia)) for p in equipo]~        return [(p, cls.calcular_slots(p, servicio, dia)) for p in equipo][:1]~$E.test_sin_profesional_responde_por_todo_el_equipo"
 "Se callan los que no tienen horas libres~asistente/services.py~                lineas.append(f\"- {p.nombre}: sin horas libres ese dia\")~                pass~$E.test_quien_no_atiende_ese_dia_sale_dicho_asi"
-"Se pierde el aislamiento por establecimiento en la lista del equipo~asistente/services.py~                .filter(establecimiento=establecimiento, activo=True,\\n                        servicios=servicio)~                .filter(activo=True, servicios=servicio)~$E.test_no_se_cuela_un_profesional_de_otro_establecimiento"
-"Se pierde la asignacion M:N y se ofrece a todo el mundo~asistente/services.py~                .filter(establecimiento=establecimiento, activo=True,\\n                        servicios=servicio)~                .filter(establecimiento=establecimiento, activo=True)~$E.test_no_ofrece_a_quien_no_presta_el_servicio"
+"Se pierde el aislamiento por establecimiento en la lista del equipo~agenda/services.py~                  .filter(establecimiento=establecimiento, activo=True,\n                          servicios=servicio)~                  .filter(activo=True, servicios=servicio)~$E.test_no_se_cuela_un_profesional_de_otro_establecimiento"
+"Se pierde la asignacion M:N y se ofrece a todo el mundo~agenda/services.py~                  .filter(establecimiento=establecimiento, activo=True,\n                          servicios=servicio)~                  .filter(establecimiento=establecimiento, activo=True)~$E.test_no_ofrece_a_quien_no_presta_el_servicio"
 "El feedback deja de prohibirle al modelo que elija~asistente/services.py~                      \"libres para que elija; no elijas tu. Ofrece SOLO estas \"~                      \"libres. Ofrece SOLO estas \"~$E.test_le_dice_al_modelo_que_no_elija"
 "Un servicio sin nadie asignado devuelve una lista vacia sin explicar~asistente/services.py~        if not equipo:~        if False:~$E.test_si_nadie_lo_presta_no_ofrece_horarios"
 "El conteo de citas por atender vuelve a mirar solo la fecha~negocios/api.py~        por_atender = AgendaService.solo_futuras(\\n            instance.citas.all()\\n        ).exclude~        por_atender = instance.citas.filter(fecha__gte=__import__(\"django.utils\", fromlist=[\"timezone\"]).timezone.localdate()).exclude~$N.test_por_la_tarde_la_cita_de_la_manana_ya_no_esta_por_atender"

@@ -158,7 +158,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     # Límite del chat público: anti-abuso y control de costos IA (429)
-    "DEFAULT_THROTTLE_RATES": {"chat_publico": "20/min"},
+    "DEFAULT_THROTTLE_RATES": {"chat_publico": "20/min",
+                               "disponibilidad_publica": "60/min"},
 }
 
 SIMPLE_JWT = {

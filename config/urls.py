@@ -21,6 +21,7 @@ from agenda.api import (
 )
 from asistente.api import (
     CancelarCitaPublicaView, ChatView, ConsentimientoPublicoView,
+    CrearCitaPublicaView, DisponibilidadPublicaView,
     ConsultarCitaPublicaView, InfoPublicaView,
 )
 from facturacion.views import (
@@ -62,8 +63,12 @@ api_v1 = [
     # Zona pública — cliente final (§8)
     path("p/<slug:slug>", InfoPublicaView.as_view(), name="info-publica"),
     path("p/<slug:slug>/chat", ChatView.as_view(), name="chat-publico"),
+    path("p/<slug:slug>/disponibilidad", DisponibilidadPublicaView.as_view(),
+         name="disponibilidad-publica"),
     path("p/<slug:slug>/consentimiento", ConsentimientoPublicoView.as_view(),
          name="consentimiento-publico"),
+    path("p/<slug:slug>/citas", CrearCitaPublicaView.as_view(),
+         name="crear-cita-publica"),
     path("p/<slug:slug>/citas/consultar",
          ConsultarCitaPublicaView.as_view(), name="consultar-cita-publica"),
     path("p/<slug:slug>/citas/cancelar",

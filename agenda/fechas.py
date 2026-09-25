@@ -17,6 +17,9 @@ recordatorio que diga "Friday" a un cliente en Saravena es un defecto.
 """
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+# Para la tira de dias de la pagina publica, donde cada pastilla mide dos
+# dedos de ancho en un celular y "miércoles" no cabe.
+DIAS_CORTOS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 

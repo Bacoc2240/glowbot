@@ -1,7 +1,20 @@
 {% comment %}
-Chat público del cliente final — RF-09, RF-10.
+Página pública del cliente final — RF-09, RF-10.
 Sin login, sin instalación: se abre desde el enlace compartido por
 WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
+
+Agendar es ahora un camino de botones y el asistente queda como respaldo.
+El porqué está medido, no supuesto: con el chat como única vía, agendar
+costaba seis mensajes y unas ocho llamadas al modelo, y en el trabajo de
+campo los clientes finales pidieron menos pasos. Un modelo de lenguaje es
+mala interfaz para una selección con forma de formulario.
+
+El orden —aceptar, decir quién eres, elegir— no es el habitual, y es
+deliberado: cuando el cliente pulsa una hora ya se sabe quién es, así que
+la cita se crea en ese mismo toque. Con la identidad al final, entre el
+toque y el envío del formulario pasan treinta segundos en los que ese cupo
+sigue libre para todos, y quien llega segundo pierde después de haber dado
+sus datos.
 {% endcomment %}
 <!DOCTYPE html>
 <html lang="es">
@@ -12,7 +25,7 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   <style>
     :root { --azul:#3B82C4; --dorado:#D4AF37; --fondo:#F7F9FB;
-            --texto:#1F2937; --gris:#6B7280; --borde:#E5E7EB; }
+            --texto:#1F2937; --gris:#6B7280; --borde:#E5E7EB; --rojo:#C0392B; }
     * { box-sizing:border-box; margin:0; }
     body { font-family:system-ui,-apple-system,sans-serif; background:var(--fondo);
            color:var(--texto); height:100dvh; display:flex; flex-direction:column; }
@@ -22,21 +35,24 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
     header b { font-size:17px; }
     header .sub { font-size:12px; opacity:.9; }
     /* Salida visible para quien usa un dispositivo compartido: sin ella, la
-       unica forma de no seguir la conversacion de otra persona era borrar el
+       unica forma de no seguir como otra persona era borrar el
        almacenamiento del navegador. */
     header .reiniciar { background:rgba(255,255,255,.18); color:#fff;
                         border:0; border-radius:6px; padding:7px 11px;
-                        font-size:12px; cursor:pointer; white-space:nowrap; width:auto; height:auto;}
+                        font-size:12px; cursor:pointer; white-space:nowrap;
+                        width:auto; height:auto; }
     header .reiniciar:hover { background:rgba(255,255,255,.3); }
-    .acciones { margin:6px 0 14px 0; display:flex; flex-wrap:wrap; gap:8px; }
+    .acciones { margin:6px 0 4px 0; display:flex; flex-wrap:wrap; gap:8px; }
     /* width/height explicitos: la regla `button` de mas abajo impone 46x46
        al boton de enviar, y como es un selector de elemento tambien alcanza
-       a los botones de accion. A los enlaces no les afecta, por eso los de
-       calendario se veian bien y este no. */
+       a los botones de accion. Es la misma leccion que ya costo dos fallos
+       de pantalla en paquetes anteriores. */
     .accion { display:inline-block; background:var(--azul); color:#fff;
               text-decoration:none; padding:9px 14px; border-radius:8px;
-              font-size:14px; width:auto; height:auto; }
+              font-size:14px; width:auto; height:auto; border:0; cursor:pointer; }
     .accion:hover { filter:brightness(1.08); }
+    .accion.secundaria { background:transparent; color:var(--gris);
+                         border:1px solid var(--borde); }
     .acciones .nota { flex-basis:100%; font-size:12px; color:#6b7280; }
     #hilo { flex:1; overflow-y:auto; padding:14px; display:flex;
             flex-direction:column; gap:10px; }
@@ -50,10 +66,10 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
              padding:10px; font-size:12px; color:#6B5200; }
     /* El cartel del descanso se distingue del aviso de privacidad: uno es
        letra pequena que se acepta, el otro es informacion que cambia lo que
-       el cliente puede hacer hoy. Con el mismo estilo se leeria como mas
-       letra pequena y se saltaria. */
-    .descanso { background:#FDECEC; border:1px solid #C0392B; border-radius:10px;
-                padding:12px; font-size:14px; color:#7B241C; font-weight:600; }
+       el cliente puede hacer hoy. */
+    .descanso { background:#FDECEC; border:1px solid var(--rojo); border-radius:10px;
+                padding:12px; font-size:14px; color:#7B241C; font-weight:600;
+                margin:14px 14px 0 14px; }
     .escribiendo { color:var(--gris); font-size:13px; align-self:flex-start; }
     form { display:flex; gap:8px; padding:10px; background:#fff;
            border-top:1px solid var(--borde); }
@@ -68,38 +84,67 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
     .consulta label { display:block; margin-bottom:6px; color:var(--gris); }
     .consulta .fila { display:flex; gap:8px; flex-wrap:wrap; }
     .consulta input { flex:1; min-width:150px; }
-    /* Los botones de esta fila son <button>, y la regla `button` de arriba
-       les impondria 46x46 y forma de circulo. Se neutraliza con un selector
-       de clase, que gana en especificidad, igual que se hizo con .accion. */
     .consulta button.accion { width:auto; height:auto; border-radius:8px;
                               font-size:14px; }
-    .consulta button.secundaria { background:transparent; color:var(--gris);
-                                  border:1px solid var(--borde); }
+
+    /* ── El camino guiado ─────────────────────────────────────── */
+    .guia { flex:1; overflow-y:auto; padding:14px; }
+    .tarjeta { background:#fff; border:1px solid var(--borde); border-radius:12px;
+               padding:14px; margin-bottom:12px; }
+    .tarjeta h2 { font-size:16px; margin-bottom:8px; }
+    .tarjeta p { font-size:14px; color:var(--gris); margin-bottom:8px; }
+    .tarjeta label { display:block; font-size:13px; color:var(--gris);
+                     margin:10px 0 4px; }
+    .tarjeta input { width:100%; border-radius:8px; }
+    .fila { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    /* Todos los botones de eleccion llevan clase propia, por lo dicho arriba
+       sobre el selector `button`. */
+    .opcion { width:auto; height:auto; border-radius:8px; font-size:14px;
+              padding:10px 14px; background:#fff; color:var(--azul);
+              border:1px solid var(--azul); cursor:pointer; }
+    .opcion.activa { background:var(--azul); color:#fff; }
+    .opcion:disabled { opacity:.45; cursor:default; }
+    .dia { width:auto; height:auto; border-radius:10px; font-size:13px;
+           padding:8px 10px; background:#fff; color:var(--texto);
+           border:1px solid var(--borde); cursor:pointer; text-align:center;
+           min-width:86px; line-height:1.3; }
+    .dia.activa { background:var(--azul); color:#fff; border-color:var(--azul); }
+    .dia .num { display:block; font-size:16px; font-weight:600; }
+    /* 86px de ancho y letra de 11px para que "Cupos disponibles" quepa en
+       dos lineas en un celular estrecho sin partir la palabra. */
+    .dia .cupo { display:block; font-size:11px; opacity:.8; }
+    .dia:disabled { opacity:.45; cursor:default; }
+    .quien { font-weight:600; font-size:14px; margin:12px 0 6px; }
+    .vacio { color:var(--gris); font-size:13px; margin:4px 0; }
+    .error { color:var(--rojo); font-size:13px; margin-top:8px; }
+    .pasos { font-size:12px; color:var(--gris); margin-bottom:10px; }
+    /* El asistente dejo de ser el camino principal, y con el estilo de
+       "boton secundario" pasaba a leerse como una salida de emergencia. Es
+       lo que distingue a GlowBot de una agenda cualquiera, asi que se viste
+       con el dorado de la marca: visible sin competir con el azul, que es el
+       color de la accion principal --elegir una hora--. */
+    .tarjeta.asistente { border-color:var(--dorado); background:#FFFDF5; }
+    .tarjeta.asistente h2 { color:#6B5200; }
+    .accion.dorada { background:var(--dorado); color:#3A2E00; font-weight:600; }
   </style>
 </head>
-<body x-data="chat('{{ slug }}')" x-init="iniciar()">
+<body x-data="pagina('{{ slug }}')" x-init="iniciar()">
   <header>
     <div class="titulo">
       <b x-text="negocio.nombre || (fallo ? 'No disponible' : 'Cargando…')"></b>
-      <div class="sub">Asistente GlowBot · agenda tu cita aquí</div>
+      <div class="sub">Agenda tu cita aquí</div>
     </div>
     <button type="button" class="reiniciar" @click="abrirConsulta()"
             x-show="!fallo" title="Consulta las citas de un teléfono">
       Mis citas
     </button>
     <button type="button" class="reiniciar" @click="reiniciar()"
-            x-show="!fallo" title="Borra esta conversación de este dispositivo">
+            x-show="!fallo" title="Borra tus datos de este dispositivo">
       Empezar de nuevo
     </button>
   </header>
 
-  <!-- Consulta de citas sin pasar por el asistente.
-
-       El backend ya exponia /citas/consultar desde el Sprint 3, pero la
-       unica forma de llegar era escribirle al modelo y confiar en que
-       dedujera la intencion. Eso tenia dos costos: el cliente que solo
-       quiere recordar su hora no sabia que podia, y cada consulta gastaba
-       una llamada a la API. Este panel no consume ni un token. -->
+  <!-- Consulta de citas sin pasar por el asistente. No consume ni un token. -->
   <div class="consulta" x-show="consultando" x-cloak>
     <label for="tel-consulta">Escribe el teléfono con el que agendaste</label>
     <div class="fila">
@@ -113,57 +158,219 @@ WhatsApp o Instagram (glowbot.com.co/p/mi-barberia).
     </div>
   </div>
 
-  <div id="hilo" x-ref="hilo">
-    <!-- Se pinta ANTES del primer mensaje y sin gastar un token: el texto
-         viene ya redactado por el backend en /api/v1/p/<slug>. Es la parte
-         del aviso que sigue en pie aunque el modelo falle o se equivoque. -->
-    <div class="descanso" x-show="negocio.aviso_descanso"
-         x-text="negocio.aviso_descanso"></div>
-    <div class="aviso" x-show="!fallo">
-      Para agendar te pediremos aceptar que <b x-text="negocio.nombre"></b>
-      trate tu nombre y teléfono para gestionar tu cita.
-      <a :href="'/p/' + slug + '/privacidad'" target="_blank">Cómo tratamos tus datos</a>
+  <!-- El cartel del descanso se pinta ANTES de nada y sin gastar un token:
+       el texto viene ya redactado por el backend en /api/v1/p/<slug>. -->
+  <div class="descanso" x-show="negocio.aviso_descanso" x-cloak
+       x-text="negocio.aviso_descanso"></div>
+
+  <!-- ── Camino guiado ──────────────────────────────────────────── -->
+  <div class="guia" x-show="!escribiendo" x-cloak>
+
+    <div class="tarjeta" x-show="fallo">
+      <p x-text="mensajeFallo"></p>
     </div>
+
+    <!-- Paso 1: bienvenida y autorizacion.
+         La Ley 1581 exige autorizacion previa, expresa e informada: pedirla
+         aqui, antes de recoger un solo dato, es exactamente eso. Antes vivia
+         a mitad de conversacion, cuando el asistente ya habia deducido que
+         hacia falta. -->
+    <div class="tarjeta" x-show="paso === 'consentimiento' && !fallo">
+      <h2 x-text="'Bienvenido a ' + (negocio.nombre || '')"></h2>
+      <p>Estos son nuestros servicios:</p>
+      <template x-for="s in (negocio.servicios || [])" :key="s.id">
+        <div class="vacio" x-text="'• ' + s.nombre + ' — ' + s.duracion_min + ' min'"></div>
+      </template>
+      <div class="aviso" style="margin-top:10px">
+        Para agendar, <b x-text="negocio.nombre"></b> necesita guardar tu
+        nombre y tu teléfono, y usarlos únicamente para gestionar tu cita
+        (Ley 1581 de 2012).
+        <a :href="'/p/' + slug + '/privacidad'" target="_blank">Cómo tratamos tus datos</a>
+      </div>
+      <div class="acciones">
+        <button type="button" class="accion" @click="aceptar()"
+                :disabled="aceptando">Acepto</button>
+        <div class="nota">Al pulsar dejas constancia de tu autorización.</div>
+      </div>
+      <p class="error" x-show="errorPaso" x-text="errorPaso"></p>
+    </div>
+
+    <!-- Paso 2: quien eres.
+         Va antes de elegir la hora para que la cita se cree en el mismo
+         toque; ver el comentario de cabecera. Los datos se recuerdan en ESTE
+         navegador para que la segunda visita sea un solo boton. -->
+    <div class="tarjeta" x-show="paso === 'identidad' && !fallo">
+      <h2>¿Quién agenda?</h2>
+      <template x-if="recordado">
+        <div>
+          <p x-text="'Agendas como ' + nombre + ' · ' + telefono"></p>
+          <div class="acciones">
+            <button type="button" class="accion" @click="confirmarIdentidad()">Continuar</button>
+            <button type="button" class="accion secundaria" @click="olvidarme()">No soy yo</button>
+          </div>
+        </div>
+      </template>
+      <template x-if="!recordado">
+        <div>
+          <label for="nombre-cliente">Tu nombre</label>
+          <input id="nombre-cliente" x-model="nombre" placeholder="Nombre y apellido">
+          <label for="tel-cliente">Tu número de teléfono</label>
+          <input id="tel-cliente" x-model="telefono" type="tel" inputmode="numeric"
+                 placeholder="3001234567" @keydown.enter.prevent="confirmarIdentidad()">
+          <div class="acciones" style="margin-top:12px">
+            <button type="button" class="accion" @click="confirmarIdentidad()">Continuar</button>
+            <div class="nota">Lo necesitamos para recordarte la cita y para
+              que puedas cancelarla.</div>
+          </div>
+        </div>
+      </template>
+      <p class="error" x-show="errorPaso" x-text="errorPaso"></p>
+    </div>
+
+    <!-- Paso 3: servicio, dia y hora. Todo sin gastar un token. -->
+    <div x-show="paso === 'agenda' && !fallo">
+      <div class="tarjeta">
+        <h2>¿Qué servicio quieres?</h2>
+        <div class="fila">
+          <template x-for="s in (negocio.servicios || [])" :key="s.id">
+            <button type="button" class="opcion" :class="servicioId === s.id && 'activa'"
+                    @click="elegirServicio(s.id)" x-text="s.nombre"></button>
+          </template>
+        </div>
+      </div>
+
+      <div class="tarjeta" x-show="servicioId">
+        <h2>¿Qué día?</h2>
+        <p class="pasos" x-show="agendaCargando">Buscando horas…</p>
+
+        <!-- Filtro de profesional. Solo aparece cuando hay a quien elegir:
+             preguntar por una eleccion que no existe gasta un toque. -->
+        <div class="fila" x-show="profesionales.length > 1" style="margin-bottom:10px">
+          <button type="button" class="opcion" :class="profesionalId === null && 'activa'"
+                  @click="profesionalId = null">Cualquiera</button>
+          <template x-for="p in profesionales" :key="p.profesional_id">
+            <button type="button" class="opcion"
+                    :class="profesionalId === p.profesional_id && 'activa'"
+                    @click="profesionalId = p.profesional_id"
+                    x-text="p.profesional"></button>
+          </template>
+        </div>
+
+        <!-- Tira de dias con su cuenta de horas libres. Con un calendario
+             suelto el cliente adivina: toca el jueves, no hay nada; toca el
+             viernes, no hay nada; se va. -->
+        <div class="fila">
+          <template x-for="d in dias" :key="d.fecha">
+            <button type="button" class="dia" :class="d.fecha === diaSel && 'activa'"
+                    :disabled="!d.libres" @click="diaSel = d.fecha">
+              <span x-text="d.dia_semana"></span>
+              <span class="num" x-text="d.numero"></span>
+              <!-- Dice SI hay cupo, no cuanto. El numero exacto confundia:
+                   la tira decia "14 horas" y justo debajo se listaban las
+                   horas de cada profesional, asi que el cliente leia el 14
+                   como si fuera de una sola persona. Lo que tiene que
+                   decidir aqui es a que dia entrar; el cuanto y el con
+                   quien los resuelve mirando abajo. -->
+              <span class="cupo" x-text="d.libres ? 'Cupos disponibles' : 'Sin cupo'"></span>
+            </button>
+          </template>
+        </div>
+        <div class="fila" style="margin-top:10px">
+          <label for="otra-fecha" style="margin:0">¿Otra fecha?</label>
+          <input id="otra-fecha" type="date" x-model="desde" :min="hoy"
+                 @change="cargarAgenda()" style="width:auto">
+        </div>
+      </div>
+
+      <div class="tarjeta" x-show="servicioId && diaSel">
+        <h2>¿A qué hora?</h2>
+        <template x-for="p in visibles" :key="p.profesional_id">
+          <div>
+            <div class="quien" x-text="p.profesional"></div>
+            <div class="fila" x-show="p.horas.length">
+              <template x-for="h in p.horas" :key="h.valor">
+                <button type="button" class="opcion" @click="agendar(p, h)"
+                        :disabled="creando" x-text="h.texto"></button>
+              </template>
+            </div>
+            <!-- A quien no tiene horas se le nombra igual, apagado: si se
+                 escondiera, el cliente que acaba de verlo concluiria que ya
+                 no trabaja ahi. -->
+            <div class="vacio" x-show="!p.horas.length">Sin horas libres ese día</div>
+          </div>
+        </template>
+        <p class="error" x-show="errorPaso" x-text="errorPaso"></p>
+      </div>
+    </div>
+
+    <!-- Paso 4: listo. La confirmacion la escribe el backend. -->
+    <div class="tarjeta" x-show="paso === 'listo'">
+      <h2>¡Listo, tu cita quedó confirmada!</h2>
+      <p x-text="cita ? cita.servicio + ' — ' + cita.fecha_texto + ' a las ' +
+                        cita.hora_texto + ' con ' + cita.profesional : ''"></p>
+      <div class="acciones">
+        <!-- El enlace de Google va PRIMERO porque cubre a la mayoria en
+             Colombia. El .ics es el que abre el Calendario de iPhone de un
+             toque; en Android cae en Descargas y hay que ir a buscarlo. -->
+        <a class="accion" :href="cita ? cita.google : '#'" target="_blank"
+           rel="noopener">Guardar en Google Calendar (Android)</a>
+        <a class="accion" :href="cita ? cita.ics : '#'">Guardar en Calendario (iPhone)</a>
+        <div class="nota">El calendario no se actualiza solo. Si cambias o
+          cancelas la cita, consúltalo aquí.</div>
+      </div>
+      <div class="acciones">
+        <button type="button" class="accion secundaria" @click="otraCita()">
+          Agendar otra cita</button>
+      </div>
+    </div>
+
+    <!-- El asistente queda como respaldo, no como camino principal. Sigue
+         resolviendo lo que un boton no sabe: "algo el jueves por la tarde",
+         una pregunta, una cancelacion. -->
+    <div class="tarjeta asistente" x-show="!fallo">
+      <h2>💬 ¿Necesitas algo que no está aquí?</h2>
+      <p>Pregunta por un día y una hora puntual: «Ej: jueves 2
+        la tarde», o cancela citas.</p>
+      <button type="button" class="accion dorada" @click="escribiendo = true">
+        Hablar con el asistente ✨</button>
+    </div>
+  </div>
+
+  <!-- ── Asistente (respaldo) ───────────────────────────────────── -->
+  <div id="hilo" x-ref="hilo" x-show="escribiendo" x-cloak>
     <template x-for="(m, i) in mensajes" :key="i">
       <div>
         <div class="msg" :class="m.rol === 'bot' ? 'bot' : 'yo'" x-text="m.texto"></div>
-        <!-- Acciones bajo el mensaje. De momento solo las de una cita recien
-             creada; cuando llegue el boton de consentimiento veremos si vale
-             la pena generalizar el mecanismo, con dos ejemplos delante en vez
-             de uno. -->
-        <!-- Consentimiento. Solo el boton vale: escribir «acepto» no crea
-             ningun registro, y sin registro el backend rechaza la reserva. -->
-        <div class="acciones" x-show="m.pedirConsentimiento && !consentido">
-          <button type="button" class="accion" @click="aceptar()">Acepto</button>
-          <div class="nota">Al pulsar dejas constancia de tu autorización.</div>
-        </div>
         <div class="acciones" x-show="m.cita">
-          <!-- El enlace de Google va PRIMERO porque cubre a la mayoria en
-               Colombia. El .ics es el que abre el Calendario de iPhone de
-               un toque; en Android tambien funciona, pero cae en Descargas
-               y hay que ir a buscarlo, asi que se etiqueta por el aparato
-               donde es la mejor opcion, no por el unico donde sirve. -->
           <a class="accion" :href="m.cita ? m.cita.google : '#'"
              target="_blank" rel="noopener">Guardar en Google Calendar (Android)</a>
           <a class="accion" :href="m.cita ? m.cita.ics : '#'">Guardar en Calendario (iPhone)</a>
-          <div class="nota">El calendario no se actualiza solo. Si cambias o
-            cancelas la cita, consúltalo aquí.</div>
         </div>
       </div>
     </template>
     <div class="escribiendo" x-show="cargando">Escribiendo…</div>
+    <div class="acciones">
+      <button type="button" class="accion secundaria" @click="escribiendo = false">
+        Volver a agendar con botones</button>
+    </div>
   </div>
-
-  <form @submit.prevent="enviar">
-    <input x-model="texto" placeholder="Escribe tu mensaje…" :disabled="cargando" autofocus>
+  <form @submit.prevent="enviar" x-show="escribiendo" x-cloak>
+    <input x-model="texto" placeholder="Escribe tu mensaje…" :disabled="cargando">
     <button type="submit" :disabled="cargando || !texto.trim()">➤</button>
   </form>
 
 <script>
-function chat(slug) {
+function pagina(slug) {
   return {
-    slug, negocio: {}, mensajes: [], texto: "", cargando: false, fallo: false,
-    consentido: false,
+    slug, negocio: {}, fallo: false, mensajeFallo: "",
+    paso: "consentimiento", errorPaso: "", aceptando: false,
+    nombre: "", telefono: "", recordado: false,
+    servicioId: null, profesionalId: null,
+    desde: "", dias: [], horasPorDia: {}, diaSel: null,
+    agendaCargando: false, creando: false, cita: null,
+    hoy: new Date().toISOString().slice(0, 10),
+    // El asistente es respaldo: la pantalla arranca en el camino de botones.
+    escribiendo: false, mensajes: [], texto: "", cargando: false,
     consultando: false, telConsulta: "", consultaCargando: false,
     sessionId: localStorage.getItem("glowbot_sesion_" + slug) || null,
 
@@ -173,8 +380,7 @@ function chat(slug) {
         r = await fetch(`/api/v1/p/${this.slug}`);
       } catch (e) {
         this.fallo = true;
-        this.mensajes.push({ rol: "bot", texto:
-          "No pudimos conectarnos. Revisa tu conexión e intenta de nuevo." });
+        this.mensajeFallo = "No pudimos conectarnos. Revisa tu conexión e intenta de nuevo.";
         return;
       }
       if (!r.ok) {
@@ -182,37 +388,170 @@ function chat(slug) {
         // Un 403 es un negocio REAL con la suscripción vencida, y la API ya
         // redacta un mensaje neutro que no revela su estado de pago. Decirle
         // a su cliente que el establecimiento «no existe» sería información
-        // falsa sobre un negocio que sí existe, y el dueño se enteraría por
-        // un cliente molesto.
-        let texto = "No encontramos este establecimiento. Revisa el enlace "
-                  + "con el negocio.";
+        // falsa sobre un negocio que sí existe.
+        this.mensajeFallo = "No encontramos este establecimiento. Revisa el enlace con el negocio.";
         if (r.status === 403) {
           const d = await r.json().catch(() => null);
-          texto = (d && d.error) || "Este negocio no está recibiendo reservas "
-                + "en línea por el momento.";
+          this.mensajeFallo = (d && d.error)
+            || "Este negocio no está recibiendo reservas en línea por el momento.";
         }
-        this.mensajes.push({ rol: "bot", texto });
         return;
       }
       this.negocio = await r.json();
-      const lista = this.negocio.servicios
-        .map(s => `• ${s.nombre} — ${s.duracion_min} min`)
-        .join("\n");
-      // El saludo pide DOS datos, no uno. Lo escribe el navegador, asi que
-      // no cuesta ni un token, y cada dato que llega en el primer mensaje
-      // es un turno que la conversacion no tiene que gastar despues: el
-      // costo de la API no esta en el tamano de cada llamada sino en
-      // cuantas se hacen.
-      this.mensajes.push({ rol: "bot", texto:
-        `¡Hola! Soy el asistente de ${this.negocio.nombre}. Estos son nuestros servicios:\n${lista}\n\n¿Cuál deseas agendar? Si ya sabes qué día te sirve, dímelo en el mismo mensaje.` });
+      this.desde = this.hoy;
+      const guardado = localStorage.getItem("glowbot_cliente_" + this.slug);
+      if (guardado) {
+        try {
+          const d = JSON.parse(guardado);
+          this.nombre = d.nombre || ""; this.telefono = d.telefono || "";
+          this.recordado = !!(this.nombre && this.telefono);
+        } catch (e) { /* dato corrupto: se pide de nuevo */ }
+      }
     },
 
+    // ── Paso 1 ───────────────────────────────────────────────────
+    async aceptar() {
+      if (this.aceptando) return;
+      this.aceptando = true; this.errorPaso = "";
+      // La sesión se crea aquí, en el navegador, porque el consentimiento es
+      // lo primero que ocurre y ya no hay un mensaje de chat que la genere.
+      if (!this.sessionId) {
+        this.sessionId = (crypto.randomUUID && crypto.randomUUID().replace(/-/g, ""))
+          || String(Date.now()) + Math.random().toString(16).slice(2);
+        localStorage.setItem("glowbot_sesion_" + this.slug, this.sessionId);
+      }
+      try {
+        const r = await fetch(`/api/v1/p/${this.slug}/consentimiento`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: this.sessionId }),
+        });
+        if (!r.ok) throw new Error("no registrado");
+        // Solo se avanza si el servidor DEJÓ CONSTANCIA. Sin registro no hay
+        // prueba, y sin prueba el backend rechaza la reserva de todos modos.
+        this.paso = "identidad";
+      } catch (e) {
+        this.errorPaso = "No pudimos registrar tu autorización. Intenta de nuevo.";
+      }
+      this.aceptando = false;
+    },
+
+    // ── Paso 2 ───────────────────────────────────────────────────
+    confirmarIdentidad() {
+      this.errorPaso = "";
+      const digitos = (this.telefono || "").replace(/\D/g, "");
+      if ((this.nombre || "").trim().length < 2) {
+        this.errorPaso = "Escribe tu nombre."; return;
+      }
+      // Diez dígitos, la misma regla del backend. Aquí se comprueba para no
+      // hacer viajar un dato que se va a rechazar; la validación que manda
+      // sigue siendo la del servidor.
+      if (digitos.length !== 10) {
+        this.errorPaso = "El teléfono debe tener 10 dígitos."; return;
+      }
+      this.nombre = this.nombre.trim(); this.telefono = digitos;
+      localStorage.setItem("glowbot_cliente_" + this.slug,
+        JSON.stringify({ nombre: this.nombre, telefono: this.telefono }));
+      this.recordado = true;
+      this.paso = "agenda";
+      // Con un solo servicio no hay nada que elegir: se salta el toque.
+      if ((this.negocio.servicios || []).length === 1) {
+        this.elegirServicio(this.negocio.servicios[0].id);
+      }
+    },
+
+    olvidarme() {
+      localStorage.removeItem("glowbot_cliente_" + this.slug);
+      this.nombre = ""; this.telefono = ""; this.recordado = false;
+    },
+
+    // ── Paso 3 ───────────────────────────────────────────────────
+    elegirServicio(id) {
+      this.servicioId = id; this.diaSel = null; this.profesionalId = null;
+      this.cargarAgenda();
+    },
+
+    async cargarAgenda() {
+      if (!this.servicioId) return;
+      this.agendaCargando = true; this.errorPaso = "";
+      try {
+        const r = await fetch(`/api/v1/p/${this.slug}/disponibilidad`
+          + "?servicio_id=" + this.servicioId + "&desde=" + this.desde);
+        const d = await r.json().catch(() => null);
+        if (!r.ok) {
+          this.errorPaso = (d && d.error) || "No pudimos consultar la agenda.";
+          this.dias = []; this.horasPorDia = {};
+        } else {
+          this.dias = d.dias; this.horasPorDia = d.horas;
+          // Se abre en el primer día CON CUPO y no en hoy: abrir en hoy le
+          // muestra una pantalla vacía a quien agenda de noche, con el
+          // negocio ya cerrado, que es justo cuando la gente agenda.
+          this.diaSel = d.primer_dia_con_cupo;
+          if (!this.diaSel) {
+            this.errorPaso = "No hay horas libres en estos días. Prueba otra fecha.";
+          }
+        }
+      } catch (e) {
+        this.errorPaso = "No pudimos consultar la agenda.";
+      }
+      this.agendaCargando = false;
+    },
+
+    get profesionales() {
+      return this.horasPorDia[this.diaSel] || [];
+    },
+
+    get visibles() {
+      if (this.profesionalId === null) return this.profesionales;
+      return this.profesionales.filter(p => p.profesional_id === this.profesionalId);
+    },
+
+    async agendar(profesional, hora) {
+      if (this.creando) return;
+      this.creando = true; this.errorPaso = "";
+      try {
+        const r = await fetch(`/api/v1/p/${this.slug}/citas`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: this.sessionId, servicio_id: this.servicioId,
+            profesional_id: profesional.profesional_id, fecha: this.diaSel,
+            hora_inicio: hora.valor, nombre: this.nombre,
+            telefono: this.telefono,
+          }),
+        });
+        const d = await r.json().catch(() => null);
+        if (r.status === 201) {
+          this.cita = d.cita; this.paso = "listo";
+        } else if (r.status === 409) {
+          // Alguien llegó antes. No es un error del cliente: se recarga la
+          // agenda para que no vuelva a pulsar un hueco que ya no existe.
+          this.errorPaso = "Ese horario lo acaban de tomar. Elige otro.";
+          await this.cargarAgenda();
+        } else if (r.status === 403 && d && /autoriza/i.test(d.error || "")) {
+          // La sesión caducó: hay que volver a dejar constancia.
+          this.paso = "consentimiento";
+          this.errorPaso = "Tu sesión expiró. Vuelve a aceptar para continuar.";
+        } else {
+          this.errorPaso = (d && d.error) || "No pudimos crear la cita.";
+        }
+      } catch (e) {
+        this.errorPaso = "No pudimos crear la cita. Revisa tu conexión.";
+      }
+      this.creando = false;
+    },
+
+    otraCita() {
+      // El consentimiento y la identidad ya están dados en esta sesión.
+      this.cita = null; this.servicioId = null; this.diaSel = null;
+      this.dias = []; this.horasPorDia = {}; this.desde = this.hoy;
+      this.paso = "agenda";
+    },
+
+    // ── Asistente (respaldo) ─────────────────────────────────────
     async enviar() {
       const mensaje = this.texto.trim();
       if (!mensaje) return;
       this.mensajes.push({ rol: "yo", texto: mensaje });
       this.texto = ""; this.cargando = true; this.abajo();
-
       try {
         const r = await fetch(`/api/v1/p/${this.slug}/chat`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -228,41 +567,13 @@ function chat(slug) {
           const d = await r.json();
           this.sessionId = d.session_id;
           localStorage.setItem("glowbot_sesion_" + this.slug, d.session_id);
-          // `cita` solo viene cuando la reserva se creo de verdad, asi que
-          // sirve de bandera y de datos a la vez. El backend ya lo mandaba
-          // desde siempre; esta pantalla lo tiraba a la basura.
-          this.mensajes.push({ rol: "bot", texto: d.respuesta, cita: d.cita,
-            pedirConsentimiento: d.accion === "pedir_consentimiento" });
+          this.mensajes.push({ rol: "bot", texto: d.respuesta, cita: d.cita });
         }
       } catch (e) {
         this.mensajes.push({ rol: "bot", texto:
           "No pudimos conectarnos. Revisa tu conexión a internet." });
       }
       this.cargando = false; this.abajo();
-    },
-
-    async aceptar() {
-      // Dos pasos a proposito. El primero REGISTRA el consentimiento en el
-      // servidor, que es lo que vale como prueba. El segundo continua la
-      // conversacion con normalidad para que el asistente siga pidiendo el
-      // nombre. Si el registro falla, no se manda el mensaje: sin constancia
-      // no debe seguir el flujo.
-      if (this.consentido || this.cargando) return;
-      try {
-        const r = await fetch(`/api/v1/p/${this.slug}/consentimiento`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: this.sessionId }),
-        });
-        if (!r.ok) throw new Error("no registrado");
-        this.consentido = true;
-      } catch (e) {
-        this.mensajes.push({ rol: "bot", texto:
-          "No pudimos registrar tu autorización. ¿Puedes intentarlo otra vez?" });
-        this.abajo();
-        return;
-      }
-      this.texto = "Acepto";
-      await this.enviar();
     },
 
     abrirConsulta() {
@@ -282,10 +593,10 @@ function chat(slug) {
         if (!r.ok) throw new Error("consulta fallida");
         const d = await r.json();
         const citas = d.citas || [];
-        // El resultado se inyecta como mensaje del bot y NO se manda al
-        // modelo: el historial de la conversacion no debe crecer con texto
-        // que la IA no genero. Si creciera, cada turno posterior pagaria
-        // por reenviarlo.
+        // El resultado se muestra en el hilo del asistente pero NO se manda
+        // al modelo: el historial no debe crecer con texto que la IA no
+        // generó, porque cada turno posterior pagaría por reenviarlo.
+        this.escribiendo = true;
         if (!citas.length) {
           this.mensajes.push({ rol: "bot", texto:
             "No encontramos citas confirmadas para ese número. Revisa que "
@@ -308,32 +619,34 @@ function chat(slug) {
     },
 
     reiniciar() {
-      // Olvida la sesion en ESTE dispositivo y arranca de cero.
+      // Olvida la sesión y los datos en ESTE dispositivo y arranca de cero.
       //
-      // El session_id vivia en localStorage sin caducidad, asi que quien
-      // abriera el chat despues en la misma tablet o en el mismo celular
-      // prestado continuaba la conversacion del anterior: veia su telefono
-      // y sus citas, y podia cancelarselas.
+      // El session_id vivía en localStorage sin caducidad, así que quien
+      // abriera la página después en la misma tablet o en el mismo celular
+      // prestado continuaba como el anterior: veía su teléfono y sus citas,
+      // y podía cancelárselas. Ahora además hay nombre y teléfono guardados,
+      // así que esta salida importa más que antes.
       //
-      // No se avisa al servidor a proposito. La fila anterior se conserva
-      // intacta como registro de auditoria (RNF-09); lo que se corta es el
+      // No se avisa al servidor a propósito: la fila anterior se conserva
+      // intacta como registro de auditoría (RNF-09); lo que se corta es el
       // hilo entre este navegador y ella.
       localStorage.removeItem("glowbot_sesion_" + this.slug);
-      this.sessionId = null;
-      this.mensajes = [];
-      // El consentimiento pertenece a la conversacion, asi que empezar de
-      // nuevo lo borra: el siguiente que use este dispositivo tiene que
-      // aceptar por si mismo.
-      this.consentido = false;
-      this.texto = "";
-      this.consultando = false;
-      this.telConsulta = "";
+      localStorage.removeItem("glowbot_cliente_" + this.slug);
+      this.sessionId = null; this.mensajes = []; this.texto = "";
+      this.nombre = ""; this.telefono = ""; this.recordado = false;
+      this.servicioId = null; this.diaSel = null; this.dias = [];
+      this.horasPorDia = {}; this.cita = null; this.errorPaso = "";
+      this.consultando = false; this.telConsulta = "";
+      this.escribiendo = false;
+      // El consentimiento pertenece a la sesión: el siguiente que use este
+      // dispositivo tiene que aceptar por sí mismo.
+      this.paso = "consentimiento";
       this.iniciar();
     },
 
     abajo() {
       this.$nextTick(() => {
-        this.$refs.hilo.scrollTop = this.$refs.hilo.scrollHeight;
+        if (this.$refs.hilo) this.$refs.hilo.scrollTop = this.$refs.hilo.scrollHeight;
       });
     },
   };

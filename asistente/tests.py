@@ -2611,3 +2611,307 @@ class ComandoCostosIaTest(BaseIATest):
             establecimiento=self.est, session_id="c4",
             tokens_entrada=1_000_000, tokens_salida=0, llamadas_modelo=1)
         self.assertIn("USD 3.00", self._correr("--usd-entrada", "3"))
+
+
+class AgendaPublicaTest(BaseIATest):
+    """La agenda que se pulsa: tira de días y horas, sin pasar por el modelo.
+
+    Medido en producción antes de construirla: elegir entre catorce horas de
+    dos profesionales costaba tres turnos, y cada turno reenvía esa lista
+    dentro del historial. Unos 8.000 tokens de entrada por llamada y US$16 al
+    mes contra US$8,75 de suscripción. Y los clientes finales, en campo,
+    dijeron lo mismo que la factura: demasiados pasos.
+    """
+
+    def _pedir(self, **params):
+        base = {"servicio_id": self.corte.id}
+        base.update(params)
+        consulta = "&".join(f"{k}={v}" for k, v in base.items() if v is not None)
+        return self.client.get(
+            f"/api/v1/p/{self.est.slug}/disponibilidad?{consulta}")
+
+    # ── La tira de días ───────────────────────────────────────────
+
+    def test_devuelve_siete_dias_por_defecto(self):
+        datos = self._pedir(desde=str(self.lunes)).json()
+        self.assertEqual(len(datos["dias"]), 7)
+        self.assertEqual(datos["dias"][0]["fecha"], str(self.lunes))
+
+    def test_cada_dia_dice_cuantas_horas_libres_tiene(self):
+        """Sin esa cuenta, el cliente adivina: toca el jueves, no hay nada;
+        toca el viernes, no hay nada; se va."""
+        datos = self._pedir(desde=str(self.lunes)).json()
+        self.assertGreater(datos["dias"][0]["libres"], 0)
+
+    def test_un_dia_bloqueado_aparece_en_cero(self):
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        datos = self._pedir(desde=str(self.lunes)).json()
+        self.assertEqual(datos["dias"][0]["libres"], 0)
+        self.assertEqual(datos["horas"][str(self.lunes)][0]["horas"], [])
+
+    def test_senala_el_primer_dia_con_cupo(self):
+        """La pantalla abre ahí y no en hoy: abrir en hoy le muestra una
+        pantalla vacía a quien agenda de noche, con el negocio ya cerrado."""
+        from negocios.models import Bloqueo
+        # La jornada de estas pruebas es solo de lunes, así que con ese lunes
+        # bloqueado el primer día útil es el lunes siguiente. Sirve además
+        # para lo que interesa: el primer día con cupo NO es el día siguiente
+        # al bloqueo, es el siguiente en que se trabaja.
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        datos = self._pedir(desde=str(self.lunes), dias=8).json()
+        self.assertEqual(datos["primer_dia_con_cupo"],
+                         str(self.lunes + timedelta(days=7)))
+
+    def test_sin_bloqueos_el_primer_dia_con_cupo_es_el_primero(self):
+        datos = self._pedir(desde=str(self.lunes)).json()
+        self.assertEqual(datos["primer_dia_con_cupo"], str(self.lunes))
+
+    def test_sin_cupo_en_todo_el_tramo_no_inventa_un_dia(self):
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes,
+                               fecha_fin=self.lunes + timedelta(days=6))
+        self.assertIsNone(
+            self._pedir(desde=str(self.lunes)).json()["primer_dia_con_cupo"])
+
+    def test_las_horas_de_todos_los_dias_vienen_en_una_peticion(self):
+        """Cambiar de día es el gesto más repetido de esta pantalla; pedirlas
+        día a día lo convertiría en una espera."""
+        datos = self._pedir(desde=str(self.lunes)).json()
+        self.assertEqual(len(datos["horas"]), 7)
+
+    # ── Quién aparece ─────────────────────────────────────────────
+
+    def test_las_horas_van_agrupadas_por_profesional(self):
+        datos = self._pedir(desde=str(self.lunes)).json()
+        grupo = datos["horas"][str(self.lunes)][0]
+        self.assertEqual(grupo["profesional"], self.carlos.nombre)
+        self.assertEqual(grupo["horas"][0]["valor"], "09:00")
+        self.assertIn("9:00", grupo["horas"][0]["texto"])
+
+    def test_a_quien_no_tiene_horas_se_le_nombra_igual(self):
+        """Esconderlo haría que el cliente que acaba de verlo concluya que ya
+        no trabaja ahí, cuando lo que pasa es que libra ese día."""
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        nombres = [g["profesional"]
+                   for g in self._pedir(desde=str(self.lunes)).json()["horas"][str(self.lunes)]]
+        self.assertIn(self.carlos.nombre, nombres)
+
+    def test_solo_aparecen_los_asignados_al_servicio(self):
+        ajeno = Profesional.objects.create(
+            establecimiento=self.est, nombre="Zulema", activo=True)
+        HorarioBase.objects.create(
+            profesional=ajeno, dia_semana=self.lunes.weekday(),
+            hora_inicio=time(9, 0), hora_fin=time(12, 0))
+        nombres = [g["profesional"]
+                   for g in self._pedir(desde=str(self.lunes)).json()["horas"][str(self.lunes)]]
+        self.assertNotIn("Zulema", nombres)
+
+    def test_se_puede_filtrar_por_profesional(self):
+        datos = self._pedir(desde=str(self.lunes),
+                            profesional_id=self.carlos.id).json()
+        self.assertEqual(len(datos["horas"][str(self.lunes)]), 1)
+
+    def test_un_profesional_que_no_presta_el_servicio_no_cuela_su_agenda(self):
+        """El filtro se aplica DESPUÉS de la lista común, así que un id
+        tecleado a mano no abre una puerta de atrás."""
+        ajeno = Profesional.objects.create(
+            establecimiento=self.est, nombre="Zulema", activo=True)
+        datos = self._pedir(desde=str(self.lunes),
+                            profesional_id=ajeno.id).json()
+        self.assertEqual(datos["horas"][str(self.lunes)], [])
+
+    # ── Sin tokens y con guardas ──────────────────────────────────
+
+    def test_no_gasta_un_solo_token(self):
+        """La prueba que justifica el paquete entero. Si algún día alguien
+        resuelve esto llamando al modelo «solo para formatear», el costo
+        vuelve y nadie se entera hasta la factura."""
+        with patch(RUTA_LLAMAR,
+                   side_effect=AssertionError("la agenda llamó al modelo")):
+            r = self._pedir(desde=str(self.lunes))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(ConversacionIA.objects.count(), 0)
+
+    def test_el_servicio_de_otro_negocio_no_devuelve_su_agenda(self):
+        vecino = Usuario.objects.create_user(email="vec@b.com",
+                                             password="clave12345")
+        otro = Establecimiento.objects.create(
+            propietario=vecino, nombre="Vecina", slug="vecina-rejilla",
+            tipo=Establecimiento.Tipo.SALON, telefono="303")
+        suyo = Servicio.objects.create(establecimiento=otro, nombre="Uñas",
+                                       duracion_min=60, activo=True)
+        self.assertEqual(self._pedir(servicio_id=suyo.id).status_code, 404)
+
+    def test_una_fecha_pasada_se_rechaza(self):
+        """El motor ya no ofrece horas pasadas, así que aceptar un `desde`
+        viejo devolvería una tira vacía que el cliente leería como «este
+        negocio no tiene cupo»."""
+        ayer = timezone.localdate() - timedelta(days=1)
+        self.assertEqual(self._pedir(desde=str(ayer)).status_code, 400)
+
+    def test_una_fecha_demasiado_lejana_se_rechaza(self):
+        lejos = timezone.localdate() + timedelta(days=200)
+        self.assertEqual(self._pedir(desde=str(lejos)).status_code, 400)
+
+    def test_un_tramo_desmedido_se_rechaza(self):
+        """Pone techo a lo que un bot puede recorrer de una agenda ajena."""
+        self.assertEqual(self._pedir(dias=365).status_code, 400)
+
+    def test_una_fecha_ilegible_no_revienta(self):
+        self.assertEqual(self._pedir(desde="24-09-2026").status_code, 400)
+
+    def test_un_negocio_inexistente_da_404(self):
+        r = self.client.get(f"/api/v1/p/no-existe/disponibilidad"
+                            f"?servicio_id={self.corte.id}")
+        self.assertEqual(r.status_code, 404)
+
+    def test_no_se_filtra_ningun_dato_personal(self):
+        clienta = ClienteFinal.objects.create(
+            establecimiento=self.est, nombre="Marcela Ruiz",
+            telefono="3145550001", acepta_datos=True)
+        AgendaService.reservar(
+            establecimiento=self.est, profesional=self.carlos,
+            servicio=self.corte, cliente=clienta, dia=self.lunes,
+            hora_inicio=time(9, 0), canal=Cita.Canal.MANUAL,
+            respetar_tope=False)
+        crudo = self._pedir(desde=str(self.lunes)).content.decode()
+        self.assertNotIn(clienta.telefono, crudo)
+        self.assertNotIn(clienta.nombre, crudo)
+
+
+class CrearCitaSinModeloTest(BaseIATest):
+    """La última puerta del autoservicio guiado.
+
+    Saltarse el modelo no puede significar saltarse ninguna guarda: el
+    consentimiento, el tope por teléfono, el veto por inasistencias, la
+    jornada, los bloqueos y el cerrojo siguen todos en pie. Esta clase lo
+    comprueba una por una.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.sesion = "web1"
+
+    def _aceptar(self, sesion=None):
+        return self.client.post(
+            f"/api/v1/p/{self.est.slug}/consentimiento",
+            {"session_id": sesion or self.sesion},
+            content_type="application/json")
+
+    def _agendar(self, **extra):
+        cuerpo = {
+            "session_id": self.sesion, "servicio_id": self.corte.id,
+            "profesional_id": self.carlos.id, "fecha": str(self.lunes),
+            "hora_inicio": "09:00", "nombre": "Pablo Aponte",
+            "telefono": "3213008904",
+        }
+        cuerpo.update(extra)
+        return self.client.post(f"/api/v1/p/{self.est.slug}/citas", cuerpo,
+                                content_type="application/json")
+
+    def test_crea_la_cita_y_devuelve_los_enlaces(self):
+        self._aceptar()
+        r = self._agendar()
+        self.assertEqual(r.status_code, 201)
+        cita = r.json()["cita"]
+        self.assertEqual(cita["profesional"], self.carlos.nombre)
+        self.assertIn(".ics", cita["ics"])
+        self.assertIn("google.com", cita["google"])
+
+    def test_la_cita_queda_en_el_canal_web(self):
+        """No en `ia`. Mezclarlos haría que el costo por cita de la API
+        cayera a medida que la gente deja de usar el chat, sugiriendo una
+        mejora que no existe."""
+        self._aceptar()
+        self._agendar()
+        self.assertEqual(Cita.objects.get().canal, Cita.Canal.WEB)
+
+    def test_no_gasta_un_solo_token(self):
+        self._aceptar()
+        with patch(RUTA_LLAMAR,
+                   side_effect=AssertionError("agendar llamó al modelo")):
+            self.assertEqual(self._agendar().status_code, 201)
+
+    # ── Las guardas ───────────────────────────────────────────────
+
+    def test_sin_consentimiento_no_se_guarda_nada(self):
+        """El titular tiene que haber pulsado. Misma regla que en el chat: el
+        consentimiento lo registra el backend cuando el titular pulsa, y
+        nadie más puede concederlo."""
+        r = self._agendar()
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(Cita.objects.count(), 0)
+        self.assertEqual(ClienteFinal.objects.count(), 0)
+
+    def test_el_cliente_queda_con_origen_de_autoservicio(self):
+        """Es la prueba fuerte de la Ley 1581 y la única que habilita el
+        recordatorio automático: aceptó el propio titular."""
+        self._aceptar()
+        self._agendar()
+        cliente = ClienteFinal.objects.get(telefono="3213008904")
+        self.assertEqual(cliente.origen_consentimiento,
+                         ClienteFinal.OrigenConsentimiento.AUTOSERVICIO)
+
+    def test_un_hueco_ya_tomado_devuelve_409(self):
+        """409 y no 400: no hay nada mal en la petición, es que alguien llegó
+        antes. La pantalla recarga la rejilla con ese código."""
+        self._aceptar()
+        self.assertEqual(self._agendar().status_code, 201)
+        self._aceptar("web2")
+        r = self._agendar(session_id="web2", telefono="3213008905")
+        self.assertEqual(r.status_code, 409)
+
+    def test_no_se_puede_agendar_fuera_de_la_jornada(self):
+        self._aceptar()
+        self.assertEqual(self._agendar(hora_inicio="20:00").status_code, 400)
+
+    def test_no_se_puede_agendar_en_un_dia_bloqueado(self):
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes,
+                               fecha_fin=self.lunes + timedelta(days=6))
+        self._aceptar()
+        self.assertEqual(self._agendar().status_code, 400)
+
+    def test_un_telefono_vetado_no_agenda(self):
+        from negocios.clientes import ClienteService
+        ClienteService.bloquear(self.est, "3213008904")
+        self._aceptar()
+        self.assertEqual(self._agendar().status_code, 403)
+
+    def test_un_telefono_mal_escrito_se_rechaza(self):
+        self._aceptar()
+        r = self._agendar(telefono="321300")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(ClienteFinal.objects.count(), 0)
+
+    def test_sin_nombre_no_se_agenda(self):
+        self._aceptar()
+        self.assertEqual(self._agendar(nombre=" ").status_code, 400)
+
+    def test_un_profesional_que_no_presta_el_servicio_se_rechaza(self):
+        """La asignación M:N se comprueba con la MISMA lista que pinta la
+        rejilla: un id tecleado a mano no puede agendar con alguien que la
+        pantalla no ofrece."""
+        ajeno = Profesional.objects.create(
+            establecimiento=self.est, nombre="Zulema", activo=True)
+        self._aceptar()
+        self.assertEqual(self._agendar(profesional_id=ajeno.id).status_code, 400)
+
+    def test_no_se_agenda_con_el_profesional_de_otro_negocio(self):
+        vecino = Usuario.objects.create_user(email="vec2@b.com",
+                                             password="clave12345")
+        otro = Establecimiento.objects.create(
+            propietario=vecino, nombre="Vecina", slug="vecina-web",
+            tipo=Establecimiento.Tipo.SALON, telefono="304")
+        suyo = Profesional.objects.create(establecimiento=otro, nombre="Ajena",
+                                          activo=True)
+        self._aceptar()
+        self.assertEqual(self._agendar(profesional_id=suyo.id).status_code, 404)
+
+    def test_el_telefono_queda_en_la_sesion_para_mis_citas(self):
+        self._aceptar()
+        self._agendar()
+        conv = ConversacionIA.objects.get(session_id=self.sesion)
+        self.assertEqual(conv.telefono_cliente, "3213008904")

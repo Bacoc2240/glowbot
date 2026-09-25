@@ -753,29 +753,6 @@ REGLAS OBLIGATORIAS:
                           "ofrece solo lo que devuelva el sistema. NO digas "
                           "por qué no atiende.")
 
-    @staticmethod
-    def _profesionales_que_prestan(establecimiento, servicio):
-        """Quienes pueden atender ese servicio, en el orden en que se ofrecen.
-
-        Solo los ASIGNADOS, y no "todos los activos si el servicio no tiene
-        asignaciones", que es lo que tolera `agendar`. La razon es que esta
-        lista se le lee al cliente: ofrecer a alguien que el prompt no le
-        muestra al modelo --porque no tiene servicios asignados-- seria
-        contradecir en voz alta la decision de no ofrecerlo. Es un criterio
-        mas estrecho que el de `agendar`, nunca mas ancho, asi que no puede
-        proponer a nadie que la reserva vaya a rechazar despues.
-
-        Consecuencia conocida: un servicio sin NINGUNA asignacion no se puede
-        consultar por esta via. Es el caso del dueno que crea un servicio y
-        no marca a nadie, y la respuesta honesta ahi es que no hay quien lo
-        preste. Queda anotado que `agendar` sigue siendo mas permisivo; que
-        los dos criterios se unifiquen es una decision aparte.
-        """
-        return (Profesional.objects
-                .filter(establecimiento=establecimiento, activo=True,
-                        servicios=servicio)
-                .order_by("nombre"))
-
     @classmethod
     def _disponibilidad_del_equipo(cls, establecimiento, servicio, dia) -> str:
         """Horas libres de todo el equipo para ese servicio, agrupadas.
@@ -786,7 +763,12 @@ REGLAS OBLIGATORIAS:
         diria que esa persona no presta el servicio cuando lo que pasa es que
         libra ese dia.
         """
-        equipo = cls._profesionales_que_prestan(establecimiento, servicio)
+        # La lista sale de AgendaService y no de una consulta propia: es la
+        # MISMA que pinta la rejilla de horas de la pagina publica. Antes
+        # vivia aqui; se mudo al crear la rejilla, porque dos definiciones de
+        # "a quien se le ofrece" acaban contradiciendose en la misma pantalla.
+        equipo = AgendaService.disponibilidad_por_profesional(
+            establecimiento, servicio, dia)
         if not equipo:
             return (f"Ningun profesional tiene asignado {servicio.nombre} en "
                     f"este momento. Dile al cliente que ese servicio no se "
@@ -794,8 +776,7 @@ REGLAS OBLIGATORIAS:
                     f"establecimiento. NO ofrezcas horarios.")
 
         lineas, con_cupo = [], 0
-        for p in equipo:
-            slots = AgendaService.calcular_slots(p, servicio, dia)
+        for p, slots in equipo:
             if slots:
                 con_cupo += 1
                 lineas.append(f"- {p.nombre}: "
