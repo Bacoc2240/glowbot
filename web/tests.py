@@ -1716,6 +1716,39 @@ class PantallaGuiadaTests(TestCase):
         self.assertIn('class="accion dorada"', vivas)
         self.assertIn(".tarjeta.asistente { border-color:var(--dorado)", vivas)
 
+    def test_el_asistente_no_se_ofrece_antes_de_aceptar(self):
+        """Quien entraba al chat sin haber aceptado recibía el mensaje que
+        pide pulsar el botón de autorización sin que hubiera botón: la única
+        salida era recargar la página."""
+        self.assertIn('x-show="!fallo && paso !== \'consentimiento\'"',
+                      self._vivas())
+
+    def test_el_chat_pinta_su_propio_boton_de_aceptar(self):
+        """Ocultar la entrada no basta: la sesión caduca a las 24 horas y
+        «Empezar de nuevo» la corta a propósito, así que el asistente puede
+        pedir la autorización estando ya dentro. Y escribir «acepto» no
+        sirve: no crea registro, y sin registro el backend rechaza."""
+        vivas = self._vivas()
+        self.assertIn('x-show="m.pedirConsentimiento && !consentido"', vivas)
+        self.assertIn("aceptarEnChat()", vivas)
+        self.assertIn('d.accion === "pedir_consentimiento"', vivas)
+
+    def test_la_autorizacion_del_camino_guiado_vale_en_el_chat(self):
+        """Si no, el asistente volvería a pedir lo que ya está registrado."""
+        vivas = self._vivas()
+        # `_vivas` quita las líneas de comentario, así que las dos
+        # instrucciones quedan seguidas.
+        self.assertIn('this.paso = "identidad";\n'
+                      '        this.consentido = true;', vivas)
+
+    def test_los_botones_de_salida_llevan_el_color_de_la_marca(self):
+        """«Volver» y «Agendar otra cita» eran grises: se leían como texto
+        secundario cuando son la acción evidente en esas dos pantallas."""
+        vivas = self._vivas()
+        self.assertIn('class="accion dorada" @click="escribiendo = false"', vivas)
+        self.assertIn('class="accion dorada" @click="otraCita()"', vivas)
+        self.assertIn("← Volver", vivas)
+
     def test_empezar_de_nuevo_borra_tambien_los_datos_del_cliente(self):
         """Importa más que antes: en un celular prestado ya no queda solo la
         sesión, quedan el nombre y el teléfono de la persona anterior."""

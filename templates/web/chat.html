@@ -319,7 +319,7 @@ sus datos.
           cancelas la cita, consúltalo aquí.</div>
       </div>
       <div class="acciones">
-        <button type="button" class="accion secundaria" @click="otraCita()">
+        <button type="button" class="accion dorada" @click="otraCita()">
           Agendar otra cita</button>
       </div>
     </div>
@@ -327,10 +327,15 @@ sus datos.
     <!-- El asistente queda como respaldo, no como camino principal. Sigue
          resolviendo lo que un boton no sabe: "algo el jueves por la tarde",
          una pregunta, una cancelacion. -->
-    <div class="tarjeta asistente" x-show="!fallo">
+    <!-- No se pinta en la bienvenida, y no es cosmetica: quien entraba al
+         chat antes de aceptar recibia el mensaje que pide pulsar el boton de
+         autorizacion sin que hubiera boton que pulsar. La salida del callejon
+         era recargar la pagina. Se ofrece cuando la autorizacion ya esta
+         dada, que es cuando el asistente puede hacer algo util. -->
+    <div class="tarjeta asistente" x-show="!fallo && paso !== 'consentimiento'">
       <h2>💬 ¿Necesitas algo que no está aquí?</h2>
-      <p>Pregunta por un día y una hora puntual: «Ej: jueves 2
-        la tarde», o cancela citas.</p>
+      <p>Buscas un día y hora específicos, o quieres 
+        cancelar una cita: Escríbele al asistente.</p>
       <button type="button" class="accion dorada" @click="escribiendo = true">
         Hablar con el asistente ✨</button>
     </div>
@@ -341,6 +346,16 @@ sus datos.
     <template x-for="(m, i) in mensajes" :key="i">
       <div>
         <div class="msg" :class="m.rol === 'bot' ? 'bot' : 'yo'" x-text="m.texto"></div>
+        <!-- Consentimiento dentro del hilo. Volvio aqui porque el asistente
+             sigue pudiendo pedirlo: la sesion caduca a las 24 horas, y
+             "Empezar de nuevo" la corta a proposito. Sin este boton, el
+             mensaje "pulsa el boton" no tiene boton, y escribir «acepto» no
+             sirve: no crea ningun registro, y sin registro el backend
+             rechaza la reserva. -->
+        <div class="acciones" x-show="m.pedirConsentimiento && !consentido">
+          <button type="button" class="accion" @click="aceptarEnChat()">Acepto</button>
+          <div class="nota">Al pulsar dejas constancia de tu autorización.</div>
+        </div>
         <div class="acciones" x-show="m.cita">
           <a class="accion" :href="m.cita ? m.cita.google : '#'"
              target="_blank" rel="noopener">Guardar en Google Calendar (Android)</a>
@@ -350,8 +365,8 @@ sus datos.
     </template>
     <div class="escribiendo" x-show="cargando">Escribiendo…</div>
     <div class="acciones">
-      <button type="button" class="accion secundaria" @click="escribiendo = false">
-        Volver a agendar con botones</button>
+      <button type="button" class="accion dorada" @click="escribiendo = false">
+        ← Volver</button>
     </div>
   </div>
   <form @submit.prevent="enviar" x-show="escribiendo" x-cloak>
@@ -371,6 +386,7 @@ function pagina(slug) {
     hoy: new Date().toISOString().slice(0, 10),
     // El asistente es respaldo: la pantalla arranca en el camino de botones.
     escribiendo: false, mensajes: [], texto: "", cargando: false,
+    consentido: false,
     consultando: false, telConsulta: "", consultaCargando: false,
     sessionId: localStorage.getItem("glowbot_sesion_" + slug) || null,
 
@@ -429,6 +445,9 @@ function pagina(slug) {
         // Solo se avanza si el servidor DEJÓ CONSTANCIA. Sin registro no hay
         // prueba, y sin prueba el backend rechaza la reserva de todos modos.
         this.paso = "identidad";
+        // Vale para las dos puertas: si luego pasa al chat, el asistente no
+        // tiene por que volver a pedir lo que ya esta registrado.
+        this.consentido = true;
       } catch (e) {
         this.errorPaso = "No pudimos registrar tu autorización. Intenta de nuevo.";
       }
@@ -567,13 +586,38 @@ function pagina(slug) {
           const d = await r.json();
           this.sessionId = d.session_id;
           localStorage.setItem("glowbot_sesion_" + this.slug, d.session_id);
-          this.mensajes.push({ rol: "bot", texto: d.respuesta, cita: d.cita });
+          this.mensajes.push({ rol: "bot", texto: d.respuesta, cita: d.cita,
+            pedirConsentimiento: d.accion === "pedir_consentimiento" });
         }
       } catch (e) {
         this.mensajes.push({ rol: "bot", texto:
           "No pudimos conectarnos. Revisa tu conexión a internet." });
       }
       this.cargando = false; this.abajo();
+    },
+
+    async aceptarEnChat() {
+      // Dos pasos a proposito. El primero REGISTRA la autorizacion en el
+      // servidor, que es lo que vale como prueba. El segundo continua la
+      // conversacion para que el asistente siga desde donde estaba. Si el
+      // registro falla no se manda el mensaje: sin constancia no debe
+      // seguir el flujo.
+      if (this.consentido || this.cargando) return;
+      try {
+        const r = await fetch(`/api/v1/p/${this.slug}/consentimiento`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: this.sessionId }),
+        });
+        if (!r.ok) throw new Error("no registrado");
+        this.consentido = true;
+      } catch (e) {
+        this.mensajes.push({ rol: "bot", texto:
+          "No pudimos registrar tu autorización. ¿Puedes intentarlo otra vez?" });
+        this.abajo();
+        return;
+      }
+      this.texto = "Acepto";
+      await this.enviar();
     },
 
     abrirConsulta() {
@@ -637,7 +681,7 @@ function pagina(slug) {
       this.servicioId = null; this.diaSel = null; this.dias = [];
       this.horasPorDia = {}; this.cita = null; this.errorPaso = "";
       this.consultando = false; this.telConsulta = "";
-      this.escribiendo = false;
+      this.escribiendo = false; this.consentido = false;
       // El consentimiento pertenece a la sesión: el siguiente que use este
       // dispositivo tiene que aceptar por sí mismo.
       this.paso = "consentimiento";
