@@ -35,8 +35,8 @@ from agenda.fechas import DIAS_CORTOS, fecha_corta, fecha_larga, hora_texto
 from agenda.avisos import texto_publico
 from agenda.models import Cita
 from agenda.services import (
-    AgendaService, CitaEnElPasado, DiaNoAtendido, SlotNoDisponible,
-    TelefonoVetado, TopeCitasAlcanzado,
+    DIAS_MAX_AGENDA, AgendaService, CitaEnElPasado, DiaNoAtendido,
+    SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
 )
 from facturacion.services import SuscripcionService
 from .models import ConversacionIA
@@ -201,8 +201,10 @@ class DisponibilidadPublicaView(APIView):
 
     # Un cliente mira esta semana o la que viene. Tres meses es de sobra para
     # cualquiera, y pone un techo a lo que un bot puede recorrer de una
-    # agenda ajena consulta a consulta.
-    DIAS_MAX_ADELANTE = 90
+    # agenda ajena consulta a consulta. La constante es COMPARTIDA con el
+    # prompt del asistente: cuando cada camino tenia la suya, la rejilla
+    # llegaba al 30 de octubre y el chat decia que la agenda terminaba el 8.
+    DIAS_MAX_ADELANTE = DIAS_MAX_AGENDA
     DIAS_MAX_TRAMO = 14
 
     def get(self, request, slug):

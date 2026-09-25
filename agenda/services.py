@@ -35,6 +35,21 @@ from .models import Cita
 # de ajustes a un mes del PMV no lo es. Queda anotado para la v1.1.
 ANTELACION_MINIMA_MIN = 30
 
+# Hasta donde llega la agenda que se le ofrece al cliente final, en dias.
+#
+# Vive AQUI y no en la vista que lo usa porque hay dos caminos --la rejilla de
+# la pagina publica y el asistente-- y tenerlo escrito dos veces ya produjo la
+# contradiccion: la rejilla llegaba al 30 de octubre y el asistente contestaba
+# que "los dias disponibles son hasta el 8 de octubre", una frase que nadie le
+# habia dicho. El modelo tomo el final de su tabla de 14 dias por el final de
+# la agenda del negocio y se lo conto al cliente como un hecho.
+#
+# La tabla del prompt sigue siendo corta a proposito --el modelo necesita leer
+# cada fecha con su dia de la semana, y noventa lineas son ruido-- pero ahora
+# se le dice ademas hasta donde llega la agenda de verdad, para que remita a
+# la pantalla en vez de inventarse un cierre.
+DIAS_MAX_AGENDA = 90
+
 
 class TelefonoVetado(Exception):
     """El establecimiento bloqueó este número para reservas en línea."""

@@ -29,8 +29,8 @@ from agenda.calendario import enlace_google, firma as firma_cita
 from agenda.models import Cita, Notificacion
 from agenda.avisos import linea_sistema
 from agenda.services import (
-    AgendaService, CitaEnElPasado, DiaNoAtendido, SlotNoDisponible,
-    TelefonoVetado, TopeCitasAlcanzado,
+    DIAS_MAX_AGENDA, AgendaService, CitaEnElPasado, DiaNoAtendido,
+    SlotNoDisponible, TelefonoVetado, TopeCitasAlcanzado,
 )
 from negocios.clientes import ClienteService
 from negocios.models import ClienteFinal, Profesional, ProfesionalServicio, Servicio
@@ -252,6 +252,10 @@ class IAService:
         ahora = timezone.localtime()
         fecha_txt = f"{fecha_larga(ahora.date())}, {hora_texto(ahora.time())}"
         calendario = cls._calendario(ahora.date())
+        # Hasta donde llega la agenda DE VERDAD, que es mas lejos que la
+        # tabla. Sin este dato el modelo tomaba el final de sus 14 lineas por
+        # el cierre de la agenda del negocio y se lo contaba al cliente.
+        hasta = fecha_larga(ahora.date() + timedelta(days=DIAS_MAX_AGENDA))
         # El municipio venia FIJO en el codigo como "Saravena, Arauca".
         # Mientras el unico mercado fue Arauca no se noto; con
         # establecimientos de otras ciudades, el asistente le habria
@@ -275,6 +279,10 @@ FECHA Y HORA ACTUAL (America/Bogota): {fecha_txt}
 
 CALENDARIO (unica fuente valida para dias de la semana):
 {calendario}
+
+ALCANCE DE LA AGENDA: el negocio recibe reservas hasta el {hasta}. Por este
+chat solo puedes manejar las fechas del CALENDARIO de arriba; las mas lejanas
+existen y se agendan desde el calendario de la pantalla.
 
 REGLAS OBLIGATORIAS:
 1. Solo ofrece servicios, profesionales y horarios que aparezcan arriba
@@ -320,9 +328,17 @@ REGLAS OBLIGATORIAS:
    "mañana" o "pasado mañana". Leelos SIEMPRE del CALENDARIO de arriba, tambien
    cuando converses en texto libre y aunque aún no hayas consultado nada al
    sistema. Si el cliente menciona una fecha, busca su linea en el calendario
-   antes de nombrarla; si no aparece, pide que la confirme. Decirle a alguien
-   un dia equivocado hace que pierda su cita. En el JSON de las intenciones la
-   fecha va siempre en formato AAAA-MM-DD.
+   antes de nombrarla. Decirle a alguien un dia equivocado hace que pierda su
+   cita. En el JSON de las intenciones la fecha va siempre en formato
+   AAAA-MM-DD.
+   Si la fecha que pide NO esta en el calendario, eso significa que TU no
+   puedes manejarla, no que el negocio este cerrado. NUNCA digas que esa
+   fecha "no existe", "no esta en nuestro calendario" o que "los dias
+   disponibles llegan hasta" el final de tu tabla: el negocio recibe
+   reservas mucho mas alla, y afirmar lo contrario le quita una cita a un
+   cliente que si podia agendarla. Di exactamente esto: que por el chat
+   manejas las proximas dos semanas, y que para una fecha mas lejana use el
+   calendario de la pantalla, donde puede elegir el dia y la hora.
 10. Si el cliente envía SOLO un número de teléfono (10 dígitos) sin pedir
    otra cosa, entiendelo como que quiere ver su cita: emite consultar_cita
    con ese número. Es la via mas rapida para quien vuelve y solo quiere
@@ -382,7 +398,12 @@ REGLAS OBLIGATORIAS:
    de calendario, y una cita se cancela en un mensaje. Ese turno de mas no
    protege de nada y es el mas caro de todos, porque llega cuando el cliente
    ya decidio.
-20. Cada mensaje tuyo le cuesta un turno al cliente. Once idas y vueltas
+20. Escribe en TEXTO PLANO. Nada de asteriscos para negrita, almohadillas
+   para titulos ni guiones de lista con formato: la pantalla del cliente
+   muestra tu respuesta tal cual, asi que "**28 de septiembre**" se lee con
+   los asteriscos puestos. Para destacar una fecha o una hora, escribela y
+   ya.
+21. Cada mensaje tuyo le cuesta un turno al cliente. Once idas y vueltas
    para agendar un corte cansan a quien escribe desde el celular en la calle.
    No saludes otra vez a mitad de conversacion, no anuncies lo que vas a
    hacer -"permiteme consultar la disponibilidad"- y no comentes lo que

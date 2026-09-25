@@ -2915,3 +2915,59 @@ class CrearCitaSinModeloTest(BaseIATest):
         self._agendar()
         conv = ConversacionIA.objects.get(session_id=self.sesion)
         self.assertEqual(conv.telefono_cliente, "3213008904")
+
+
+class ElChatNoInventaElFinDeLaAgendaTest(BaseIATest):
+    """Los dos caminos tienen que decir lo mismo sobre hasta cuándo se agenda.
+
+    Encontrado en producción: por la rejilla se llegaba al 30 de octubre sin
+    problema, y el asistente contestaba que «los días disponibles son hasta
+    el 8 de octubre de 2026». Nadie le había dicho eso. Tomó el final de su
+    tabla de 14 días por el cierre de la agenda del negocio y se lo contó al
+    cliente como un hecho, quitándole una cita que sí podía agendar.
+    """
+
+    def _prompt(self):
+        return IAService.construir_prompt_sistema(self.est)
+
+    def test_el_prompt_dice_hasta_donde_llega_la_agenda(self):
+        from agenda.services import DIAS_MAX_AGENDA
+        hasta = timezone.localdate() + timedelta(days=DIAS_MAX_AGENDA)
+        prompt = self._prompt()
+        self.assertIn("ALCANCE DE LA AGENDA", prompt)
+        self.assertIn(fecha_larga(hasta), prompt)
+
+    def test_el_alcance_sale_de_la_misma_constante_que_la_rejilla(self):
+        """Con una constante por camino vuelve la contradicción. Aquí se
+        comprueba que el endpoint público y el prompt leen la misma."""
+        from agenda.services import DIAS_MAX_AGENDA
+        from .api import DisponibilidadPublicaView
+        self.assertEqual(DisponibilidadPublicaView.DIAS_MAX_ADELANTE,
+                         DIAS_MAX_AGENDA)
+
+    def test_la_tabla_sigue_siendo_corta(self):
+        """El modelo necesita leer cada fecha con su día de la semana, y
+        noventa líneas en cada llamada son ruido. La tabla es su límite de
+        trabajo, no el del negocio."""
+        prompt = self._prompt()
+        dentro = timezone.localdate() + timedelta(days=13)
+        fuera = timezone.localdate() + timedelta(days=30)
+        self.assertIn(dentro.isoformat(), prompt)
+        self.assertNotIn(fuera.isoformat(), prompt)
+
+    def test_se_le_prohibe_decir_que_la_fecha_no_existe(self):
+        prompt = self._prompt()
+        self.assertIn('NUNCA digas que esa', prompt)
+        self.assertIn("no esta en nuestro calendario", prompt)
+
+    def test_se_le_dice_a_donde_mandar_al_cliente(self):
+        """Negarse sin salida deja al cliente sin cita; la pantalla sí puede
+        con esa fecha."""
+        self.assertIn("donde puede elegir el dia y la hora", self._prompt())
+
+    def test_se_le_prohibe_el_markdown(self):
+        """La pantalla muestra la respuesta tal cual, así que
+        «**28 de septiembre**» se lee con los asteriscos puestos."""
+        prompt = self._prompt()
+        self.assertIn("TEXTO PLANO", prompt)
+        self.assertIn("asteriscos", prompt)
