@@ -253,6 +253,20 @@ class DisponibilidadPublicaView(APIView):
 
         equipo = AgendaService.disponibilidad_por_profesional(
             est, servicio, desde)
+        # La plantilla del equipo se toma ANTES del filtro por profesional.
+        #
+        # La pantalla pide al profesional antes que el dia, y al elegirlo
+        # vuelve a pedir esta agenda filtrada para que la tira diga los cupos
+        # de ESA persona. Si el selector se armara con las horas de la
+        # respuesta, como antes, se armaria con la respuesta ya filtrada: al
+        # tocar a Marcela la lista quedaria en una sola persona, el selector
+        # se esconderia por no haber a quien elegir, y el cliente ya no podria
+        # volver a "Cualquiera" ni cambiar de profesional.
+        #
+        # Sale de la misma lista que las horas, asi que no es una segunda
+        # definicion de "a quien se le ofrece": es la misma, sin recortar.
+        plantilla = [{"profesional_id": p.id, "profesional": p.nombre}
+                     for p, _ in equipo]
         pedido = request.query_params.get("profesional_id")
         if pedido:
             # El filtro se aplica DESPUES de la lista comun: asi un id que no
@@ -293,6 +307,7 @@ class DisponibilidadPublicaView(APIView):
             # cliente una pantalla vacia cuando el negocio ya cerro, que es
             # justo la hora a la que la gente agenda desde el celular.
             "primer_dia_con_cupo": con_cupo,
+            "equipo": plantilla,
             "horas": horas,
         })
 

@@ -239,22 +239,35 @@ sus datos.
         </div>
       </div>
 
-      <div class="tarjeta" x-show="servicioId">
-        <h2>¿Qué día?</h2>
-        <p class="pasos" x-show="agendaCargando">Buscando horas…</p>
+      <!-- Profesional, en su propia tarjeta y ANTES del dia.
 
-        <!-- Filtro de profesional. Solo aparece cuando hay a quien elegir:
-             preguntar por una eleccion que no existe gasta un toque. -->
-        <div class="fila" x-show="profesionales.length > 1" style="margin-bottom:10px">
+           Antes vivia dentro de "¿Que dia?" y solo filtraba las horas: la
+           tira seguia contando los cupos de todo el equipo. Con Marcela
+           elegida, el jueves decia "Cupos disponibles", el cliente lo tocaba
+           y Marcela no tenia nada. Ahora elegir a alguien vuelve a pedir la
+           agenda filtrada, y la tira dice los cupos de esa persona.
+
+           Solo aparece cuando hay a quien elegir: con una sola persona que
+           presta el servicio, preguntar gasta un toque y no decide nada. La
+           cuenta es por SERVICIO, no por establecimiento: un negocio de tres
+           donde solo una hace pestanas no debe preguntar por pestanas. -->
+      <div class="tarjeta" x-show="servicioId && equipo.length > 1">
+        <h2>Elige el profesional</h2>
+        <div class="fila">
           <button type="button" class="opcion" :class="profesionalId === null && 'activa'"
-                  @click="profesionalId = null">Cualquiera</button>
-          <template x-for="p in profesionales" :key="p.profesional_id">
+                  @click="elegirProfesional(null)">Cualquiera</button>
+          <template x-for="p in equipo" :key="p.profesional_id">
             <button type="button" class="opcion"
                     :class="profesionalId === p.profesional_id && 'activa'"
-                    @click="profesionalId = p.profesional_id"
+                    @click="elegirProfesional(p.profesional_id)"
                     x-text="p.profesional"></button>
           </template>
         </div>
+      </div>
+
+      <div class="tarjeta" x-show="servicioId">
+        <h2>¿Qué día?</h2>
+        <p class="pasos" x-show="agendaCargando">Buscando horas…</p>
 
         <!-- Tira de dias con su cuenta de horas libres. Con un calendario
              suelto el cliente adivina: toca el jueves, no hay nada; toca el
@@ -380,7 +393,7 @@ function pagina(slug) {
     slug, negocio: {}, fallo: false, mensajeFallo: "",
     paso: "consentimiento", errorPaso: "", aceptando: false,
     nombre: "", telefono: "", recordado: false,
-    servicioId: null, profesionalId: null,
+    servicioId: null, profesionalId: null, equipo: [],
     desde: "", dias: [], horasPorDia: {}, diaSel: null,
     agendaCargando: false, creando: false, cita: null,
     hoy: new Date().toISOString().slice(0, 10),
@@ -485,7 +498,18 @@ function pagina(slug) {
 
     // ── Paso 3 ───────────────────────────────────────────────────
     elegirServicio(id) {
+      // El equipo cambia con el servicio: se vacia para que no quede a la
+      // vista, mientras carga, el de un servicio que ya no es el elegido.
       this.servicioId = id; this.diaSel = null; this.profesionalId = null;
+      this.equipo = [];
+      this.cargarAgenda();
+    },
+
+    elegirProfesional(id) {
+      // Se vuelve a pedir la agenda y no se filtra aqui: la tira y el primer
+      // dia con cupo los calcula el servidor, y deben ser los de esta
+      // persona. Filtrar en la pantalla dejaria la tira contando a todos.
+      this.profesionalId = id; this.diaSel = null;
       this.cargarAgenda();
     },
 
@@ -494,19 +518,26 @@ function pagina(slug) {
       this.agendaCargando = true; this.errorPaso = "";
       try {
         const r = await fetch(`/api/v1/p/${this.slug}/disponibilidad`
-          + "?servicio_id=" + this.servicioId + "&desde=" + this.desde);
+          + "?servicio_id=" + this.servicioId + "&desde=" + this.desde
+          + (this.profesionalId === null ? "" : "&profesional_id=" + this.profesionalId));
         const d = await r.json().catch(() => null);
         if (!r.ok) {
           this.errorPaso = (d && d.error) || "No pudimos consultar la agenda.";
           this.dias = []; this.horasPorDia = {};
         } else {
           this.dias = d.dias; this.horasPorDia = d.horas;
+          this.equipo = d.equipo || [];
           // Se abre en el primer día CON CUPO y no en hoy: abrir en hoy le
           // muestra una pantalla vacía a quien agenda de noche, con el
           // negocio ya cerrado, que es justo cuando la gente agenda.
           this.diaSel = d.primer_dia_con_cupo;
           if (!this.diaSel) {
-            this.errorPaso = "No hay horas libres en estos días. Prueba otra fecha.";
+            // Con alguien elegido, la falta de cupo es SUYA y no del negocio:
+            // decir solo "prueba otra fecha" esconde la salida mas corta.
+            this.errorPaso = this.profesionalId === null
+              ? "No hay horas libres en estos días. Prueba otra fecha."
+              : "Esa persona no tiene horas libres en estos días. "
+                + "Prueba otra fecha o elige a otro profesional.";
           }
         }
       } catch (e) {

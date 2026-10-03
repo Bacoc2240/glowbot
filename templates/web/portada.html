@@ -7,6 +7,13 @@ cadena vacia. Esta pagina es la unica que explica el producto a quien no
 lo conoce, y la que se previsualiza cuando el enlace se comparte por
 WhatsApp (de ahi las etiquetas Open Graph).
 
+El mensaje describe el camino PRINCIPAL, que desde el paquete 53 es la
+pagina de botones; el asistente quedo de respaldo. Presentar GlowBot como
+"un asistente de inteligencia artificial" prometia la conversacion como
+producto y describia lo que el cliente final ya casi no usa. El asistente
+se nombra donde corresponde: como la salida para lo que no cabe en los
+botones.
+
 Los planes y los dias de prueba NO se escriben aqui: llegan por contexto
 desde facturacion.services, que es donde se cobra. Una prueba comprueba
 que el precio publicado y el precio cobrado coinciden.
@@ -15,12 +22,12 @@ que el precio publicado y el precio cobrado coinciden.
 {% block titulo %}GlowBot — tus clientes agendan solos, a cualquier hora{% endblock %}
 
 {% block meta %}
-<meta name="description" content="Asistente de inteligencia artificial que agenda las citas de tu barberia, salon, spa o centro de estetica por chat, las 24 horas. Prueba {{ dias_prueba }} dias gratis.">
+<meta name="description" content="Una pagina propia donde los clientes de tu barberia, salon, spa o centro de estetica eligen servicio, dia y hora y agendan solos, las 24 horas. Prueba {{ dias_prueba }} dias gratis.">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="GlowBot">
 <meta property="og:locale" content="es_CO">
 <meta property="og:title" content="GlowBot — tus clientes agendan solos, a cualquier hora">
-<meta property="og:description" content="Un asistente de IA atiende por chat, conoce tus servicios y horarios, y deja la cita puesta en tu agenda. Para barberias, salones, unas, estetica y spas.">
+<meta property="og:description" content="Tus clientes eligen servicio, dia y hora con unos toques, y la cita queda puesta en tu agenda. Para barberias, salones, unas, estetica y spas.">
 <meta property="og:url" content="{{ request.build_absolute_uri }}">
 <meta name="twitter:card" content="summary">
 {% endblock %}
@@ -79,9 +86,10 @@ que el precio publicado y el precio cobrado coinciden.
 <section class="hero">
   <h1>Tus clientes agendan solos,<br>a cualquier hora</h1>
   <p class="lead">
-    GlowBot es un asistente de inteligencia artificial que atiende por chat,
-    conoce tus servicios y tus horarios, y deja la cita puesta en tu agenda.
-    Para barberías, salones, uñas, estética y spas.
+    GlowBot le da a tu negocio una página propia donde tus clientes eligen el
+    servicio, el día y la hora, y la cita queda puesta en tu agenda. Sin
+    llamadas ni mensajes de ida y vuelta. Para barberías, salones, uñas,
+    estética y spas.
   </p>
   <div class="acciones">
     <a class="btn" href="/registro">Empieza gratis {{ dias_prueba }} días</a>
@@ -106,15 +114,16 @@ que el precio publicado y el precio cobrado coinciden.
       <b>Compartes tu enlace</b>
       <p class="muted">
         Recibes una dirección propia para poner en el estado de WhatsApp, en
-        Instagram o en Facebook. El cliente entra y ya está conversando.
+        Instagram o en Facebook. El cliente entra y agenda con unos toques.
       </p>
     </div>
     <div class="card paso">
       <span class="num">3</span>
       <b>Las citas llegan solas</b>
       <p class="muted">
-        El asistente ofrece únicamente las horas que de verdad tienes libres
-        y confirma. La cita aparece en tu panel.
+        La página ofrece únicamente las horas que de verdad tienes libres, y
+        la cita aparece en tu panel. Para lo que no cabe en los botones, un
+        asistente responde por chat.
       </p>
     </div>
   </div>

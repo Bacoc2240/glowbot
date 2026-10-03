@@ -1673,8 +1673,13 @@ class PantallaGuiadaTests(TestCase):
         self.assertIn("Sin horas libres ese día", self._vivas())
 
     def test_el_filtro_de_profesional_solo_sale_si_hay_a_quien_elegir(self):
-        """Preguntar por una elección que no existe gasta un toque."""
-        self.assertIn('x-show="profesionales.length > 1"', self._vivas())
+        """Preguntar por una elección que no existe gasta un toque.
+
+        La cuenta pasó de `profesionales` (las horas del día recibidas) a
+        `equipo` (la plantilla del servicio) cuando el selector se movió
+        antes del día: las horas ahora llegan filtradas por la persona
+        elegida, y contar sobre ellas escondería el selector al usarlo."""
+        self.assertIn('x-show="servicioId && equipo.length > 1"', self._vivas())
 
     # ── La creación ──────────────────────────────────────────────
 
@@ -1758,3 +1763,67 @@ class PantallaGuiadaTests(TestCase):
         self.assertIn('localStorage.removeItem("glowbot_cliente_" + this.slug);\n'
                       '      this.sessionId = null;', vivas)
         self.assertIn('this.paso = "consentimiento"', vivas)
+
+
+class EligeElProfesionalPantallaTests(TestCase):
+    """El selector de profesional, en su tarjeta y antes del día.
+
+    Mismo límite que las demás pruebas de pantalla: no ejecutan JavaScript,
+    comprueban que el enganche está escrito. Lo que protege el
+    comportamiento son las pruebas del endpoint en
+    asistente.tests.EligeElProfesionalTest.
+    """
+
+    def setUp(self):
+        from cuentas.models import Usuario
+        from negocios.models import Establecimiento
+        usuario = Usuario.objects.create_user(email="elige@a.com",
+                                              password="clave12345")
+        Establecimiento.objects.create(
+            propietario=usuario, nombre="Estudio", slug="elige",
+            tipo=Establecimiento.Tipo.UNAS, telefono="3001112244")
+        html = self.client.get("/p/elige").content.decode()
+        self.vivas = "\n".join(l for l in html.splitlines()
+                               if not l.strip().startswith("//"))
+
+    def test_el_profesional_tiene_su_pregunta_antes_del_dia(self):
+        self.assertIn("<h2>Elige el profesional</h2>", self.vivas)
+        self.assertLess(self.vivas.index("Elige el profesional"),
+                        self.vivas.index("¿Qué día?"))
+
+    def test_el_selector_sale_del_equipo_completo(self):
+        """Si saliera de las horas recibidas, que vienen filtradas, el
+        selector se encogería a una persona y se escondería."""
+        self.assertIn('x-for="p in equipo"', self.vivas)
+        self.assertIn("this.equipo = d.equipo", self.vivas)
+
+    def test_elegir_a_alguien_vuelve_a_pedir_la_agenda_filtrada(self):
+        """Si solo filtrara en la pantalla, la tira seguiría contando los
+        cupos de todo el equipo."""
+        self.assertIn('@click="elegirProfesional(p.profesional_id)"', self.vivas)
+        self.assertIn('"&profesional_id=" + this.profesionalId', self.vivas)
+
+
+class PortadaAutoservicioTests(TestCase):
+    """La portada describe el camino principal, que ya no es la conversación.
+
+    Desde la pantalla guiada, el cliente final agenda con botones y el
+    asistente queda de respaldo. Presentar GlowBot como «un asistente de
+    inteligencia artificial» describía lo que casi nadie usa.
+    """
+
+    def setUp(self):
+        self.html = self.client.get("/").content.decode()
+
+    def test_no_se_presenta_como_asistente_de_inteligencia_artificial(self):
+        self.assertNotIn("asistente de inteligencia artificial", self.html)
+        self.assertNotIn("asistente de IA", self.html)
+        self.assertNotIn("ya está conversando", self.html)
+
+    def test_describe_el_autoservicio(self):
+        plano = " ".join(self.html.split())
+        self.assertIn("tus clientes eligen el servicio, el día y la hora", plano)
+
+    def test_el_asistente_se_nombra_como_respaldo(self):
+        """Sigue existiendo; esconderlo sería prometer de menos."""
+        self.assertIn("Para lo que no cabe en los botones", self.html)

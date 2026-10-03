@@ -2971,3 +2971,95 @@ class ElChatNoInventaElFinDeLaAgendaTest(BaseIATest):
         prompt = self._prompt()
         self.assertIn("TEXTO PLANO", prompt)
         self.assertIn("asteriscos", prompt)
+
+
+class EligeElProfesionalTest(BaseIATest):
+    """El profesional se elige ANTES del día, y la tira dice los cupos de él.
+
+    Hallado al grabar el video de entrega: el selector vivía dentro de
+    «¿Qué día?» y solo filtraba las horas. Con Marcela elegida, la tira
+    seguía contando los cupos de todo el equipo, así que marcaba «Cupos
+    disponibles» en días en que Marcela no tenía nada.
+
+    La corrección vuelve a pedir la agenda filtrada al elegir a alguien. Eso
+    abre un segundo riesgo, el que de verdad cuidan estas pruebas: si el
+    selector se armara con la respuesta filtrada, al tocar a una persona la
+    lista quedaría en una sola, el selector se escondería y no habría forma
+    de volver a «Cualquiera».
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Ana trabaja lunes y martes; Carlos, solo lunes. El martes es el día
+        # que separa «cupos del equipo» de «cupos de Carlos».
+        self.ana = Profesional.objects.create(
+            establecimiento=self.est, nombre="Ana", activo=True)
+        self.ana.servicios.set([self.corte])
+        for dia in (0, 1):
+            HorarioBase.objects.create(
+                profesional=self.ana, dia_semana=dia,
+                hora_inicio=time(9, 0), hora_fin=time(12, 0))
+        self.martes = self.lunes + timedelta(days=1)
+
+    def _pedir(self, **params):
+        base = {"servicio_id": self.corte.id, "desde": str(self.lunes)}
+        base.update(params)
+        consulta = "&".join(f"{k}={v}" for k, v in base.items() if v is not None)
+        return self.client.get(
+            f"/api/v1/p/{self.est.slug}/disponibilidad?{consulta}").json()
+
+    @staticmethod
+    def _nombres(datos):
+        return [p["profesional"] for p in datos["equipo"]]
+
+    def test_la_respuesta_trae_el_equipo_del_servicio(self):
+        self.assertEqual(self._nombres(self._pedir()), ["Ana", "Carlos"])
+
+    def test_filtrar_no_recorta_el_equipo(self):
+        """Si se recortara, elegir a Carlos dejaría el selector con una sola
+        persona; la pantalla lo escondería y el cliente quedaría encerrado
+        en Carlos sin poder volver a «Cualquiera»."""
+        datos = self._pedir(profesional_id=self.carlos.id)
+        self.assertEqual(self._nombres(datos), ["Ana", "Carlos"])
+        # Las horas, en cambio, sí son solo las de Carlos.
+        self.assertEqual([g["profesional"] for g in datos["horas"][str(self.lunes)]],
+                         ["Carlos"])
+
+    def test_filtrada_la_tira_cuenta_solo_a_esa_persona(self):
+        """El defecto del video: el martes tiene cupo para el equipo (Ana)
+        pero no para Carlos, y la tira debe decir eso último."""
+        martes = lambda d: next(x for x in d["dias"] if x["fecha"] == str(self.martes))
+        self.assertGreater(martes(self._pedir())["libres"], 0)
+        self.assertEqual(martes(self._pedir(profesional_id=self.carlos.id))["libres"], 0)
+
+    def test_filtrada_el_primer_dia_con_cupo_es_el_de_esa_persona(self):
+        """La pantalla abre en ese día. Si fuera el del equipo, abriría en un
+        día vacío para la persona elegida."""
+        from negocios.models import Bloqueo
+        Bloqueo.objects.create(profesional=self.carlos, fecha=self.lunes)
+        self.assertEqual(self._pedir(dias=8)["primer_dia_con_cupo"], str(self.lunes))
+        self.assertEqual(
+            self._pedir(dias=8, profesional_id=self.carlos.id)["primer_dia_con_cupo"],
+            str(self.lunes + timedelta(days=7)))
+
+    def test_el_equipo_solo_trae_a_los_asignados(self):
+        """Sale de la MISMA lista que las horas. Si saliera de todos los
+        profesionales del negocio, el selector ofrecería a alguien que no
+        presta el servicio y cuya agenda siempre saldría vacía."""
+        ajeno = Profesional.objects.create(
+            establecimiento=self.est, nombre="Zulema", activo=True)
+        HorarioBase.objects.create(
+            profesional=ajeno, dia_semana=0,
+            hora_inicio=time(9, 0), hora_fin=time(12, 0))
+        self.assertNotIn("Zulema", self._nombres(self._pedir()))
+
+    def test_con_una_sola_persona_el_equipo_tiene_una(self):
+        """La pantalla esconde el selector cuando no hay a quién elegir; para
+        eso necesita que la cuenta sea por servicio y no por negocio."""
+        self.ana.servicios.clear()
+        self.assertEqual(self._nombres(self._pedir()), ["Carlos"])
+
+    def test_el_equipo_no_expone_mas_que_el_nombre(self):
+        """El endpoint es público y sin sesión."""
+        for p in self._pedir()["equipo"]:
+            self.assertEqual(set(p), {"profesional_id", "profesional"})
